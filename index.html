@@ -303,9 +303,9 @@ const SECS=[
   {title:'FWD BIN1 SUCCESS',      badge:'AGE=3 · BIN=1 · MSG=SUCCESS · ORDER≠IN_MANIFEST',src:'forward',      age:3,bin:1,msg:'SUCCESS'},
   {title:'D3 REVERSE (RVP)',      badge:'AGE=3 · R@DC · CLIENT FILT.',     src:'reverse',      age:3               },
   {title:'D10 REVERSE (RVP)',     badge:'AGE=10 · R@DC · CLIENT FILT.',    src:'reverse',      age:10              },
-  {title:'D3 LMODC',              badge:'AGE=3 · DESTINATION PIVOT',        src:'lmodc',        age:3               },
-  {title:'D6 LMODC',              badge:'AGE=6 · DESTINATION PIVOT',        src:'lmodc',        age:6               },
-  {title:'D10 LMODC',             badge:'AGE=10 · DESTINATION PIVOT',       src:'lmodc',        age:10              },
+  {title:'D3 LMODC',              badge:'AGE=3 · destination_name PIVOT',        src:'lmodc',        Ageing:3               },
+  {title:'D6 LMODC',              badge:'AGE=6 · destination_name PIVOT',        src:'lmodc',        Ageing:6               },
+  {title:'D10 LMODC',             badge:'AGE=10 · destination_name PIVOT',       src:'lmodc',        Ageing:10              },
   {title:'D3 FWD SHORT SHIP',     badge:'AGE=3 · SHORT SHIPMENT',           src:'forwardShort', age:3               },
   {title:'D6 FWD SHORT SHIP',     badge:'AGE=6 · SHORT SHIPMENT',           src:'forwardShort', age:6               },
 ];
@@ -399,7 +399,7 @@ function getLocCol(hdrs){
 function processPivot(rows,type,date,hdrs,agg){
   const ageCols=getAgeCols(hdrs);
   const locCol=getLocCol(hdrs);
-  const destKey=type==='lmodc'?'destination':'location';
+  const destKey=type==='lmodc'?'destination_name':'location';
   if(!ageCols.length)return;
   for(const row of rows){
     const rawLoc=String(row[locCol]??'').trim();
