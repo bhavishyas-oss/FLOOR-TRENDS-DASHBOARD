@@ -1,152 +1,1490 @@
-/* ═══════════════════════════════════════════════
-   HELPERS
-═══════════════════════════════════════════════ */
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Logistics Analytics Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f1f5f9;--sur:#fff;--sur2:#f8fafc;--bdr:#e2e8f0;--bdr2:#cbd5e1;
+  --tx:#0f172a;--tx2:#475569;--tx3:#94a3b8;
+  --navy:#0f172a;--navy2:#1e293b;--navy3:#334155;
+  --blue:#2563eb;--blue2:#1d4ed8;--blt:#dbeafe;--bbg:#eff6ff;
+  --red:#dc2626;--rlt:#fee2e2;
+  --grn:#16a34a;--glt:#dcfce7;
+  --amb:#d97706;--alt:#fef3c7;
+  --pur:#7c3aed;--plt:#ede9fe;
+  --sans:'Inter',system-ui,sans-serif;
+  --mono:'JetBrains Mono',monospace;
+  --r:8px;
+}
+body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100vh;font-size:13px}
 
-function normalize(val){
-  return String(val || '').trim().toUpperCase();
+/* HEADER */
+#hdr{background:var(--navy);height:56px;display:flex;align-items:center;
+  justify-content:space-between;padding:0 18px;position:sticky;top:0;z-index:600;
+  box-shadow:0 2px 10px rgba(0,0,0,.4)}
+.hb{display:flex;align-items:center;gap:10px}
+.hic{width:32px;height:32px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);
+  border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:16px}
+.htit{font-size:14px;font-weight:700;letter-spacing:-.3px;color:#f8fafc}
+.hsub{font-size:9.5px;color:#64748b;letter-spacing:.8px;text-transform:uppercase}
+.hst{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.08);
+  padding:4px 12px;border-radius:6px;font-family:var(--mono);font-size:11px;color:#94a3b8}
+
+/* TOOLBAR */
+#tbar{background:var(--sur);border-bottom:1px solid var(--bdr);
+  padding:9px 18px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:5px;padding:7px 14px;border-radius:6px;
+  font-size:12px;font-weight:600;border:none;cursor:pointer;transition:.15s;
+  white-space:nowrap;font-family:var(--sans)}
+.btn:active{transform:scale(.97)}
+.bp{background:var(--blue2);color:#fff}.bp:hover{background:#1e40af}
+.bk{background:var(--grn);color:#fff}.bk:hover{background:#15803d}
+.bw{background:var(--amb);color:#fff}.bw:hover{background:#b45309}
+.bg{background:none;color:var(--tx2);border:1px solid var(--bdr2)}.bg:hover{background:var(--sur2)}
+.bd{background:none;color:var(--pur);border:1px solid #c4b5fd;font-size:11px}.bd:hover,.bd.on{background:var(--plt)}
+.br{background:none;color:var(--red);border:1px solid var(--red)}.br:hover{background:var(--rlt)}
+.sp{flex:1}
+
+/* PROGRESS */
+#prog{display:none;background:var(--navy2);padding:7px 18px}
+.ptxt{font-size:11px;color:#94a3b8;font-family:var(--mono);margin-bottom:3px}
+.ptrk{height:3px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden}
+.pbar{height:100%;width:0;background:linear-gradient(90deg,#3b82f6,#06b6d4,#3b82f6);
+  background-size:200%;animation:sh 1.5s linear infinite;border-radius:2px;transition:width .25s}
+@keyframes sh{0%{background-position:200% 0}100%{background-position:0 0}}
+
+/* BADGE ROW */
+#brow{background:var(--sur2);border-bottom:1px solid var(--bdr);
+  padding:6px 18px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;min-height:36px}
+.badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;
+  border-radius:20px;font-size:10px;font-weight:700;letter-spacing:.4px}
+.badge span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px}
+.bfw{background:var(--blt);color:var(--blue2)}
+.brv{background:#fce7f3;color:#be185d}
+.blm{background:var(--glt);color:#166534}
+.bsh{background:var(--alt);color:#92400e}
+.ber{background:var(--rlt);color:var(--red)}
+.bun{background:#f1f5f9;color:#64748b;border:1px dashed var(--bdr2)}
+.unk-wrap{display:inline-flex;align-items:center;gap:5px;padding:3px 6px 3px 10px;
+  border-radius:20px;border:1px dashed var(--bdr2);background:#f1f5f9;
+  font-size:10px;font-weight:700;color:#64748b}
+.unk-wrap select{font-size:10px;padding:1px 4px;border-radius:4px;
+  border:1px solid var(--bdr2);background:#fff;color:#334155;
+  cursor:pointer;font-family:var(--sans);font-weight:600;outline:none}
+
+/* DEBUG */
+#dpnl{display:none;background:#0d1117;color:#8b949e;font-family:var(--mono);
+  font-size:11px;padding:12px 18px;border-bottom:2px solid #21262d;
+  max-height:280px;overflow-y:auto;line-height:1.8}
+#dpnl h4{color:#58a6ff;margin-bottom:8px;font-weight:600}
+.df{padding:8px 10px;margin-bottom:6px;background:rgba(255,255,255,.03);
+  border:1px solid #21262d;border-radius:4px}
+.dfok{border-left:3px solid #3fb950}.dfwn{border-left:3px solid #d29922}.dfer{border-left:3px solid #f85149}
+.dn{color:#e6edf3;font-weight:600}
+.dg{color:#3fb950}.dy{color:#d29922}.dr{color:#f85149}
+.dc{color:#484f58;margin-top:3px;font-size:10px;word-break:break-all;line-height:1.6}
+.dm{color:#388bfd;margin-top:2px;font-size:10px}
+
+/* SUMMARY */
+#sbar{background:var(--sur);border-bottom:2px solid var(--bdr);display:flex;overflow-x:auto}
+.si{flex:1;min-width:95px;padding:11px 14px;text-align:center;border-right:1px solid var(--bdr)}
+.si:last-child{border-right:none}
+.sv{font-size:21px;font-weight:700;font-family:var(--mono);letter-spacing:-.5px}
+.sv.cb{color:var(--blue2)}.sv.cr{color:var(--red)}.sv.cg{color:var(--grn)}
+.sv.ca{color:var(--amb)}.sv.cp{color:var(--pur)}
+.sk{font-size:9px;color:var(--tx3);text-transform:uppercase;letter-spacing:.8px;margin-top:2px}
+
+/* TABS */
+#tabbar{background:var(--sur);border-bottom:2px solid var(--bdr);
+  display:flex;overflow-x:auto;padding:0 18px;scrollbar-width:thin}
+.tab{padding:10px 13px;font-size:11px;font-weight:600;color:var(--tx3);background:none;
+  border:none;border-bottom:3px solid transparent;cursor:pointer;white-space:nowrap;
+  transition:.15s;font-family:var(--sans);margin-bottom:-2px}
+.tab:hover{color:var(--blue2);background:var(--bbg)}
+.tab.active{color:var(--blue2);border-bottom-color:var(--blue2)}
+.tn{display:inline-block;background:currentColor;color:#fff;width:15px;height:15px;
+  border-radius:3px;font-size:8.5px;font-weight:700;line-height:15px;
+  text-align:center;margin-right:4px;opacity:.7}
+.tab.active .tn,.tab:hover .tn{opacity:1}
+
+/* CONTENT */
+#content{padding:18px}
+.panel{display:none}.panel.active{display:block}
+
+/* CARD */
+.card{background:var(--sur);border:1px solid var(--bdr);border-radius:var(--r);
+  overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.07)}
+.chead{background:var(--navy2);color:#e2e8f0;padding:13px 16px;
+  display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.ct{font-size:13px;font-weight:700;letter-spacing:.3px}
+.cm{display:flex;align-items:center;gap:8px}
+.cbg{font-size:10px;background:rgba(255,255,255,.1);color:#94a3b8;
+  padding:2px 8px;border-radius:4px;font-family:var(--mono);font-weight:600}
+.cc{font-size:12px;font-weight:700;font-family:var(--mono);color:#60a5fa}
+.cpill{font-size:9.5px;background:rgba(96,165,250,.15);color:#93c5fd;
+  padding:2px 7px;border-radius:10px;font-weight:600;margin-left:4px}
+
+/* TABLE */
+.tsc{overflow-x:auto;max-height:400px;overflow-y:auto;border-bottom:1px solid var(--bdr)}
+.tbl{width:100%;border-collapse:collapse;font-size:11.5px}
+.tbl thead th{background:var(--navy2);color:#cbd5e1;padding:9px 11px;text-align:right;
+  font-weight:600;white-space:nowrap;position:sticky;top:0;z-index:4;
+  font-size:10.5px;border-right:1px solid var(--navy3)}
+.tbl thead th:first-child{text-align:left;position:sticky;left:0;z-index:5;
+  background:var(--navy2);min-width:148px;border-right:2px solid var(--navy3)}
+.tbl thead th:last-child{border-right:none}
+.tbl tbody tr:nth-child(even) td{background:var(--sur2)}
+.tbl tbody tr:hover td{background:#eff6ff!important}
+.tbl tbody td{padding:7px 11px;text-align:right;border-bottom:1px solid var(--bdr);
+  border-right:1px solid #f1f5f9;font-family:var(--mono);white-space:nowrap;font-size:11px}
+.tbl tbody td:first-child{text-align:left;font-family:var(--sans);font-weight:600;
+  font-size:12px;background:var(--sur);position:sticky;left:0;
+  border-right:2px solid var(--bdr);z-index:2;min-width:148px}
+.tbl tbody tr:nth-child(even) td:first-child{background:var(--sur2)}
+.tbl tbody tr:hover td:first-child{background:#eff6ff!important}
+.tbl tbody td:last-child{border-right:none;font-weight:700}
+.tbl tfoot td{background:var(--navy2)!important;color:#e2e8f0!important;
+  font-weight:700;padding:8px 11px;border-right:1px solid var(--navy3);
+  font-family:var(--mono);font-size:11px;position:sticky;bottom:0;z-index:3}
+.tbl tfoot td:first-child{position:sticky;left:0;z-index:4;font-family:var(--sans);
+  font-size:12px;background:var(--navy2)!important;border-right:2px solid var(--navy3)}
+.tbl tfoot td:last-child{border-right:none}
+
+/* CONDITIONAL FORMATTING */
+.cup{background:#fef2f2!important;color:#991b1b;font-weight:800}
+.cdn{background:#f0fdf4!important;color:#15803d}
+.czr{color:#e2e8f0}
+
+/* DC DROPDOWN IN CHART AREA */
+.ctoolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px}
+.ctoolbar-lbl{font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.8px}
+.dc-select{font-size:11px;padding:4px 8px;border-radius:5px;border:1px solid var(--bdr2);
+  background:var(--sur);color:var(--tx);font-family:var(--sans);cursor:pointer;
+  font-weight:600;outline:none;min-width:160px;max-width:260px}
+.dc-select:focus{border-color:var(--blue2);box-shadow:0 0 0 2px rgba(37,99,235,.12)}
+
+/* SUMMARY TABLE — kept for potential re-use but hidden */
+.stbl-wrap{padding:14px 16px;background:var(--sur2);border-bottom:1px solid var(--bdr)}
+.stbl-title{font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;
+  letter-spacing:.8px;margin-bottom:10px}
+.stbl{width:100%;border-collapse:collapse;font-size:11.5px}
+.stbl thead th{background:var(--navy3);color:#cbd5e1;padding:8px 11px;text-align:right;
+  font-weight:600;white-space:nowrap;font-size:10.5px;border-right:1px solid var(--navy3)}
+.stbl thead th:first-child{text-align:left;min-width:140px;border-right:2px solid #475569}
+.stbl thead th:last-child{border-right:none}
+.stbl tbody td{padding:6px 11px;text-align:right;border-bottom:1px solid var(--bdr);
+  border-right:1px solid #f1f5f9;font-family:var(--mono);font-size:11px;white-space:nowrap}
+.stbl tbody td:first-child{text-align:left;font-family:var(--sans);font-weight:600;
+  font-size:11.5px;border-right:2px solid var(--bdr)}
+.stbl tbody td:last-child{border-right:none;font-weight:700}
+.stbl tfoot td{background:var(--navy3)!important;color:#e2e8f0!important;
+  font-weight:700;padding:7px 11px;border-right:1px solid #475569;
+  font-family:var(--mono);font-size:11px}
+.stbl tfoot td:first-child{font-family:var(--sans);font-size:11.5px;border-right:2px solid #475569}
+.stbl tfoot td:last-child{border-right:none}
+
+/* TREND CHART (replaces summary table) */
+.tarea{padding:16px 18px 20px;background:#f4f7fb;border-bottom:1px solid var(--bdr)}
+.twrap{position:relative;height:240px;background:#f4f7fb}
+
+/* CHART */
+.carea{padding:14px 16px 18px}
+.clbl{font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;
+  letter-spacing:.8px;margin-bottom:10px}
+.cwrap{position:relative;height:200px}
+
+/* LEGEND */
+.leg{display:flex;gap:14px;padding:9px 16px;background:var(--sur2);
+  border-top:1px solid var(--bdr);font-size:11px;flex-wrap:wrap;align-items:center}
+.lc{display:inline-flex;align-items:center;gap:5px;color:var(--tx2);font-weight:500}
+.lb{width:12px;height:12px;border-radius:2px;flex-shrink:0}
+.lu{background:var(--rlt);border:1px solid #fca5a5}
+.ld{background:var(--glt);border:1px solid #86efac}
+
+/* EMPTY */
+.empty{text-align:center;padding:52px 20px;color:var(--tx3)}
+.ei{font-size:44px;margin-bottom:12px}
+.et{font-size:15px;font-weight:600;color:var(--tx2);margin-bottom:8px}
+.em{font-size:12px;line-height:1.9;max-width:400px;margin:0 auto}
+
+/* TOAST */
+#toast{position:fixed;bottom:18px;right:18px;padding:11px 16px;border-radius:8px;
+  font-size:12px;font-weight:600;z-index:9999;max-width:420px;
+  box-shadow:0 4px 20px rgba(0,0,0,.25);transform:translateY(100px);opacity:0;
+  transition:all .35s cubic-bezier(.34,1.56,.64,1);pointer-events:none;line-height:1.6}
+#toast.show{transform:translateY(0);opacity:1}
+#toast.ti{background:#1e293b;color:#e2e8f0;border-left:4px solid #3b82f6}
+#toast.tok{background:#14532d;color:#bbf7d0;border-left:4px solid #22c55e}
+#toast.te{background:#7f1d1d;color:#fecaca;border-left:4px solid #ef4444}
+#toast.tw{background:#78350f;color:#fde68a;border-left:4px solid #f59e0b}
+
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
+</style>
+</head>
+<body>
+
+<header id="hdr">
+  <div class="hb">
+    <div class="hic">📦</div>
+    <div>
+      <div class="htit">Logistics Analytics Dashboard</div>
+      <div class="hsub">AWB Pendency Intelligence System</div>
+    </div>
+  </div>
+  <span class="hst" id="hst">No data loaded</span>
+</header>
+
+<div id="tbar">
+  <input type="file" id="fi" multiple accept=".csv,.xlsx,.xls" style="display:none">
+  <button class="btn bp" onclick="document.getElementById('fi').click()">📂 Upload Files</button>
+  <button class="btn bk" onclick="onSave()">💾 Save to Master</button>
+  <button class="btn bw" onclick="onExport()">⬇ Export Backup</button>
+  <button class="btn bg" onclick="document.getElementById('ii').click()">📥 Import Backup</button>
+  <input type="file" id="ii" accept=".json" style="display:none">
+  <div class="sp"></div>
+  <button class="btn bd" id="dbgbtn" onclick="toggleDebug()">🔍 Debug</button>
+  <button class="btn br" onclick="onClear()">🗑 Clear All</button>
+</div>
+
+<div id="prog">
+  <div class="ptxt" id="ptxt">Processing…</div>
+  <div class="ptrk"><div class="pbar" id="pbar"></div></div>
+</div>
+
+<div id="brow"><span style="color:#94a3b8;font-size:11px">Upload CSV or Excel files — raw data or pre-aggregated pivot formats are both supported</span></div>
+
+<div id="dpnl"><h4>🔍 Detection + Processing Log</h4><div id="dlog"><em>No files processed yet.</em></div></div>
+
+<div id="sbar">
+  <div class="si"><div class="sv cb" id="sf">0</div><div class="sk">Forward AWBs</div></div>
+  <div class="si"><div class="sv cr" id="sr">0</div><div class="sk">Reverse AWBs</div></div>
+  <div class="si"><div class="sv cg" id="sl">0</div><div class="sk">LMODC AWBs</div></div>
+  <div class="si"><div class="sv ca" id="ss">0</div><div class="sk">Short Ship AWBs</div></div>
+  <div class="si"><div class="sv cp" id="sd">0</div><div class="sk">Days Tracked</div></div>
+  <div class="si"><div class="sv cb" id="st">0</div><div class="sk">Grand Total</div></div>
+</div>
+
+<div id="tabbar">
+  <button class="tab active" onclick="sw(0)"><span class="tn">1</span>D3 FWD R@DC</button>
+  <button class="tab" onclick="sw(1)"><span class="tn">2</span>D6 FWD R@DC</button>
+  <button class="tab" onclick="sw(2)"><span class="tn">3</span>BIN2 SUCCESS</button>
+  <button class="tab" onclick="sw(3)"><span class="tn">4</span>BIN1 SUCCESS</button>
+  <button class="tab" onclick="sw(4)"><span class="tn">5</span>D3 REVERSE</button>
+  <button class="tab" onclick="sw(5)"><span class="tn">6</span>D10 REVERSE</button>
+  <button class="tab" onclick="sw(6)"><span class="tn">7</span>D3 LMODC</button>
+  <button class="tab" onclick="sw(7)"><span class="tn">8</span>D6 LMODC</button>
+  <button class="tab" onclick="sw(8)"><span class="tn">9</span>D10 LMODC</button>
+  <button class="tab" onclick="sw(9)"><span class="tn">10</span>D3 SHORT SHIP</button>
+  <button class="tab" onclick="sw(10)"><span class="tn">11</span>D6 SHORT SHIP</button>
+</div>
+
+<div id="content"><div id="panels"></div></div>
+<div id="toast"></div>
+
+<script>
+'use strict';
+
+/* ═══════════════════════════════════════════════
+   SECTION DEFINITIONS
+═══════════════════════════════════════════════ */
+const SECS=[
+  {title:'D3 FWD R@DC TRENDS',    badge:'AGE=3 · PIVOT=R@DC',              src:'forward',      age:3               },
+  {title:'D6 FWD R@DC TRENDS',    badge:'AGE=6 · PIVOT=R@DC',              src:'forward',      age:6               },
+  {title:'FWD BIN2 SUCCESS',      badge:'AGE=3 · BIN=2 · MSG=SUCCESS · ORDER≠IN_MANIFEST',src:'forward',      age:3,bin:2,msg:'SUCCESS'},
+  {title:'FWD BIN1 SUCCESS',      badge:'AGE=3 · BIN=1 · MSG=SUCCESS · ORDER≠IN_MANIFEST',src:'forward',      age:3,bin:1,msg:'SUCCESS'},
+  {title:'D3 REVERSE (RVP)',      badge:'AGE=3 · R@DC · CLIENT FILT.',     src:'reverse',      age:3               },
+  {title:'D10 REVERSE (RVP)',     badge:'AGE=10 · R@DC · CLIENT FILT.',    src:'reverse',      age:10              },
+  {title:'D3 LMODC',              badge:'AGE=3 · DESTINATION PIVOT',        src:'lmodc',        age:3               },
+  {title:'D6 LMODC',              badge:'AGE=6 · DESTINATION PIVOT',        src:'lmodc',        age:6               },
+  {title:'D10 LMODC',             badge:'AGE=10 · DESTINATION PIVOT',       src:'lmodc',        age:10              },
+  {title:'D3 FWD SHORT SHIP',     badge:'AGE=3 · SHORT SHIPMENT',           src:'forwardShort', age:3               },
+  {title:'D6 FWD SHORT SHIP',     badge:'AGE=6 · SHORT SHIPMENT',           src:'forwardShort', age:6               },
+];
+const CPALS=['#2563eb','#dc2626','#16a34a','#d97706','#7c3aed','#0891b2','#be185d','#0e7490','#ca8a04'];
+
+/* ═══════════════════════════════════════════════
+   STATE
+═══════════════════════════════════════════════ */
+const SKEY='logistics_v12';
+let master=loadM(),activeTab=0,charts={},debugMode=false,dlog=[],pending={};
+
+function emptyM(){return{forward:[],reverse:[],lmodc:[],forwardShort:[]}}
+function loadM(){
+  try{const r=localStorage.getItem(SKEY);return r?Object.assign(emptyM(),JSON.parse(r)):emptyM()}
+  catch{return emptyM()}
+}
+function persistM(){
+  try{localStorage.setItem(SKEY,JSON.stringify(master));return true}
+  catch{toast('Storage full — export first','te');return false}
 }
 
-function isPivotFmt(headers){
-  const h = headers.map(x => normalize(x));
-  return h.includes('GRAND TOTAL') || h.includes('TOTAL');
+/* ═══════════════════════════════════════════════
+   NORMALISATION HELPERS
+═══════════════════════════════════════════════ */
+// Normalise a column/header name
+function ns(s){
+  return String(s==null?'':s)
+    .replace(/^\uFEFF/,'').replace(/[\u00A0\u202F\u2009\u200B-\u200D]/g,' ')
+    .trim().toLowerCase().replace(/[\s_\-\.\/\\]+/g,' ').trim();
+}
+// Normalise a DATA VALUE (for filter comparisons)
+function nv(s){
+  return String(s==null?'':s).replace(/^\uFEFF/,'').trim()
+    .toUpperCase().replace(/[\s\-\.]+/g,'_');
+}
+function meq(a,b){return ns(a)===ns(b)}
+function mall(h,...kw){const n=ns(h);return kw.every(k=>n.includes(k))}
+function hasE(hdrs,...tgts){return tgts.some(t=>hdrs.some(h=>meq(h,t)))}
+function hasF(hdrs,...kw){return hdrs.some(h=>mall(h,...kw))}
+
+/* Get cell value from row — BOM-safe */
+function gv(row,...names){
+  const keys=Object.keys(row);
+  for(const name of names){
+    const k=keys.find(k=>meq(k,name));
+    if(k!==undefined){const v=String(row[k]??'').trim();if(v)return v;}
+  }
+  return '';
+}
+function gn(row,...names){const v=parseFloat(gv(row,...names));return isNaN(v)?0:v;}
+function cleanH(arr){
+  return(arr||[]).map(h=>String(h==null?'':h)
+    .replace(/^\uFEFF/,'').replace(/\u00A0/g,' ').trim());
+}
+/* ═══════════════════════════════════════════════
+   FORMAT DETECTION
+   "Pivot format" = column headers include ≥2
+   pure-numeric values (age buckets like 3,4,5,6…)
+   Pivot sheets inside Forward/Reverse → SKIP.
+   Pivot sheets inside LMODC/Short → PROCESS.
+═══════════════════════════════════════════════ */
+function isPivotFmt(hdrs){
+  const numCols=hdrs.filter(h=>/^\d+(\.\d+)?$/.test(String(h).trim()));
+  return numCols.length>=2;
+}
+
+/* Parse a numeric count (handles formatted strings like "1,234") */
+function parseCount(v){
+  if(v==null||v==='')return 0;
+  const n=parseInt(String(v).replace(/[^0-9\-]/g,''),10);
+  return isNaN(n)||n<0?0:n;
+}
+
+/* Extract age-bucket columns from pivot headers */
+function getAgeCols(hdrs){
+  return hdrs
+    .filter(h=>/^\d+(\.\d+)?$/.test(String(h).trim()))
+    .map(h=>({col:h,age:parseFloat(h)}))
+    .sort((a,b)=>a.age-b.age);
+}
+
+/* Find the location/label column in a pivot sheet */
+function getLocCol(hdrs){
+  return hdrs.find(h=>{
+    const s=String(h).trim();
+    return s&&!/^\d+(\.\d+)?$/.test(s)&&ns(s)!=='grand total';
+  })||hdrs[0];
+}
+
+/* Expand a pivot-format sheet into individual age+location records */
+function processPivot(rows,type,date,hdrs,agg){
+  const ageCols=getAgeCols(hdrs);
+  const locCol=getLocCol(hdrs);
+  const destKey=type==='lmodc'?'destination':'location';
+  if(!ageCols.length)return;
+  for(const row of rows){
+    const rawLoc=String(row[locCol]??'').trim();
+    if(!rawLoc)continue;
+    const locN=ns(rawLoc);
+    if(locN==='grand total'||locN==='row labels'||locN==='total'||locN==='')continue;
+    const locUC=rawLoc.toUpperCase();
+    for(const {col,age} of ageCols){
+      const count=parseCount(row[col]);
+      if(count<=0)continue;
+      const k=`${age}|${locUC}`;
+      if(!agg[k]){
+        const rec={date,age,count:0,fromPivot:true};
+        rec[destKey]=locUC;
+        if(type==='reverse')rec.client='ALL';
+        agg[k]=rec;
+      }
+      agg[k].count+=count;
+    }
+  }
+}
+
+/* ═══════════════════════════════════════════════
+   APPLY ROWS
+   Forward/Reverse: SKIP pivot sheets (raw data req.)
+   LMODC/Short:     PROCESS pivot sheets (pre-agg.)
+   Raw format:      process for all types
+═══════════════════════════════════════════════ */
+function applyRows(rows,type,date,hdrs){
+  const pivotFormat=isPivotFmt(hdrs);
+
+  // Forward/Reverse pivot sheets → skip, raw data must come from another sheet
+  if(pivotFormat&&(type==='forward'||type==='reverse')){
+    return{awbs:0,pivot:true,records:0,skipped:true};
+  }
+
+  const agg={};
+  if(pivotFormat){
+    // LMODC / ForwardShort: legitimately pre-aggregated pivot files
+    processPivot(rows,type,date,hdrs,agg);
+  }else{
+    for(const row of rows){
+      if(!Object.values(row).some(v=>String(v).trim()))continue;
+      dispatchRaw(type,row,date,agg);
+    }
+  }
+  const recs=Object.values(agg);
+  master[type]=(master[type]||[]).filter(r=>r.date!==date);
+  master[type].push(...recs);
+  const awbs=recs.reduce((s,r)=>s+r.count,0);
+  return{awbs,pivot:pivotFormat,records:recs.length};
+}
+// FORWARD: Pivot=RECEIVED_AT_DC, order_status≠IN_MANIFEST
+// Bin stored but NOT filtered here — bin filter for BIN1/BIN2 sections is in buildPivot
+function pFwd(row,date,agg){
+  const pivot=nv(gv(row,'pivot','Pivot'));
+  if(pivot!=='RECEIVED_AT_DC')return;
+  const os=nv(gv(row,'order_status','order status','orderstatus',
+    'Order_status','Order_Status'));
+  if(os==='IN_MANIFEST')return;
+  const binStr=gv(row,'bin_level','bin level','binlevel',
+    'Bin_Level','Bin_level','BinLevel','bin','Bin');
+  const bin=parseInt(binStr,10)||0;   // 0 = no bin info
+  const age=gn(row,'ageing_from_bag_rec','ageing from bag rec',
+    'Ageing_from_Bag_Rec','Ageing_From_Bag_Rec','Ageing from Bag Rec',
+    'ageingfrombagrec','ageing','Ageing','age','Age');
+  const loc=(gv(row,'current_location','current location','currentlocation',
+    'Current_location','Current_Location','CurrentLocation','location','Location')
+    ||'UNKNOWN').toUpperCase();
+  const msg=nv(gv(row,'message','Message','msg','Msg'));
+  const k=`${age}|${loc}|${bin}|${msg}`;
+  if(!agg[k])agg[k]={date,age,location:loc,bin,msg,count:0};
+  agg[k].count++;
+}
+
+// REVERSE: Reason of Loss = RECEIVED_AT_DC or MISROUTED, exclude FTPL/Meesho Regional
+function pRev(row,date,agg){
+  const reason=nv(gv(row,
+    'reason of loss','reason_of_loss','reasonofloss',
+    'reason of Loss','Reason of loss','Reason of Loss','Reason Of Loss',
+    'reason for loss','reason_for_loss',
+    'reason of return','reason_of_return','return reason',
+    'loss reason','remark','remarks'));
+  if(reason!=='RECEIVED_AT_DC'&&reason!=='MISROUTED')return;
+  const client=gv(row,'client','Client','CLIENT','client name','Client Name')||'UNKNOWN';
+  const cu=client.toUpperCase();
+  if(cu.includes('FTPL')&&cu.includes('REGIONAL'))return;
+  if(cu.includes('MEESHO')&&cu.includes('REGIONAL'))return;
+  const age=gn(row,'ageing','Ageing','age','Age',
+    'ageing_from_bag_rec','Ageing_from_Bag_Rec');
+  const loc=(gv(row,'current_location','Current_location','current location',
+    'currentlocation','location','Location')||'UNKNOWN').toUpperCase();
+  const k=`${age}|${loc}|${client}`;
+  if(!agg[k])agg[k]={date,age,location:loc,client,count:0};
+  agg[k].count++;
+}
+
+// LMODC: map destination + age
+function pLM(row,date,agg){
+  const age=gn(row,'ageing','Ageing','age','Age');
+  const dest=(gv(row,'destination_name','destination name','destinationname',
+    'Destination_name','Destination_Name','DestinationName','destination','Destination')
+    ||'UNKNOWN').toUpperCase();
+  const k=`${age}|${dest}`;
+  if(!agg[k])agg[k]={date,age,destination:dest,count:0};
+  agg[k].count++;
+}
+
+// FORWARD SHORT: all rows (no manifest_status filter per updated spec)
+function pSh(row,date,agg){
+  const age=gn(row,'ageing_from_bag_rec','Ageing_from_Bag_Rec',
+    'ageing from bag rec','ageing','Ageing','age','Age');
+  const loc=(gv(row,'current_location','Current_location','location','Location')
+    ||'UNKNOWN').toUpperCase();
+  const k=`${age}|${loc}`;
+  if(!agg[k])agg[k]={date,age,location:loc,count:0};
+  agg[k].count++;
+}
+
+function dispatchRaw(type,row,date,agg){
+  if(type==='forward')     pFwd(row,date,agg);
+  else if(type==='reverse')     pRev(row,date,agg);
+  else if(type==='lmodc')       pLM(row,date,agg);
+  else if(type==='forwardShort')pSh(row,date,agg);
+}
+
+/* ═══════════════════════════════════════════════
+   APPLY ROWS
+   CRITICAL: Pivot/aggregated sheets are SKIPPED.
+   Only raw row-per-AWB data is processed.
+═══════════════════════════════════════════════ */
+function applyRows(rows,type,date,hdrs){
+  // If headers look like a pivot table (numeric age-bucket columns), skip entirely
+  if(isPivotFmt(hdrs))return{awbs:0,pivot:true,records:0,skipped:true};
+
+  const agg={};
+  for(const row of rows){
+    if(!Object.values(row).some(v=>String(v).trim()))continue;
+    dispatchRaw(type,row,date,agg);
+  }
+  const recs=Object.values(agg);
+  master[type]=(master[type]||[]).filter(r=>r.date!==date);
+  master[type].push(...recs);
+  const awbs=recs.reduce((s,r)=>s+r.count,0);
+  return{awbs,pivot:false,records:recs.length};
+}
+
+/* ═══════════════════════════════════════════════
+   DATE EXTRACTION FROM FILENAME
+═══════════════════════════════════════════════ */
+function xDate(fn){
+  const n=fn.replace(/\.[^.]+$/,'').replace(/[_\s\.]/g,'-');
+  let m;
+  m=n.match(/(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)/);
+  if(m&&+m[2]<=12&&+m[3]<=31)return`${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  m=n.match(/(\d{1,2})-(\d{1,2})-(\d{4})(?!\d)/);
+  if(m&&+m[2]<=12&&+m[1]<=31)return`${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+  m=n.replace(/-/g,'').match(/(?<!\d)(\d{4})(\d{2})(\d{2})(?!\d)/);
+  if(m&&+m[1]>=2000&&+m[2]<=12&&+m[3]<=31)return`${m[1]}-${m[2]}-${m[3]}`;
+  const d=new Date();
+  return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
 /* ═══════════════════════════════════════════════
    FILE TYPE IDENTIFICATION
+   Priority: filename keywords → column headers
 ═══════════════════════════════════════════════ */
-
-function identifyFileType(fileName, headers){
-  const name = fileName.toLowerCase();
-  const h = headers.map(x => normalize(x));
-
-  if(name.includes('lmodc') || h.includes('LMODC')) return 'lmodc';
-  if(name.includes('short') || h.includes('SHORT SHIPMENT')) return 'forwardShort';
-
-  if(h.includes('REASON OF LOSS')) return 'reverse';
-  if(h.includes('PIVOT') || h.includes('RECEIVED AT DC')) return 'forward';
-
-  throw new Error('Unknown file type');
+function idByName(filename){
+  const w=new Set(filename.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim().split(/\s+/));
+  if(w.has('lmodc'))return'lmodc';
+  if(['reverse','rvp','rto','rtd','rtl','rtns','return'].some(x=>w.has(x)))return'reverse';
+  if(['short','shortship','partial'].some(x=>w.has(x)))return'forwardShort';
+  if(['forward','fwd','forwardb','fwdb'].some(x=>w.has(x)))return'forward';
+  return null;
+}
+function idByHdrs(hdrs){
+  if(hasE(hdrs,'scanned_area_code','scanned area code','scannedareacode')||
+     hasF(hdrs,'scanned','area'))return'lmodc';
+  const RC=['reason of loss','reason_of_loss','reasonofloss',
+    'reason of Loss','Reason of loss','Reason of Loss','Reason Of Loss',
+    'reason for loss','reason_for_loss','reason of return','reason_of_return',
+    'return reason','loss reason','lossreason'];
+  if(hasE(hdrs,...RC)||hdrs.some(h=>mall(h,'reason','loss')||mall(h,'reason','return')))
+    return'reverse';
+  // Per spec: Pivot column exists → ALWAYS Forward.
+  // Short Shipment requires actual row values of Manifest_status=PARTIALLY_CLOSED,
+  // which cannot be determined from headers alone — use filename keywords only.
+  if(hdrs.some(h=>ns(h)==='pivot'))return'forward';
+  return null;
+}
+function identify(hdrs,filename){
+  const byN=idByName(filename);
+  const byH=idByHdrs(hdrs);
+  // forwardShort has the SAME column structure as forward (both have Pivot).
+  // Only the filename reliably distinguishes them — give it top priority.
+  if(byN==='forwardShort')return{type:'forwardShort',how:'filename'};
+  // For all other types, headers are more precise than filename.
+  if(byH)return{type:byH,how:'headers'+(byN===byH?'+filename':'')};
+  if(byN)return{type:byN,how:'filename'};
+  return{type:null,how:'undetected'};
 }
 
 /* ═══════════════════════════════════════════════
-   RAW ROW PROCESSING
+   SMART HEADER-ROW FINDER (for Excel)
+   Scores each of the first 15 rows and picks the
+   one most likely to contain column headers.
 ═══════════════════════════════════════════════ */
+const HKEYS=['pivot','ageing','reason','loss','scanned','destination','bin',
+  'location','order','status','message','client','manifest','current',
+  'awb','shipment','bag','rec','area','code','return','row','labels'];
+function findHdrRow(raw){
+  let best=0,bestScore=-1;
+  // Scan up to 25 rows to find the real header row (handles files with title rows above data)
+  for(let i=0;i<Math.min(25,raw.length);i++){
+    const row=raw[i];
+    if(!row||!row.some(c=>String(c||'').trim()))continue;
+    const hn=row.map(h=>ns(String(h||'')));
+    let sc=hn.filter(h=>h).length;
+    HKEYS.forEach(k=>{if(hn.some(h=>h.includes(k)))sc+=6;});
+    if(sc>bestScore){bestScore=sc;best=i;}
+  }
+  return best;
+}
 
-function dispatchRaw(type,row,date,agg){
+/* ═══════════════════════════════════════════════
+   ROBUST EXCEL READER
+   typeHint guides sheet selection:
+   • forward/reverse → prefer raw (non-pivot) sheets
+   • lmodc/forwardShort → prefer pivot sheets
+   Tries ArrayBuffer strategies first, then falls
+   back to BinaryString for large/complex files.
+═══════════════════════════════════════════════ */
+function readExcel(buf,typeHint,binStr){
+  // preferPivot: LMODC and Short files are legitimately pivot-format
+  const preferPivot=typeHint==='lmodc'||typeHint==='forwardShort';
 
-  const awb = normalize(row['AWB'] || row['awb'] || row['tracking']);
-  if(!awb) return;
+  const tryWB=(opts,type)=>{
+    try{return XLSX.read(buf,Object.assign({type:type||'array',bookVBA:false,bookProps:false},opts));}
+    catch(e){console.warn('XLSX.read failed:',e.message);return null;}
+  };
+  const tryJson=(ws,opts={})=>{
+    if(!ws)return[];
+    try{return XLSX.utils.sheet_to_json(ws,Object.assign({header:1,defval:''},opts))||[];}
+    catch(e){console.warn('sheet_to_json failed:',e.message);return[];}
+  };
+  const tryCSVSheet=(ws)=>{
+    if(!ws)return[];
+    try{
+      const csv=XLSX.utils.sheet_to_csv(ws,{blankrows:false});
+      if(!csv||!csv.replace(/,/g,'').trim())return[];
+      const r=Papa.parse(csv,{header:false,skipEmptyLines:true,delimiter:','});
+      return r.data||[];
+    }catch(e){return[];}
+  };
+  // Check up to 100 rows to handle files with many title/header rows at top
+  const hasData=r=>{
+    if(!r||r.length<2)return false;
+    const limit=Math.min(r.length,100);
+    for(let i=0;i<limit;i++){
+      const row=r[i];if(!row)continue;
+      const cells=Array.isArray(row)?row:Object.values(row);
+      if(cells.some(c=>String(c||'').replace(/,/g,'').trim()))return true;
+    }
+    return false;
+  };
+  const getHdrs=raw=>{
+    const hi=findHdrRow(raw);
+    return cleanH((raw[hi]||[]).map(h=>String(h==null?'':h)));
+  };
 
-  let bucket = 'D0';
+  // All strategies: fastest (raw:true / minimal) first for large files
+  const strategies=[
+    {name:'raw:true',   wopts:{raw:true},                                         jopts:{raw:true}   },
+    {name:'plain',      wopts:{},                                                  jopts:{}           },
+    {name:'raw:false',  wopts:{raw:false,cellText:false,cellDates:false},          jopts:{raw:false}  },
+    {name:'stubs',      wopts:{sheetStubs:true,raw:true},                         jopts:{raw:true}   },
+  ];
 
-  if(type === 'forward'){
-    const pivot = normalize(row['Pivot']);
-    if(!pivot.includes('RECEIVED AT DC')) return;
+  // Collect results: {raw, sheetName, strategy, isPivot}
+  let rawSheet=null,pivotSheet=null;
 
-    bucket = normalize(row['Aging'] || row['Bucket'] || 'D0');
+  const scanWorkbook=(wb,stratName)=>{
+    if(!wb||!wb.SheetNames||!wb.SheetNames.length)return;
+    for(const sn of wb.SheetNames){
+      const ws=wb.Sheets[sn];if(!ws)continue;
+      let raw=tryJson(ws,{raw:true});
+      if(!hasData(raw)){
+        // Try forcing !ref from !dim
+        if(ws['!ref']===undefined&&ws['!dim']){
+          try{ws['!ref']=ws['!dim'];}catch(_){}
+          raw=tryJson(ws,{raw:true});
+        }
+        if(!hasData(raw))raw=tryCSVSheet(ws);
+        if(!hasData(raw))continue;
+      }
+      const hdrs=getHdrs(raw);
+      const isPvt=isPivotFmt(hdrs);
+      if(isPvt&&!pivotSheet)pivotSheet={raw,sheetName:sn,strategy:stratName};
+      if(!isPvt&&!rawSheet)rawSheet={raw,sheetName:sn,strategy:stratName};
+      if(rawSheet&&pivotSheet)return; // have both, stop
+    }
+  };
+
+  // Try ArrayBuffer strategies
+  for(const s of strategies){
+    if(rawSheet&&pivotSheet)break;
+    const wb=tryWB(s.wopts,'array');
+    scanWorkbook(wb,s.name);
   }
 
-  if(type === 'reverse'){
-    const reason = normalize(row['Reason of Loss']);
-    if(!['RECEIVED AT DC','MISROUTED'].includes(reason)) return;
-
-    bucket = normalize(row['Aging'] || 'D0');
+  // If still missing what we need, try BinaryString (better for some large files)
+  if((!rawSheet&&!preferPivot)||(!pivotSheet&&preferPivot)){
+    if(binStr){
+      const wbBin=tryWB({},'binary');
+      scanWorkbook(wbBin,'binary');
+    }
   }
 
-  if(type === 'lmodc' || type === 'forwardShort'){
-    bucket = normalize(row['Aging'] || row['Bucket'] || 'D0');
-  }
+  // Return the right sheet for this file type
+  if(preferPivot)return pivotSheet||rawSheet||null;
+  return rawSheet||pivotSheet||null;
+}
 
-  const key = `${awb}_${bucket}_${date}`;
+/* ═══════════════════════════════════════════════
+   BUILD ROW OBJECTS FROM RAW ARRAY + HEADERS
+═══════════════════════════════════════════════ */
+function buildRows(raw,hi,hdrs){
+  return raw.slice(hi+1).map(r=>{
+    const obj={};
+    hdrs.forEach((h,i)=>{
+      const v=Array.isArray(r)?r[i]:r[h];
+      obj[h]=v!=null?String(v):'';
+    });
+    return obj;
+  }).filter(o=>Object.values(o).some(v=>String(v).trim()));
+}
 
-  if(!agg[key]){
-    agg[key] = {
-      awb,
-      bucket,
-      date,
-      count: 0
+/* ═══════════════════════════════════════════════
+   CSV PROCESSING  (Papa Parse streaming)
+   LMODC/Short pivot CSVs → buffered + processPivot
+   Forward/Reverse pivot CSVs → skip (wrong sheet)
+   Raw CSVs → streamed row-by-row
+═══════════════════════════════════════════════ */
+function procCSV(file){
+  return new Promise(resolve=>{
+    const date=xDate(file.name);
+    const typeHint=idByName(file.name);
+    const preferPivot=typeHint==='lmodc'||typeHint==='forwardShort';
+    let type=null,how='',hdrs=[],pivotMode=false;
+    const agg={};
+    const pivotBuf=[];
+    let rowCount=0,skipped=false;
+
+    Papa.parse(file,{
+      header:true,skipEmptyLines:true,
+      transformHeader:h=>String(h==null?'':h).replace(/^\uFEFF/,'').replace(/\u00A0/g,' ').trim(),
+      chunk(res){
+        if(!hdrs.length){
+          const f=res.meta&&res.meta.fields;
+          hdrs=cleanH(f&&f.length?f:Object.keys(res.data[0]||{}));
+          if(hdrs.length){
+            const isPvt=isPivotFmt(hdrs);
+            // Skip pivot CSVs for forward/reverse (need raw data)
+            if(isPvt&&!preferPivot){skipped=true;return;}
+            pivotMode=isPvt&&preferPivot;
+            const r=identify(hdrs,file.name);
+            type=r.type;how=r.how;
+          }
+        }
+        if(skipped||!type)return;
+        for(const row of res.data){
+          if(!Object.values(row).some(v=>String(v).trim()))continue;
+          if(pivotMode)pivotBuf.push(row);
+          else{dispatchRaw(type,row,date,agg);rowCount++;}
+        }
+        if(!pivotMode)setP(-1,`⚙  ${file.name} — ${fn(rowCount)} rows`);
+      },
+      complete(){
+        let awbs=0;
+        if(skipped){
+          dlog.push({name:file.name,hdrs,type:'skipped',how:'pivot-CSV skipped',date,rows:0,awbs:0});
+          resolve({name:file.name,type:'skipped',date,rows:0,awbs:0,hdrs,how:'pivot-skipped'});
+          return;
+        }
+        if(type){
+          if(pivotMode){
+            processPivot(pivotBuf,type,date,hdrs,agg);
+            rowCount=pivotBuf.length;
+          }
+          const recs=Object.values(agg);
+          master[type]=(master[type]||[]).filter(r=>r.date!==date);
+          master[type].push(...recs);
+          awbs=recs.reduce((s,r)=>s+r.count,0);
+        }
+        const fmt=pivotMode?'pivot-aggregated':'raw-rows';
+        dlog.push({name:file.name,hdrs,type,how,date,rows:rowCount,awbs,pivot:pivotMode,format:fmt});
+        resolve({name:file.name,type:type||null,date,rows:rowCount,awbs,hdrs,how,pivot:pivotMode});
+      },
+      error(err){
+        dlog.push({name:file.name,hdrs:[],type:'error',how:err.message});
+        resolve({name:file.name,type:'error',rows:0,awbs:0,err:err.message,hdrs:[]});
+      }
+    });
+  });
+}
+
+/* ═══════════════════════════════════════════════
+   EXCEL PROCESSING
+   Passes file type hint to readExcel so it selects
+   the correct sheet (raw vs pivot).
+   Falls back to BinaryString for large files where
+   ArrayBuffer strategies fail.
+═══════════════════════════════════════════════ */
+function procExcel(file){
+  return new Promise(resolve=>{
+    const date=xDate(file.name);
+    const typeHint=idByName(file.name);
+
+    const processBuffer=(buf,binStr)=>{
+      try{
+        const mb=(buf.byteLength/1048576).toFixed(1);
+        setP(15,`📊  Reading ${mb}MB: ${file.name}`);
+        if(!buf||!buf.byteLength)throw new Error('Empty buffer');
+
+        const result=readExcel(buf,typeHint,binStr);
+        if(!result||!result.raw||result.raw.length<2){
+          const {type,how}=identify([],file.name);
+          const entry={name:file.name,hdrs:[],type,how,date,rows:0,awbs:0,
+            error:'No data extracted — file may be empty, password-protected, or unsupported'};
+          dlog.push(entry);
+          if(type)pending[file.name]={hdrs:[],rows:[],date,filename:file.name};
+          return{name:file.name,type,rows:0,awbs:0,hdrs:[],how,err:entry.error};
+        }
+
+        setP(45,`🔍  Detecting headers: ${result.sheetName}…`);
+        const hi=findHdrRow(result.raw);
+        const hdrs=cleanH(result.raw[hi].map(h=>String(h==null?'':h)));
+        const {type,how}=identify(hdrs,file.name);
+
+        if(!type){
+          const rows=buildRows(result.raw,hi,hdrs);
+          pending[file.name]={hdrs,rows,date,filename:file.name};
+          dlog.push({name:file.name,hdrs,type:null,how,date,
+            rows:rows.length,sheetName:result.sheetName,strategy:result.strategy});
+          return{name:file.name,type:null,rows:rows.length,awbs:0,hdrs,how};
+        }
+
+        const isPvt=result.isPivot||isPivotFmt(hdrs);
+        const fmt=isPvt?'PIVOT (age-bucket columns)':'RAW (row-per-AWB)';
+        setP(65,`⚙  ${fn(result.raw.length-hi-1)} rows [${fmt}]…`);
+
+        const rows=buildRows(result.raw,hi,hdrs);
+        const{awbs,records,skipped}=applyRows(rows,type,date,hdrs);
+
+        dlog.push({name:file.name,hdrs,type,how,date,rows:rows.length,awbs,
+          pivot:isPvt,format:skipped?'PIVOT-SKIPPED (need raw sheet)':fmt,records,
+          headerRow:hi,sheetName:result.sheetName,strategy:result.strategy});
+
+        setP(100,`✅  ${fn(rows.length)} rows → ${fn(awbs)} AWBs`);
+        return{name:file.name,type,date,rows:rows.length,awbs,hdrs,how,pivot:isPvt,strategy:result.strategy};
+
+      }catch(err){
+        console.error('Excel processBuffer error:',err);
+        dlog.push({name:file.name,hdrs:[],type:'error',how:err.message});
+        return{name:file.name,type:'error',rows:0,awbs:0,err:err.message,hdrs:[]};
+      }
     };
-  }
 
-  agg[key].count++;
+    // Primary: ArrayBuffer
+    const r1=new FileReader();
+    r1.onload=e=>{
+      const res=processBuffer(e.target.result,null);
+      // If primary failed with 0 data, try BinaryString fallback (works better for some large .xlsx)
+      if(!res||res.rows===0||res.type==='error'){
+        setP(10,`🔄  Retrying with binary mode: ${file.name}`);
+        const r2=new FileReader();
+        r2.onload=e2=>{
+          // build a fake buf-like object XLSX can handle with type:'binary'
+          const binResult=(() => {
+            try{
+              const wb=XLSX.read(e2.target.result,{type:'binary',bookVBA:false,bookProps:false,raw:true});
+              if(!wb||!wb.SheetNames||!wb.SheetNames.length)return null;
+              const preferPivot=typeHint==='lmodc'||typeHint==='forwardShort';
+              let rawSheet=null,pivotSheet=null;
+              for(const sn of wb.SheetNames){
+                const ws=wb.Sheets[sn];if(!ws)continue;
+                let raw=[];
+                try{raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true})||[];}catch(_){}
+                if(!raw||raw.length<2){
+                  try{
+                    const csv=XLSX.utils.sheet_to_csv(ws,{blankrows:false});
+                    if(csv){const p=Papa.parse(csv,{header:false,skipEmptyLines:true});raw=p.data||[];}
+                  }catch(_){}
+                }
+                if(!raw||raw.length<2)continue;
+                const hi2=findHdrRow(raw);
+                const h2=cleanH((raw[hi2]||[]).map(h=>String(h==null?'':h)));
+                const isPvt=isPivotFmt(h2);
+                if(isPvt&&!pivotSheet)pivotSheet={raw,sheetName:sn,strategy:'binary',isPivot:true};
+                if(!isPvt&&!rawSheet)rawSheet={raw,sheetName:sn,strategy:'binary',isPivot:false};
+                if(rawSheet&&pivotSheet)break;
+              }
+              return preferPivot?(pivotSheet||rawSheet):(rawSheet||pivotSheet);
+            }catch(e){console.warn('binary read failed:',e.message);return null;}
+          })();
+          if(binResult&&binResult.raw&&binResult.raw.length>=2){
+            try{
+              const hi=findHdrRow(binResult.raw);
+              const hdrs=cleanH(binResult.raw[hi].map(h=>String(h==null?'':h)));
+              const{type,how}=identify(hdrs,file.name);
+              if(type){
+                const rows=buildRows(binResult.raw,hi,hdrs);
+                const{awbs,records}=applyRows(rows,type,date,hdrs);
+                const isPvt=isPivotFmt(hdrs);
+                dlog.push({name:file.name,hdrs,type,how,date,rows:rows.length,awbs,
+                  pivot:isPvt,format:isPvt?'PIVOT':'RAW',records,
+                  headerRow:hi,sheetName:binResult.sheetName,strategy:'binary-fallback'});
+                updateSummary();renderTab(activeTab);
+                resolve({name:file.name,type,date,rows:rows.length,awbs,hdrs,how,strategy:'binary-fallback'});
+                return;
+              }
+            }catch(_){}
+          }
+          resolve(res||{name:file.name,type:'error',rows:0,awbs:0,err:'All strategies failed',hdrs:[]});
+        };
+        r2.onerror=()=>resolve(res||{name:file.name,type:'error',rows:0,awbs:0,err:'BinaryString read failed',hdrs:[]});
+        r2.readAsBinaryString(file);
+      }else{
+        resolve(res);
+      }
+    };
+    r1.onerror=()=>resolve({name:file.name,type:'error',rows:0,awbs:0,err:'FileReader failed',hdrs:[]});
+    r1.readAsArrayBuffer(file);
+  });
 }
 
 /* ═══════════════════════════════════════════════
-   PIVOT PROCESSING (LMODC + SHORT ONLY)
+   MANUAL TYPE OVERRIDE
+═══════════════════════════════════════════════ */
+function manualType(filename,type){
+  if(!type||!pending[filename])return;
+  const{rows,date,hdrs}=pending[filename];
+  const{awbs}=applyRows(rows,type,date,hdrs||[]);
+  delete pending[filename];
+  const bid=bId(filename);
+  const el=document.getElementById(bid);
+  if(el){
+    const m=BM[type]||BM.forward;
+    const nm=filename.length>34?filename.slice(0,32)+'…':filename;
+    el.outerHTML=`<span class="badge ${m.c}">${m.i} <span>${m.l}: ${xe(nm)} · ${fn(awbs)} AWBs</span></span>`;
+  }
+  updateSummary();renderTab(activeTab);
+  toast(`✅ Re-processed as ${type} — ${fn(awbs)} AWBs`,'tok');
+}
+
+/* ═══════════════════════════════════════════════
+   ORCHESTRATOR
+═══════════════════════════════════════════════ */
+async function runFiles(files){
+  showP(true);dlog=[];
+  const results=[];
+  for(let i=0;i<files.length;i++){
+    const f=files[i],ext=f.name.split('.').pop().toLowerCase();
+    setP(0,`📂  File ${i+1}/${files.length}: ${f.name}`);
+    try{
+      results.push(ext==='csv'?await procCSV(f):
+        (ext==='xlsx'||ext==='xls')?await procExcel(f):
+        {name:f.name,type:'unsupported',rows:0,awbs:0,hdrs:[]});
+    }catch(e){
+      results.push({name:f.name,type:'error',rows:0,awbs:0,err:e.message,hdrs:[]});
+    }
+  }
+  showP(false);
+  renderBadges(results);
+  if(debugMode)renderDebug();
+  updateSummary();
+  renderTab(activeTab);
+  return results;
+}
+
+/* ═══════════════════════════════════════════════
+   PIVOT DATA BUILDER
+   Layout: Rows = Location/Destination, Cols = Dates
+   Age filter = strict equality (r.age === sec.age)
+   fromPivot records skip bin/msg checks.
+═══════════════════════════════════════════════ */
+function buildPivot(sec){
+  const all=master[sec.src]||[];
+  const ck=sec.src==='lmodc'?'destination':'location';
+
+  const filt=all.filter(r=>{
+    if(r.age!==sec.age)return false;
+    if(!r.fromPivot){
+      if(sec.bin!==undefined&&r.bin!==sec.bin)return false;
+      if(sec.msg!==undefined&&r.msg!==sec.msg)return false;
+      // BIN sections: explicitly exclude IN_MANIFEST orders
+      if(sec.bin!==undefined&&r.msg!==undefined&&r.msg==='IN_MANIFEST')return false;
+    }
+    return true;
+  });
+
+  if(!filt.length)return{locs:[],dates:[],grid:{},rowTotals:{},colTotals:{}};
+
+  const dates=[...new Set(filt.map(r=>r.date))].sort();
+  const locs=[...new Set(filt.map(r=>r[ck]))].sort();
+
+  // grid[loc][date] = count
+  const grid={};
+  locs.forEach(l=>{grid[l]={};});
+  filt.forEach(r=>{
+    const l=r[ck];
+    grid[l][r.date]=(grid[l][r.date]||0)+r.count;
+  });
+
+  const rowTotals={},colTotals={};
+  locs.forEach(l=>{
+    rowTotals[l]=0;
+    dates.forEach(d=>{const v=grid[l][d]||0;rowTotals[l]+=v;colTotals[d]=(colTotals[d]||0)+v;});
+  });
+
+  return{locs,dates,grid,rowTotals,colTotals};
+}
+
+/* ═══════════════════════════════════════════════
+   TREND CHART — shows date-over-date total
+   pendency for this section's age bucket.
+   Replaces the summary table.
 ═══════════════════════════════════════════════ */
 
-function processPivot(rows,type,date,headers,agg){
+// Inline plugin: draws exact value labels above each data point
+const valueLabelPlugin={
+  id:'valueLabels',
+  afterDatasetsDraw(chart){
+    const ctx=chart.ctx;
+    chart.data.datasets.forEach((ds,i)=>{
+      const meta=chart.getDatasetMeta(i);
+      meta.data.forEach((pt,j)=>{
+        const v=ds.data[j];
+        if(v==null||v===0)return;
+        ctx.save();
+        ctx.font='bold 10px Inter,sans-serif';
+        ctx.fillStyle='#0e7490';
+        ctx.textAlign='center';
+        ctx.textBaseline='bottom';
+        ctx.fillText(Number(v).toLocaleString('en-IN'),pt.x,pt.y-7);
+        ctx.restore();
+      });
+    });
+  }
+};
 
-  for(const row of rows){
-    const awb = normalize(row['AWB'] || row[headers[0]]);
-    if(!awb) continue;
+function renderTrendChart(cid,sec){
+  const cv=document.getElementById(cid);
+  if(!cv)return;
+  if(charts[cid]){charts[cid].destroy();delete charts[cid];}
 
-    for(const col of headers){
-      const bucket = normalize(col);
+  // Build date-wise totals for this section's age bucket
+  const all=master[sec.src]||[];
+  const dateTotals={};
+  all.forEach(r=>{
+    if(r.age!==sec.age)return;
+    if(!r.fromPivot){
+      if(sec.bin!==undefined&&r.bin!==sec.bin)return;
+      if(sec.msg!==undefined&&r.msg!==sec.msg)return;
+      if(sec.bin!==undefined&&r.msg==='IN_MANIFEST')return;
+    }
+    dateTotals[r.date]=(dateTotals[r.date]||0)+r.count;
+  });
 
-      if(bucket.startsWith('D')){
-        const val = Number(row[col]) || 0;
+  const dates=Object.keys(dateTotals).sort();
+  if(!dates.length)return;
 
-        if(val > 0){
-          const key = `${awb}_${bucket}_${date}`;
+  const labels=dates.map(fmtD);
+  const data=dates.map(d=>dateTotals[d]||0);
+  const maxVal=Math.max(...data,0);
+  const yMax=maxVal<=400?400:Math.ceil(maxVal*1.18/100)*100;
+  const titleText=`${sec.title} Trends`;
 
-          agg[key] = {
-            awb,
-            bucket,
-            date,
-            count: val
-          };
+  charts[cid]=new Chart(cv,{
+    type:'line',
+    plugins:[valueLabelPlugin],
+    data:{labels,datasets:[{
+      label:`D${sec.age} Total Pendency`,
+      data,
+      borderColor:'#0e7490',
+      backgroundColor:'rgba(14,116,144,.10)',
+      borderWidth:2.5,
+      pointRadius:6,
+      pointHoverRadius:9,
+      pointStyle:'circle',
+      pointBackgroundColor:'#0e7490',
+      pointBorderColor:'#fff',
+      pointBorderWidth:2,
+      fill:true,
+      tension:0.3,
+    }]},
+    options:{
+      responsive:true,
+      maintainAspectRatio:false,
+      animation:{duration:400},
+      layout:{padding:{top:24,right:10,bottom:4,left:4}},
+      plugins:{
+        title:{
+          display:true,
+          text:titleText,
+          font:{size:12,family:'Inter',weight:'700'},
+          color:'#0f172a',
+          padding:{top:0,bottom:14}
+        },
+        legend:{display:false},
+        tooltip:{
+          backgroundColor:'#0c4a6e',
+          titleColor:'#e0f2fe',
+          bodyColor:'#bae6fd',
+          borderColor:'#075985',
+          borderWidth:1,
+          padding:10,
+          callbacks:{label(c){return` Total: ${fn(c.parsed.y)}`;}}
+        }
+      },
+      scales:{
+        x:{
+          grid:{color:'#e2e8f0',drawBorder:false},
+          ticks:{font:{size:10,family:'Inter'},color:'#64748b',maxRotation:45,autoSkip:true,maxTicksLimit:12}
+        },
+        y:{
+          min:0,
+          max:yMax,
+          grid:{color:'#e2e8f0',drawBorder:false},
+          ticks:{
+            font:{size:10,family:'Inter'},
+            color:'#64748b',
+            callback(v){return v>=1000?(v/1000).toFixed(1)+'K':v;}
+          }
         }
       }
     }
-  }
+  });
 }
 
 /* ═══════════════════════════════════════════════
-   APPLY ROWS (FINAL FIXED VERSION)
+   TABLE RENDERER
+   Rows = Location/Destination, Columns = Dates
+   Red cell = value increased vs previous date column
+   Green cell = value decreased vs previous date column
 ═══════════════════════════════════════════════ */
-
-function applyRows(rows,type,date,headers){
-
-  const pivotFormat = isPivotFmt(headers);
-  const agg = {};
-
-  if(pivotFormat){
-
-    // ✅ Only allow pivot for LMODC + Short Shipment
-    if(type === 'lmodc' || type === 'forwardShort'){
-      processPivot(rows,type,date,headers,agg);
-    } else {
-      return { awbs:0, pivot:true, records:0, skipped:true };
-    }
-
-  } else {
-
-    for(const row of rows){
-      if(!Object.values(row).some(v => String(v).trim())) continue;
-      dispatchRaw(type,row,date,agg);
-    }
-
+function renderTable(el,piv){
+  if(!el)return 0;
+  if(!piv.locs||!piv.locs.length||!piv.dates||!piv.dates.length){
+    el.innerHTML=`<div class="empty"><div class="ei">📭</div>
+      <div class="et">No data for this section</div>
+      <div class="em">Upload the matching file type then click <strong>Save to Master</strong>.<br>
+        Enable <strong>🔍 Debug</strong> to inspect detected columns.</div></div>`;
+    return 0;
   }
+  const trd=d=>fmtD(d); // truncated date for header
+  let grand=0;
+  let html=`<div class="tsc"><table class="tbl"><thead><tr>
+    <th>Location</th>
+    ${piv.dates.map(d=>`<th>${trd(d)}</th>`).join('')}
+    <th>TOTAL</th></tr></thead><tbody>`;
 
-  const records = Object.values(agg);
-
-  master[type] = (master[type] || []).filter(r => r.date !== date);
-  master[type].push(...records);
-
-  const awbs = records.reduce((sum,r) => sum + r.count, 0);
-
-  // ✅ DEBUG (keeps you sane)
-  console.log(`[${type}] processed`, {
-    rows: rows.length,
-    output: records.length,
-    awbs,
-    pivot: pivotFormat
+  piv.locs.forEach(loc=>{
+    html+=`<tr><td>${xe(loc)}</td>`;
+    piv.dates.forEach((d,di)=>{
+      const val=piv.grid[loc][d]||0;
+      const prev=di>0?piv.dates[di-1]:null;
+      const pval=prev!==null?(piv.grid[loc][prev]||0):null;
+      const cls=val===0?'czr':pval!==null&&val>pval?'cup':pval!==null&&val<pval?'cdn':'';
+      html+=`<td class="${cls}">${val===0?'–':fn(val)}</td>`;
+    });
+    const rt=piv.rowTotals[loc]||0;
+    grand+=rt;
+    html+=`<td>${fn(rt)}</td></tr>`;
   });
 
-  return {
-    awbs,
-    pivot: pivotFormat,
-    records: records.length
-  };
+  // Column totals footer
+  html+=`</tbody><tfoot><tr><td>TOTAL</td>
+    ${piv.dates.map((d,di)=>{
+      const tot=piv.colTotals[d]||0;
+      const prev=di>0?piv.dates[di-1]:null;
+      const ptot=prev!==null?(piv.colTotals[prev]||0):null;
+      const cls=ptot!==null&&tot>ptot?'cup':ptot!==null&&tot<ptot&&tot>0?'cdn':'';
+      return`<td class="${cls}">${fn(tot)}</td>`;
+    }).join('')}
+    <td>${fn(grand)}</td></tr></tfoot></table></div>
+    <div class="leg">
+      <span class="lc"><span class="lb lu"></span>▲ Higher than previous date (pendency increased)</span>
+      <span class="lc"><span class="lb ld"></span>▼ Lower than previous date (improving)</span>
+    </div>`;
+  el.innerHTML=html;
+  return grand;
 }
+
+/* ═══════════════════════════════════════════════
+   SUMMARY TABLE RENDERER
+/* ═══════════════════════════════════════════════
+   CHART RENDERER (DC trend — location breakdown)
+   X-axis = Dates, Y-axis = AWB Count
+   Controlled by DC dropdown (selDC[idx])
+   'ALL' = show all DCs as separate lines
+   Single DC = show only that location's trend
+═══════════════════════════════════════════════ */
+const selDC={};  // section-index → selected DC name or 'ALL'
+
+function renderChart(cid,piv,idx){
+  const cv=document.getElementById(cid);
+  if(!cv)return;
+  if(charts[cid]){charts[cid].destroy();delete charts[cid];}
+  if(!piv.dates||!piv.dates.length)return;
+
+  const labels=piv.dates.map(fmtD);
+  const dc=selDC[idx]||'ALL';
+  const ds=[];
+
+  if(dc==='ALL'){
+    // Total line
+    ds.push({label:'Total',
+      data:piv.dates.map(d=>piv.colTotals[d]||0),
+      borderColor:'#2563eb',backgroundColor:'rgba(37,99,235,.07)',
+      borderWidth:2.5,pointRadius:4,pointHoverRadius:7,fill:true,tension:.35,order:0});
+    // Top DCs
+    [...piv.locs].sort((a,b)=>(piv.rowTotals[b]||0)-(piv.rowTotals[a]||0))
+      .slice(0,7).forEach((loc,i)=>{
+        const lbl=loc.length>22?loc.slice(0,20)+'…':loc;
+        ds.push({label:lbl,
+          data:piv.dates.map(d=>piv.grid[loc][d]||0),
+          borderColor:CPALS[(i+1)%CPALS.length],backgroundColor:'transparent',
+          borderWidth:1.5,pointRadius:3,fill:false,tension:.35,borderDash:[5,3],order:i+1});
+      });
+  }else{
+    // Single DC
+    ds.push({label:dc,
+      data:piv.dates.map(d=>piv.grid[dc]?piv.grid[dc][d]||0:0),
+      borderColor:'#2563eb',backgroundColor:'rgba(37,99,235,.07)',
+      borderWidth:2.5,pointRadius:5,pointHoverRadius:8,fill:true,tension:.35});
+  }
+
+  charts[cid]=new Chart(cv,{type:'line',data:{labels,datasets:ds},options:{
+    responsive:true,maintainAspectRatio:false,animation:{duration:300},
+    interaction:{mode:'index',intersect:false},
+    plugins:{
+      legend:{display:true,position:'top',
+        labels:{font:{size:10,family:'Inter'},padding:9,usePointStyle:true,pointStyleWidth:10}},
+      tooltip:{backgroundColor:'#0f172a',titleColor:'#e2e8f0',bodyColor:'#94a3b8',
+        borderColor:'#1e293b',borderWidth:1,padding:10,
+        callbacks:{label(c){return` ${c.dataset.label}: ${fn(c.parsed.y)}`;}}
+      }
+    },
+    scales:{
+      x:{grid:{color:'#f1f5f9'},ticks:{font:{size:10},maxRotation:45,color:'#64748b'}},
+      y:{beginAtZero:true,grid:{color:'#f1f5f9'},
+        ticks:{font:{size:10},color:'#64748b',callback(v){return v>=1000?(v/1000).toFixed(1)+'K':v;}}}
+    }
+  }});
+}
+
+/* Populate DC dropdown for a section */
+function populateDCDropdown(idx,piv){
+  const sel=document.getElementById(`dcsel${idx}`);
+  if(!sel)return;
+  const cur=selDC[idx]||'ALL';
+  sel.innerHTML=`<option value="ALL">All DCs (Overview)</option>`
+    +[...piv.locs].sort().map(l=>`<option value="${xe(l)}"${l===cur?' selected':''}>${xe(l)}</option>`).join('');
+  sel.value=cur;
+}
+
+function onDCChange(idx,val){
+  selDC[idx]=val;
+  const piv=buildPivot(SECS[idx]);
+  renderChart(`ch${idx}`,piv,idx);
+}
+
+/* ═══════════════════════════════════════════════
+   PANELS
+═══════════════════════════════════════════════ */
+function initPanels(){
+  document.getElementById('panels').innerHTML=SECS.map((s,i)=>`
+    <div class="panel ${i===0?'active':''}" id="pnl${i}">
+      <div class="card">
+        <div class="chead">
+          <span class="ct">§${i+1} · ${s.title}</span>
+          <div class="cm"><span class="cc" id="cnt${i}">–</span><span class="cbg">${s.badge}</span></div>
+        </div>
+        <div id="tbl${i}"></div>
+        <div class="tarea">
+          <div class="twrap"><canvas id="tchrt${i}"></canvas></div>
+        </div>
+        <div class="carea">
+          <div class="ctoolbar">
+            <span class="ctoolbar-lbl">📈 Location Breakdown — Date vs AWB Count</span>
+            <select class="dc-select" id="dcsel${i}" onchange="onDCChange(${i},this.value)">
+              <option value="ALL">All DCs (Overview)</option>
+            </select>
+          </div>
+          <div class="cwrap"><canvas id="ch${i}"></canvas></div>
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+function renderTab(idx){
+  const piv=buildPivot(SECS[idx]);
+  const g=renderTable(document.getElementById(`tbl${idx}`),piv);
+  renderTrendChart(`tchrt${idx}`,SECS[idx]);
+  populateDCDropdown(idx,piv);
+  renderChart(`ch${idx}`,piv,idx);
+  const el=document.getElementById(`cnt${idx}`);
+  if(el)el.textContent=g>0?fn(g)+' AWBs':'–';
+}
+
+function sw(idx){
+  activeTab=idx;
+  document.querySelectorAll('.tab').forEach((b,i)=>b.classList.toggle('active',i===idx));
+  document.querySelectorAll('.panel').forEach((p,i)=>p.classList.toggle('active',i===idx));
+  renderTab(idx);
+}
+
+/* ═══════════════════════════════════════════════
+   SUMMARY
+═══════════════════════════════════════════════ */
+function updateSummary(){
+  const s=t=>(master[t]||[]).reduce((a,r)=>a+r.count,0);
+  const f=s('forward'),r=s('reverse'),l=s('lmodc'),sh=s('forwardShort'),tot=f+r+l+sh;
+  const days=new Set([...(master.forward||[]),...(master.reverse||[]),
+    ...(master.lmodc||[]),...(master.forwardShort||[])].map(r=>r.date)).size;
+  q('#sf').textContent=fn(f);q('#sr').textContent=fn(r);
+  q('#sl').textContent=fn(l);q('#ss').textContent=fn(sh);
+  q('#sd').textContent=days;q('#st').textContent=fn(tot);
+  q('#hst').textContent=tot>0?`${fn(tot)} AWBs · ${days} days`:'No data loaded';
+}
+
+/* ═══════════════════════════════════════════════
+   BADGES
+═══════════════════════════════════════════════ */
+const BM={
+  forward:     {c:'bfw',i:'📦',l:'FORWARD' },
+  reverse:     {c:'brv',i:'🔄',l:'REVERSE' },
+  lmodc:       {c:'blm',i:'🏷', l:'LMODC'  },
+  forwardShort:{c:'bsh',i:'⚠️',l:'SHORT'  },
+  error:       {c:'ber',i:'❌',l:'ERROR'   },
+  unsupported: {c:'bun',i:'⛔',l:'SKIP'   },
+};
+function bId(name){return'bx_'+btoa(unescape(encodeURIComponent(name.slice(0,20)))).replace(/=/g,'').replace(/\+/g,'a').replace(/\//g,'b');}
+
+function renderBadges(results){
+  const el=q('#brow');
+  if(!results.length){el.innerHTML='<span style="color:#94a3b8;font-size:11px">No files</span>';return;}
+  el.innerHTML=results.map(r=>{
+    const bid=bId(r.name);
+    if(!r.type||r.type===null){
+      const nm=r.name.length>34?r.name.slice(0,32)+'…':r.name;
+      return`<span class="unk-wrap" id="${bid}" title="${xe(r.name)}">
+        ❓ <span>${xe(nm)}</span>
+        <select onchange="manualType('${r.name.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}',this.value)">
+          <option value="">Select type…</option>
+          <option value="forward">📦 Forward</option>
+          <option value="reverse">🔄 Reverse</option>
+          <option value="lmodc">🏷 LMODC</option>
+          <option value="forwardShort">⚠️ Short Ship</option>
+        </select></span>`;
+    }
+    const m=BM[r.type]||{c:'bun',i:'❓',l:r.type.toUpperCase()};
+    const nm=r.name.length>34?r.name.slice(0,32)+'…':r.name;
+    const cnt=r.awbs>0?` · ${fn(r.awbs)} AWBs`:r.rows>0?` · ${fn(r.rows)} rows`:'';
+    const fmt=r.pivot?' [pivot]':'';
+    const tip=r.err?`${r.name} — ${r.err}`:`${r.name} [${r.how||'?'}]${fmt}`;
+    return`<span class="badge ${m.c}" id="${bid}" title="${xe(tip)}">${m.i} <span>${m.l}: ${xe(nm)}${cnt}${fmt?'<em style="opacity:.7;font-weight:400"> pivot</em>':''}</span></span>`;
+  }).join('');
+}
+
+/* ═══════════════════════════════════════════════
+   DEBUG PANEL
+═══════════════════════════════════════════════ */
+function renderDebug(){
+  const el=q('#dlog');
+  if(!dlog.length){el.innerHTML='<em>No files processed yet.</em>';return;}
+  el.innerHTML=dlog.map(d=>{
+    const ok=d.type&&!d.type.startsWith('error')&&d.type!=='empty'&&d.awbs>0;
+    const partial=d.type&&!d.type.startsWith('error')&&d.awbs===0;
+    const dcls=ok?'dfok':partial?'dfwn':'dfer';
+    return`<div class="df ${dcls}">
+      <span class="dn">${xe(d.name)}</span> →
+      <span class="${ok?'dg':partial?'dy':'dr'}">${xe(String(d.type||'UNKNOWN').toUpperCase())}</span>
+      ${d.how?`<span style="color:#484f58"> via ${xe(d.how)}</span>`:''}
+      ${d.date?`<span style="color:#484f58"> · ${d.date}</span>`:''}
+      ${d.format?`<span style="color:#388bfd"> · ${xe(d.format)}</span>`:''}
+      <div class="dc">${d.hdrs&&d.hdrs.length
+        ?`${d.hdrs.length} cols: ${d.hdrs.slice(0,30).map(xe).join(' · ')}${d.hdrs.length>30?` +${d.hdrs.length-30} more`:''}`
+        :'<span style="color:#f85149">0 columns — file empty or unreadable</span>'}</div>
+      ${d.strategy?`<div class="dc" style="color:#6e7681">Strategy: ${xe(d.strategy)} · sheet: ${xe(d.sheetName||'?')} · hdr_row: ${d.headerRow??'?'} · total_rows: ${fn(d.rows||0)}</div>`:''}
+      <div class="dm">✓ ${fn(d.awbs||0)} AWBs stored from ${fn(d.rows||0)} rows</div>
+      ${d.error?`<div class="dr">⚠ ${xe(d.error)}</div>`:''}
+    </div>`;
+  }).join('');
+}
+
+function toggleDebug(){
+  debugMode=!debugMode;
+  q('#dbgbtn').classList.toggle('on',debugMode);
+  q('#dbgbtn').textContent=debugMode?'🔍 Debug ON':'🔍 Debug';
+  q('#dpnl').style.display=debugMode?'block':'none';
+  if(debugMode)renderDebug();
+}
+
+/* ═══════════════════════════════════════════════
+   ACTIONS
+═══════════════════════════════════════════════ */
+function onSave(){if(persistM())toast('✅ Saved to master dataset','tok');}
+function onExport(){
+  try{
+    const b=new Blob([JSON.stringify(master,null,2)],{type:'application/json'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(b);
+    a.download=`logistics_${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    toast('⬇ Backup exported','ti');
+  }catch(e){toast('Export failed','te');}
+}
+q('#ii').addEventListener('change',async e=>{
+  const f=e.target.files[0];if(!f)return;e.target.value='';
+  try{
+    const obj=JSON.parse(await f.text());
+    ['forward','reverse','lmodc','forwardShort'].forEach(t=>{
+      const imp=obj[t]||[],ed=new Set((master[t]||[]).map(r=>r.date));
+      imp.forEach(r=>{if(!ed.has(r.date))master[t].push(r);});
+    });
+    updateSummary();renderTab(activeTab);toast(`📥 Imported ${f.name}`,'tok');
+  }catch(e){toast('Import failed: '+e.message,'te');}
+});
+function onClear(){
+  if(!confirm('⚠️ Delete ALL master data?\n\nExport first if needed.'))return;
+  master=emptyM();pending={};dlog=[];localStorage.removeItem(SKEY);
+  q('#brow').innerHTML='<span style="color:#94a3b8;font-size:11px">Cleared</span>';
+  updateSummary();renderTab(activeTab);toast('🗑 Cleared','tw');
+}
+
+/* ═══════════════════════════════════════════════
+   PROGRESS / TOAST / UTILS
+═══════════════════════════════════════════════ */
+function showP(v){q('#prog').style.display=v?'block':'none';}
+function setP(pct,lbl){q('#ptxt').textContent=lbl;q('#pbar').style.width=(pct<0?55:pct)+'%';}
+let _tt;
+function toast(msg,cls='ti'){
+  const el=q('#toast');el.innerHTML=msg;el.className=`toast ${cls} show`;
+  clearTimeout(_tt);_tt=setTimeout(()=>el.className='toast',5000);
+}
+function q(s){return document.querySelector(s);}
+function fn(n){return n==null||n===0?'0':Number(n).toLocaleString('en-IN');}
+function fmtD(s){
+  if(!s)return'—';
+  try{return new Date(s+'T00:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'});}
+  catch{return s;}
+}
+function xe(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+/* ═══════════════════════════════════════════════
+   FILE INPUT
+═══════════════════════════════════════════════ */
+q('#fi').addEventListener('change',async e=>{
+  const files=Array.from(e.target.files);e.target.value='';
+  if(!files.length)return;
+  const res=await runFiles(files);
+  const counts={},unkn=[],errs=[];
+  res.forEach(r=>{
+    if(r.type&&!['error','unsupported'].includes(r.type)&&r.type!==null)
+      counts[r.type]=(counts[r.type]||0)+1;
+    else if(!r.type||r.type===null)unkn.push(r.name);
+    else if(r.type==='error')errs.push(r.name);
+  });
+  const parts=Object.entries(counts).map(([t,n])=>`${n}× ${t}`);
+  if(unkn.length)parts.push(`${unkn.length} need type selection`);
+  if(errs.length)parts.push(`${errs.length} failed`);
+  if(Object.keys(counts).length){
+    toast(`📂 ${parts.join(', ')}. Click <strong>Save to Master</strong> to persist.`,'tok');
+  }else{
+    toast(`⚠️ Auto-detection failed. Use the <strong>dropdown</strong> on each badge to assign type.`,'tw');
+  }
+});
+
+/* ═══════════════════════════════════════════════
+   BOOT
+═══════════════════════════════════════════════ */
+initPanels();updateSummary();renderTab(0);
+const _tot=Object.values(master).reduce((a,arr)=>a+arr.reduce((s,r)=>s+r.count,0),0);
+if(_tot>0)setTimeout(()=>toast(`📊 Restored ${fn(_tot)} AWBs from saved data`,'ti'),400);
+</script>
+</body>
+</html>
