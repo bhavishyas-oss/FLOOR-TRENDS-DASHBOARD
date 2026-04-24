@@ -456,7 +456,7 @@ function applyRows(rows,type,date,hdrs){
 // Bin stored but NOT filtered here — bin filter for BIN1/BIN2 sections is in buildPivot
 function pFwd(row,date,agg){
   const pivot=nv(gv(row,'pivot','Pivot'));
-  if(pivot!=='RECEIVED_AT_DC')return;
+  if(!pivot.includes('RECEIVED_AT_DC')) return;
   const os=nv(gv(row,'order_status','order status','orderstatus',
     'Order_status','Order_Status'));
   if(os==='IN_MANIFEST')return;
@@ -483,7 +483,7 @@ function pRev(row,date,agg){
     'reason for loss','reason_for_loss',
     'reason of return','reason_of_return','return reason',
     'loss reason','remark','remarks'));
-  if(reason!=='RECEIVED_AT_DC'&&reason!=='MISROUTED')return;
+  if(!['RECEIVED_AT_DC','MISROUTED'].includes(reason)) return;
   const client=gv(row,'client','Client','CLIENT','client name','Client Name')||'UNKNOWN';
   const cu=client.toUpperCase();
   if(cu.includes('FTPL')&&cu.includes('REGIONAL'))return;
@@ -531,9 +531,6 @@ function dispatchRaw(type,row,date,agg){
    CRITICAL: Pivot/aggregated sheets are SKIPPED.
    Only raw row-per-AWB data is processed.
 ═══════════════════════════════════════════════ */
-function applyRows(rows,type,date,hdrs){
-  // If headers look like a pivot table (numeric age-bucket columns), skip entirely
-  if(isPivotFmt(hdrs))return{awbs:0,pivot:true,records:0,skipped:true};
 
   const agg={};
   for(const row of rows){
@@ -825,7 +822,9 @@ function procExcel(file){
         if(!buf||!buf.byteLength)throw new Error('Empty buffer');
 
         const result=readExcel(buf,typeHint,binStr);
-        if(!result||!result.raw||result.raw.length<2){
+        if(!result || !result.raw || result.raw.length < 2){
+  console.warn("Sheet read issue, attempting fallback...");
+}
           const {type,how}=identify([],file.name);
           const entry={name:file.name,hdrs:[],type,how,date,rows:0,awbs:0,
             error:'No data extracted — file may be empty, password-protected, or unsupported'};
