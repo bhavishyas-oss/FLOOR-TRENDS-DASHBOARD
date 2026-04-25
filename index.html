@@ -456,12 +456,11 @@ function pRev(row,date,agg){
 }
 
 /* ── LMODC age parser ──────────────────────────
-   Ageing_f may store plain numbers ("3","6","10")
+   Ageing may store plain numbers ("3","6","10")
    OR text bucket labels:
      "6"        → 6   (D6 bucket)
      "10"   → 10  (D10 bucket)
-     "7-10"      → 10  (D10 bucket — upper bound)
-     "10+"       → 10  (D10 bucket — upper bound)
+     
 ──────────────────────────────────────────────── */
 function parseLMODCAge(s){
   s=String(s==null?'':s).trim();
@@ -481,12 +480,12 @@ function parseLMODCAge(s){
 }
 
 // LMODC — raw data sheet, one row = one AWB
-// Age:      Ageing_f (col A) — may be plain number or text bucket
+// Age:      Ageing (col U) — may be plain number or text bucket
 // Location: destination_name (col B)
 // Count (col M) = manifest count, NOT per-row AWB count. Each row = 1 AWB.
 function pLM(row,date,agg){
   const ageStr=gv(row,
-    'ageing_f','Ageing_f','ageing f',   // col A in LMODC raw sheet
+    'ageing','Ageing','ageing',   // col U in LMODC raw sheet
     'ageing','Ageing','age','Age');      // fallback
   const age=parseLMODCAge(ageStr);      // correctly handles text ranges
   if(age<=0)return;                      // skip rows with no valid age
