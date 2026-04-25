@@ -315,7 +315,7 @@ const CPALS=['#2563eb','#dc2626','#16a34a','#d97706','#7c3aed','#0891b2','#be185
 /* ═══════════════════════════════════════════════
    STATE
 ═══════════════════════════════════════════════ */
-const SKEY='logistics_v23';
+const SKEY='logistics_v26';
 let master=loadM(),activeTab=0,charts={},debugMode=false,dlog=[],pending={};
 
 function emptyM(){return{forward:[],reverse:[],lmodc:[],forwardShort:[]}}
@@ -370,31 +370,16 @@ function cleanH(arr){
 ═══════════════════════════════════════════════ */
 /* ── isPivotFmt ────────────────────────────────────────────────────────
    Detects whether a sheet's header row belongs to a pre-aggregated
-   pivot/summary table that must be SKIPPED (per spec: raw data only).
+   pivot/summary table that must be SKIPPED (raw data only per spec).
 
-   Why this was breaking Reverse files:
-   LMODC pivot  → headers: Row Labels | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | Grand Total
-                  → 8 numeric cols → numCols.length≥2 → true ✓
-   Reverse pivot → headers: Row Labels | 10 | Grand Total
-                  → only 1 numeric col ("10") → numCols.length<2 → FALSE ✗
-                  → Sheet1 was NOT skipped → processed as raw data → 0 AWBs
-                  → Sheet2 (actual raw 6K-row data) was never reached
+   Detection rule: ≥2 pure-numeric column headers = age-bucket columns
+   (e.g. LMODC pivot: Row Labels | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10)
+   8 numeric cols → numCols.length≥2 → true → SKIPPED ✓
 
-   Fix: also detect the "Row Labels" header which Excel PivotTable ALWAYS
-   inserts as the first column in every pivot output, regardless of how
-   many age-bucket columns are present.
 ──────────────────────────────────────────────────────────────────────── */
 function isPivotFmt(hdrs){
-  // Rule 1: ≥2 pure-numeric headers = age-bucket columns (3,4,5,6…10)
   const numCols=hdrs.filter(h=>/^\d+(\.\d+)?$/.test(String(h).trim()));
-  if(numCols.length>=2)return true;
-
-  // Rule 2: "Row Labels" header is always the first column in Excel PivotTable
-  // output — catches single-age-column pivots like: Row Labels | 10 | Grand Total
-  const norm=hdrs.map(h=>String(h).replace(/^\uFEFF/,'').trim().toLowerCase());
-  if(norm.some(h=>h==='row labels'))return true;
-
-  return false;
+  return numCols.length>=2;
 }
 
 /* Parse a numeric count (handles "1,234" formatted strings) */
@@ -441,10 +426,10 @@ function pFwd(row,date,agg){
   agg[k].count++;
 }
 
-// REVERSE — Reason of Loss = Received_at_dc or MISROUTED
+// REVERSE — Reason of Loss = RECEIVED_AT_DC or MISROUTED
 // Confirmed from actual file: col M = "Reason of Loss"
 //   stores "Received_at_dc" (mixed case) / "MISROUTED" / "Connection pendency" etc.
-//   nv() normalises all to mixedcase+underscores → matches Received_at_dc ✓
+//   nv() normalises all to uppercase+underscores → matches RECEIVED_AT_DC ✓
 // Age: col AP "Ageing" stores numeric strings like "14", "12" (actual day count)
 // Location: col AK "Current_location"
 // Client: col AR "Client"
@@ -658,39 +643,25 @@ function findHdrRow(raw){
    ROBUST EXCEL READER
    Skips all pivot-format sheets (per spec).
    Returns first valid RAW data sheet found.
-
-   Reverse file fix (47K rows × 10+ #N/A cols):
-   Lean mode tried FIRST: cellFormula:false +
-   cellText:false + cellHTML:false skip storing
-   formula strings (f), formatted text (w), and
-   HTML (h) — only cached value (v) + type (t)
-   kept. For ~500K formula cells this saves ~300MB
-   of RAM, preventing the browser from crashing.
-   WTF:false suppresses parse errors.
-   toRows() tries 3 independent strategies/sheet.
 ═══════════════════════════════════════════════ */
 function readExcel(buf, binStr){
   const tryWB=(data,type,opts)=>{
     try{
-      return XLSX.read(data,Object.assign(
-        {type, bookVBA:false, bookProps:false, WTF:false},
-        opts
-      ));
-    }catch(e){console.warn('XLSX.read failed:',type,JSON.stringify(opts),e.message);return null;}
+      // Minimal forced options — just type. Let XLSX.js defaults handle the rest.
+      return XLSX.read(data,Object.assign({type,WTF:false},opts));
+    }catch(e){console.warn('XLSX.read:',type,e.message);return null;}
   };
 
-  // 3 independent strategies per sheet
+  // 3 strategies per sheet
   const toRows=(ws)=>{
     if(!ws)return[];
     if(!ws['!ref']&&ws['!dim'])try{ws['!ref']=ws['!dim'];}catch(_){}
-
-    // A: raw:true — fastest, preserves exact numeric values
+    // Strategy A: raw values (fastest)
     try{
       const r=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
       if(r&&r.length>=2)return r;
     }catch(_){}
-
-    // B: CSV conversion — works even without proper !ref
+    // Strategy B: CSV (works without proper !ref)
     try{
       const csv=XLSX.utils.sheet_to_csv(ws,{blankrows:false,FS:','});
       if(csv&&csv.replace(/,/g,'').trim()){
@@ -698,23 +669,23 @@ function readExcel(buf, binStr){
         if(r.length>=2)return r;
       }
     }catch(_){}
-
-    // C: raw:false — formats numbers/dates as strings
+    // Strategy C: formatted values
     try{
       const r=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:false});
       if(r&&r.length>=2)return r;
     }catch(_){}
-
     return[];
   };
 
   const hasData=rows=>{
     if(!rows||rows.length<2)return false;
-    const n=Math.min(rows.length,50);
+    // Scan up to 100 rows — handles files with large title/metadata blocks at top
+    const n=Math.min(rows.length,100);
     for(let i=0;i<n;i++){
       const r=rows[i];if(!r)continue;
       const cells=Array.isArray(r)?r:Object.values(r);
-      if(cells.some(c=>String(c||'').replace(/,/g,'').trim()))return true;
+      // Fix: use v!==null&&v!==undefined&&v!=='' to avoid 0||'' = '' bug
+      if(cells.some(c=>c!==null&&c!==undefined&&String(c).trim()!==''))return true;
     }
     return false;
   };
@@ -727,26 +698,23 @@ function readExcel(buf, binStr){
       if(!hasData(rows))continue;
       const hi=findHdrRow(rows);
       const hdrs=cleanH((rows[hi]||[]).map(h=>String(h==null?'':h)));
-      if(isPivotFmt(hdrs)){console.info('Skip pivot sheet:',sname);continue;}
-      const dataRows=rows.slice(hi+1);
-      if(!dataRows.some(r=>(Array.isArray(r)?r:Object.values(r||{}))
-          .some(v=>String(v||'').trim())))continue;
+      if(isPivotFmt(hdrs)){console.info('Skip pivot:',sname);continue;}
+      // Return this sheet — don't apply further data-row filtering here.
+      // pRev/pFwd filters will determine AWB count; over-filtering here.
       return{rows,sheetName:sname,strategy:stratName,headerRow:hi};
     }
     return null;
   };
 
-  // ArrayBuffer strategies — lean mode FIRST for large formula-heavy files.
-  // cellFormula:false + cellText:false + cellHTML:false skip storing f/w/h
-  // per cell, keeping only v (value) and t (type). This saves ~300MB for
-  // files with hundreds of thousands of #N/A formula cells (Reverse file).
+  // ArrayBuffer strategies — bare-minimum FIRST so XLSX.js uses its most
+  // compatible default parsing path with no extra restrictions
   const ARR_OPTS=[
-    {cellFormula:false,cellText:false,cellHTML:false},             // Lean: memory efficient
-    {cellFormula:false,cellText:false,cellHTML:false,raw:true},    // Lean + raw numbers
-    {},                                                             // Plain: most compatible
-    {raw:true},                                                     // Raw: keep numeric types
-    {cellText:false},                                               // No text cache
-    {sheetStubs:true,cellFormula:false,cellText:false},            // Lean + empty cells
+    {},                                                    // Bare minimum — most compatible
+    {raw:true},                                           // Keep numbers as-is
+    {cellFormula:false,cellText:false,cellHTML:false},    // Lean: skip formula/text cache
+    {cellFormula:false,cellText:false,cellHTML:false,raw:true},
+    {cellText:false},                                     // No text cache
+    {sheetStubs:true,cellFormula:false,cellText:false},   // Include empty-cell stubs
   ];
 
   for(const opts of ARR_OPTS){
@@ -755,15 +723,9 @@ function readExcel(buf, binStr){
     if(result)return result;
   }
 
-  // BinaryString fallback — different XLSX.js code path; often works for
-  // files that fail with ArrayBuffer strategies
+  // BinaryString fallback — different XLSX.js internal path
   if(binStr){
-    const BIN_OPTS=[
-      {cellFormula:false,cellText:false,cellHTML:false},
-      {},
-      {raw:true},
-    ];
-    for(const opts of BIN_OPTS){
+    for(const opts of [{},{raw:true},{cellFormula:false,cellText:false,cellHTML:false}]){
       const wb=tryWB(binStr,'binary',opts);
       const result=scanWB(wb,`binary/${JSON.stringify(opts)}`);
       if(result)return result;
@@ -786,23 +748,6 @@ function buildRows(raw,hi,hdrs){
     return obj;
   }).filter(o=>Object.values(o).some(v=>String(v).trim()));
 }
-
-/* ═══════════════════════════════════════════════
-   NATIVE ZIP/XML EXCEL READER
-   For large files (>10MB) where XLSX.js hangs.
-   The Reverse file is 164MB uncompressed XML —
-   XLSX.js tries to build JS objects for every cell
-   causing browser OOM / Page Unresponsive.
-
-   Root cause of previous failure:
-   pako.inflate(25MB) runs ~10-15s synchronously.
-   Chrome script-execution timeout kills it.
-   The catch block returned '' → no data found.
-
-   Fix: pako.Inflate streaming mode — push 128KB
-   chunks with setTimeout(0) yields between each.
-   Browser stays responsive throughout.
-═══════════════════════════════════════════════ */
 
 /* Convert Excel column letters to 0-based index: A→0, B→1, Z→25, AA→26 */
 function colIdx(letters){
@@ -916,7 +861,6 @@ async function readExcelNative(buf){
     };
 
     /* ── 2. Shared strings (async streaming) ── */
-    setP(12,`📦  Decompressing shared strings…`);
     await new Promise(r=>setTimeout(r,0));
     const shared=[];
     const ssXML=await decomp('xl/sharedStrings.xml');
@@ -947,7 +891,7 @@ async function readExcelNative(buf){
       const sname=sheetNames[si]||`Sheet${si+1}`;
       const compSizeMB=(entries[sf]?.cSize/1048576||0).toFixed(0);
 
-      setP(25,`📦  Decompressing "${sname}" (${compSizeMB}MB compressed)…`);
+      setP(20,`📖  Reading sheet: "${sname}"…`);
       await new Promise(r=>setTimeout(r,0));
 
       /* ASYNC streaming decompression — yields every 128KB → browser stays live */
@@ -1024,9 +968,6 @@ async function readExcelNative(buf){
       const hdrs=cleanH((rows[hi]||[]).map(h=>String(h==null?'':h)));
       if(isPivotFmt(hdrs)){console.info('Native: skip pivot:',sname);continue;}
 
-      const dataRows=rows.slice(hi+1);
-      if(!dataRows.some(r=>r.some(v=>String(v||'').trim())))continue;
-
       return{rows,sheetName:sname,strategy:'native-xml-stream',headerRow:hi};
     }
     return null;
@@ -1099,8 +1040,8 @@ function procCSV(file){
    EXCEL PROCESSING
    Small files (<25MB): XLSX.js first — fast,
      simple, no "Decompressing" noise. Works for
-     Reverse (3–15MB), LMODC, Short Shipment.
-   Large files (≥25MB): native streaming reader
+     Reverse (25–79MB), LMODC, Short Shipment.
+   Large files (≥80MB): native streaming reader
      first — XLSX.js would hang on 40MB+ files.
    Binary string is a last-resort fallback only.
 ═══════════════════════════════════════════════ */
@@ -1155,51 +1096,29 @@ function procExcel(file){
       const buf=e.target.result;
       const mb=buf.byteLength/1048576;
       setP(10,`📊  Reading ${mb.toFixed(1)}MB: ${file.name}`);
-
       const hasPako=typeof pako!=='undefined';
-      // Files ≥25MB need native streaming reader (XLSX.js would block/hang on 40MB+)
-      // Files <25MB use XLSX.js directly — faster, simpler, no decompression noise
-      const needNative=mb>=35;
-
       let result=null;
 
-      // ── PATH A: Large files (Forward ~40MB) ── native reader first
-      if(needNative&&hasPako){
-        setP(15,`📦  Streaming reader: ${file.name}`);
+      /* ── 1. Native streaming reader (works for any size file) ──────────
+         Reads the xlsx ZIP directly: central-dir parse → pako streaming
+         inflate → split rows → no blocking. Works for Forward (40MB),
+         Reverse (40-90MB), LMODC, Short Shipment — same path for all.    */
+      if(hasPako){
+        setP(15,`📖  Reading: ${file.name}`);
         result=await readExcelNative(buf);
         if(result&&result.rows&&result.rows.length>=2){
           resolve(finalize(result,'native-xml'));return;
         }
       }
 
-      // ── PATH B: XLSX.js (handles Reverse, LMODC, Short Shipment, small files) ──
-      // isPivotFmt now correctly skips pivot Sheet1 and finds raw Sheet2
-      setP(30,`📖  Reading: ${file.name}`);
+      /* ── 2. XLSX.js fallback (for files native reader can't handle) ── */
+      setP(50,`📖  Retrying: ${file.name}`);
       result=readExcel(buf,null);
       if(result&&result.rows&&result.rows.length>=2){
         resolve(finalize(result,'xlsx'));return;
       }
 
-      // ── PATH C: Small files where XLSX.js failed — try native reader ──
-      if(!needNative&&hasPako){
-        setP(50,`📦  Streaming reader: ${file.name}`);
-        result=await readExcelNative(buf);
-        if(result&&result.rows&&result.rows.length>=2){
-          resolve(finalize(result,'native-xml'));return;
-        }
-      }
-
-      // ── PATH D: Large files where native failed — try XLSX.js (may be slow) ──
-      // (already tried XLSX.js for small files in PATH B)
-      if(needNative){
-        result=readExcel(buf,null);
-        if(result&&result.rows&&result.rows.length>=2){
-          resolve(finalize(result,'xlsx-large'));return;
-        }
-      }
-
-      // ── PATH E: Last resort — binary string ──
-      setP(60,`🔄  Last resort binary read: ${file.name}`);
+      /* ── 3. Binary string — last resort ─────────────────────────────── */
       const r2=new FileReader();
       r2.onload=e2=>{
         result=readExcel(buf,e2.target.result);
