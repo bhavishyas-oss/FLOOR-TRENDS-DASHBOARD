@@ -438,10 +438,10 @@ function pRev(row,date,agg){
   const cu=client.toUpperCase();
   if(cu.includes('FTPL')&&cu.includes('REGIONAL'))return;
   if(cu.includes('MEESHO')&&cu.includes('REGIONAL'))return;
-  // Ageing (col AP) = numeric string like "14" — parseInt handles it perfectly
+  // Ageing (col AP) = numeric string like "3" — parseInt handles it perfectly
   const ageRaw=gv(row,
-    'ageing','Ageing','Ageing_Hour_Wise',    // col AP (numeric day count)
-    ); // col L (text bucket like "11 to 15 Days")
+    'ageing','Ageing',    // col AP (numeric day count)
+    ); // col AP (text bucket like "3")
   // Try numeric first; Ageing (col AP) is text so parseInt will return 0 for it
   const ageNum=parseFloat(ageRaw)||0;
   const age=Math.round(ageNum);
@@ -609,10 +609,10 @@ function identify(hdrs,filename){
 
 /* ═══════════════════════════════════════════════
    SMART HEADER-ROW FINDER (for Excel)
-   Scores each of the first 15 rows and picks the
+   Scores each of the first 30 rows and picks the
    one most likely to contain column headers.
 ═══════════════════════════════════════════════ */
-const HKEYS=['pivot','ageing','reason','loss','scanned','destination','bin',
+const HKEYS=['pivot','ageing','reason of loss','scanned','destination','bin',
   'location','order','status','message','client','manifest','current',
   'awb','shipment','bag','rec','area','code','return','row','labels'];
 function findHdrRow(raw){
@@ -634,7 +634,7 @@ function findHdrRow(raw){
    Skips all pivot-format sheets (per spec).
    Returns first valid RAW data sheet found.
 
-   Reverse file fix (47K rows × 40+ #N/A cols):
+   Reverse file fix (50K rows × 40+ #N/A cols):
    Lean mode tried FIRST: cellFormula:false +
    cellText:false + cellHTML:false skip storing
    formula strings (f), formatted text (w), and
@@ -714,7 +714,7 @@ function readExcel(buf, binStr){
   // ArrayBuffer strategies — lean mode FIRST for large formula-heavy files.
   // cellFormula:false + cellText:false + cellHTML:false skip storing f/w/h
   // per cell, keeping only v (value) and t (type). This saves ~300MB for
-  // files with hundreds of thousands of #N/A formula cells (Reverse file).
+  // files with hundreds of thousands of #N/A formula cells.
   const ARR_OPTS=[
     {cellFormula:false,cellText:false,cellHTML:false},             // Lean: memory efficient
     {cellFormula:false,cellText:false,cellHTML:false,raw:true},    // Lean + raw numbers
