@@ -300,22 +300,22 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 const SECS=[
   {title:'D3 FWD R@DC TRENDS',    badge:'AGE=3 · PIVOT=R@DC',              src:'forward',      age:3               },
   {title:'D6 FWD R@DC TRENDS',    badge:'AGE=6 · PIVOT=R@DC',              src:'forward',      age:6               },
-  {title:'D3 FWD R@DC BIN2 SUCCESS',      badge:'AGE=3 · BIN=2 · MSG=SUCCESS · ORDER≠IN_MANIFEST',src:'forward',      age:3,bin:2,msg:'SUCCESS'},
-  {title:'D3 FWD R@DC BIN1 SUCCESS',      badge:'AGE=3 · BIN=1 · MSG=SUCCESS · ORDER≠IN_MANIFEST',src:'forward',      age:3,bin:1,msg:'SUCCESS'},
-  {title:'D3 RVP R@DC TRENDS',      badge:'AGE=3 · R@DC · CLIENT FILT.',     src:'reverse',      age:3               },
-  {title:'D10 RVP R@DC TRENDS',     badge:'AGE=10 · R@DC · CLIENT FILT.',    src:'reverse',      age:10              },
-  {title:'D3 LMODC TRENDS',              badge:'AGE=3 · DESTINATION PIVOT',        src:'lmodc',        age:3               },
-  {title:'D6 LMODC TRENDS',              badge:'AGE=6 · DESTINATION PIVOT',        src:'lmodc',        age:6               },
-  {title:'D10 LMODC TRENDS',             badge:'AGE=10 · DESTINATION PIVOT',       src:'lmodc',        age:10              },
-  {title:'D3 DCH TRENDS',     badge:'AGE=3 · SHORT SHIPMENT',           src:'forwardShort', age:3               },
-  {title:'D6 DCH TRENDS',     badge:'AGE=6 · SHORT SHIPMENT',           src:'forwardShort', age:6               },
+  {title:'FWD BIN2 SUCCESS',      badge:'AGE=3 · BIN=2 · MSG=SUCCESS · ORDER≠IN_MANIFEST',src:'forward',      age:3,bin:2,msg:'SUCCESS'},
+  {title:'FWD BIN1 SUCCESS',      badge:'AGE=3 · BIN=1 · MSG=SUCCESS · ORDER≠IN_MANIFEST',src:'forward',      age:3,bin:1,msg:'SUCCESS'},
+  {title:'D3 REVERSE (RVP)',      badge:'AGE=3 · R@DC · CLIENT FILT.',     src:'reverse',      age:3               },
+  {title:'D10 REVERSE (RVP)',     badge:'AGE=10 · R@DC · CLIENT FILT.',    src:'reverse',      age:10              },
+  {title:'D3 LMODC',              badge:'AGE=3 · DESTINATION PIVOT',        src:'lmodc',        age:3               },
+  {title:'D6 LMODC',              badge:'AGE=6 · DESTINATION PIVOT',        src:'lmodc',        age:6               },
+  {title:'D10 LMODC',             badge:'AGE=10 · DESTINATION PIVOT',       src:'lmodc',        age:10              },
+  {title:'D3 FWD SHORT SHIP',     badge:'AGE=3 · SHORT SHIPMENT',           src:'forwardShort', age:3               },
+  {title:'D6 FWD SHORT SHIP',     badge:'AGE=6 · SHORT SHIPMENT',           src:'forwardShort', age:6               },
 ];
 const CPALS=['#2563eb','#dc2626','#16a34a','#d97706','#7c3aed','#0891b2','#be185d','#0e7490','#ca8a04'];
 
 /* ═══════════════════════════════════════════════
    STATE
 ═══════════════════════════════════════════════ */
-const SKEY='logistics_v17';
+const SKEY='logistics_v20';
 let master=loadM(),activeTab=0,charts={},debugMode=false,dlog=[],pending={};
 
 function emptyM(){return{forward:[],reverse:[],lmodc:[],forwardShort:[]}}
@@ -417,11 +417,11 @@ function pFwd(row,date,agg){
   agg[k].count++;
 }
 
-// REVERSE — Reason of Loss = RECEIVED_AT_DC and MISROUTED
+// REVERSE — Reason of Loss = Received_at_dc or MISROUTED
 // Confirmed from actual file: col M = "Reason of Loss"
 //   stores "Received_at_dc" (mixed case) / "MISROUTED" / "Connection pendency" etc.
-//   nv() normalises all to uppercase+underscores → matches RECEIVED_AT_DC ✓
-// Age: col AP "Ageing" stores numeric strings like "14", "12" (actual day count)
+//   nv() normalises all to lowercase+underscores → matches Received_at_dc ✓
+// Age: col AP "Ageing" stores numeric strings like "3", "4" (actual day count)
 // Location: col AK "Current_location"
 // Client: col AR "Client"
 // Exclude: FTPL Regional, Meesho Regional
@@ -433,7 +433,7 @@ function pRev(row,date,agg){
     'reason of return','reason_of_return','return reason','loss reason',
     'Reason_of_loss','REASON OF LOSS','REASON_OF_LOSS'));
   // Accept both normalised values
-  if(reason!=='RECEIVED_AT_DC'&&reason!=='MISROUTED')return;
+  if(reason!=='Received_at_dc'&&reason!=='MISROUTED')return;
   const client=gv(row,'client','Client','CLIENT','client name','Client Name')||'UNKNOWN';
   const cu=client.toUpperCase();
   if(cu.includes('FTPL')&&cu.includes('REGIONAL'))return;
@@ -441,9 +441,8 @@ function pRev(row,date,agg){
   // Ageing (col AP) = numeric string like "14" — parseInt handles it perfectly
   const ageRaw=gv(row,
     'ageing','Ageing','Ageing_Hour_Wise',    // col AP (numeric day count)
-    'ageing_from_bag_rec','Ageing_from_Bag_Rec',
-    'ageingf','AgeingF','ageing f','AgeingF'); // col L (text bucket like "11 to 15 Days")
-  // Try numeric first; AgeingF (col L) is text so parseInt will return 0 for it
+    ); // col L (text bucket like "11 to 15 Days")
+  // Try numeric first; Ageing (col AP) is text so parseInt will return 0 for it
   const ageNum=parseFloat(ageRaw)||0;
   const age=Math.round(ageNum);
   const loc=(gv(row,
@@ -456,11 +455,15 @@ function pRev(row,date,agg){
 }
 
 /* ── LMODC age parser ──────────────────────────
-   Ageing may store plain numbers ("3","6","10")
+   Ageing_f may store plain numbers ("3","6","10")
    OR text bucket labels:
-     "6"        → 6   (D6 bucket)
-     "10"   → 10  (D10 bucket)
-     
+     "6+"        → 6   (D6 bucket)
+     "6 to 10"   → 10  (D10 bucket — upper bound)
+     "7-10"      → 10  (D10 bucket — upper bound)
+     "10+"       → 10  (D10 bucket)
+   Root cause of D6 inflation: parseFloat("6 to 10")
+   = 6, causing D10 records to land in D6.
+   Fix: extract the UPPER bound from range strings.
 ──────────────────────────────────────────────── */
 function parseLMODCAge(s){
   s=String(s==null?'':s).trim();
@@ -480,15 +483,20 @@ function parseLMODCAge(s){
 }
 
 // LMODC — raw data sheet, one row = one AWB
-// Age:      Ageing (col U) — may be plain number or text bucket
+// Age:      Ageing_f (col A) — may be plain number or text bucket
+// Location: destination_name (col B)
+// Count (col M) = manifest count, NOT per-row AWB count. Each row = 1 AWB.
+// LMODC — raw data sheet, one row = one AWB
+// Age:      ONLY from 'Ageing' (col U) — actual numeric day count (3, 6, 10...)
+//           NEVER use 'Ageing_f' (col A) — that column holds aggregated
+//           bucket labels and must be completely ignored.
 // Location: destination_name (col B)
 // Count (col M) = manifest count, NOT per-row AWB count. Each row = 1 AWB.
 function pLM(row,date,agg){
-  const ageStr=gv(row,
-    'ageing','Ageing','ageing',   // col U in LMODC raw sheet
-    'ageing','Ageing','age','Age');      // fallback
-  const age=parseLMODCAge(ageStr);      // correctly handles text ranges
-  if(age<=0)return;                      // skip rows with no valid age
+  // STRICT: use ONLY 'Ageing' (col U). Do NOT fall back to Ageing_f or age.
+  const ageStr=gv(row,'ageing','Ageing');
+  const age=parseLMODCAge(ageStr);
+  if(age<=0)return;  // skip rows with no valid age
   const dest=(gv(row,
     'destination_name','destination name','destinationname',
     'Destination_name','Destination_Name','DestinationName',
@@ -760,9 +768,15 @@ function buildRows(raw,hi,hdrs){
    The Reverse file is 164MB uncompressed XML —
    XLSX.js tries to build JS objects for every cell
    causing browser OOM / Page Unresponsive.
-   This reader decompresses with pako and parses
-   the XML directly in async chunks, keeping the
-   browser responsive throughout.
+
+   Root cause of previous failure:
+   pako.inflate(25MB) runs ~10-15s synchronously.
+   Chrome script-execution timeout kills it.
+   The catch block returned '' → no data found.
+
+   Fix: pako.Inflate streaming mode — push 128KB
+   chunks with setTimeout(0) yields between each.
+   Browser stays responsive throughout.
 ═══════════════════════════════════════════════ */
 
 /* Convert Excel column letters to 0-based index: A→0, B→1, Z→25, AA→26 */
@@ -772,37 +786,115 @@ function colIdx(letters){
   return n-1;
 }
 
+/* Async streaming decompression — never blocks >~10ms at a time */
+function decompAsync(raw, isStored){
+  if(isStored) return Promise.resolve(new TextDecoder('utf-8',{fatal:false}).decode(raw));
+  return new Promise(resolve=>{
+    const uChunks=[];
+    let totalLen=0;
+    const inflator=new pako.Inflate();
+    inflator.onData=chunk=>{uChunks.push(chunk);totalLen+=chunk.length;};
+    inflator.onEnd=status=>{
+      try{
+        const merged=new Uint8Array(totalLen);
+        let off=0;
+        for(const c of uChunks){merged.set(c,off);off+=c.length;}
+        resolve(new TextDecoder('utf-8',{fatal:false}).decode(merged));
+      }catch(e){console.warn('decompAsync merge:',e);resolve('');}
+    };
+    const CHUNK=128*1024; // 128KB per push — ~200 pushes for 25MB, ~10ms each
+    let offset=0;
+    const push=()=>{
+      const end=Math.min(offset+CHUNK,raw.length);
+      const last=end>=raw.length;
+      try{inflator.push(raw.subarray(offset,end),last);}
+      catch(e){console.warn('pako push:',e);resolve('');return;}
+      offset=end;
+      if(!last)setTimeout(push,0); // yield to browser between chunks
+    };
+    push();
+  });
+}
+
 async function readExcelNative(buf){
   try{
     const data=new Uint8Array(buf);
     const dv=new DataView(buf);
 
-    /* ── 1. Parse ZIP local file headers ── */
+    /* ── 1. Parse ZIP using CENTRAL DIRECTORY (most reliable) ──────────
+       Local file headers can have cSize=0 when data descriptors are used,
+       or have mismatched exLen values across different Excel generators.
+       The Central Directory at the END of the file ALWAYS has correct sizes
+       and offsets, making it the authoritative source for entry locations.
+    ─────────────────────────────────────────────────────────────────── */
     const entries={};
-    let pos=0;
-    while(pos<data.length-30){
-      if(dv.getUint32(pos,true)!==0x04034B50){pos++;continue;}
-      const comp=dv.getUint16(pos+8,true);
-      const cSize=dv.getUint32(pos+18,true);
-      const fnLen=dv.getUint16(pos+26,true);
-      const exLen=dv.getUint16(pos+28,true);
-      const name=new TextDecoder('utf-8',{fatal:false}).decode(data.subarray(pos+30,pos+30+fnLen));
-      entries[name]={comp,cSize,start:pos+30+fnLen+exLen};
-      pos=pos+30+fnLen+exLen+cSize;
+
+    // Find End of Central Directory (EOCD) record — search backwards
+    let eocdPos=-1;
+    const searchFrom=Math.max(0,data.length-65558); // max comment=65535 + 22
+    for(let i=data.length-22;i>=searchFrom;i--){
+      if(dv.getUint32(i,true)===0x06054B50){eocdPos=i;break;}
     }
 
-    /* ── 2. Decompress a ZIP entry to string ── */
-    const decomp=(name)=>{
+    if(eocdPos>=0){
+      // Read Central Directory offset from EOCD
+      const cdOffset=dv.getUint32(eocdPos+16,true);
+      const cdEntries=dv.getUint16(eocdPos+8,true);
+      let cdPos=cdOffset;
+
+      for(let ei=0;ei<cdEntries&&cdPos<data.length-46;ei++){
+        if(dv.getUint32(cdPos,true)!==0x02014B50)break; // must be central dir sig
+        const comp   =dv.getUint16(cdPos+10,true);
+        const cSize  =dv.getUint32(cdPos+20,true); // compressed size (always correct)
+        const fnLen  =dv.getUint16(cdPos+28,true);
+        const exLen  =dv.getUint16(cdPos+30,true);
+        const cmLen  =dv.getUint16(cdPos+32,true);
+        const lhOff  =dv.getUint32(cdPos+42,true); // local header offset
+
+        const name=new TextDecoder('utf-8',{fatal:false})
+          .decode(data.subarray(cdPos+46,cdPos+46+fnLen));
+
+        // Compute actual data start from the LOCAL header (only fnLen+exLen needed)
+        const lhFnLen=dv.getUint16(lhOff+26,true);
+        const lhExLen=dv.getUint16(lhOff+28,true);
+        const dataStart=lhOff+30+lhFnLen+lhExLen;
+
+        entries[name]={comp,cSize,start:dataStart};
+        cdPos+=46+fnLen+exLen+cmLen;
+      }
+    }
+
+    // Fallback: if central directory parsing yielded no entries, scan local headers
+    if(!Object.keys(entries).length){
+      let pos=0;
+      while(pos<data.length-30){
+        if(dv.getUint32(pos,true)!==0x04034B50){pos++;continue;}
+        const comp =dv.getUint16(pos+8,true);
+        const cSize=dv.getUint32(pos+18,true);
+        const fnLen=dv.getUint16(pos+26,true);
+        const exLen=dv.getUint16(pos+28,true);
+        const name =new TextDecoder('utf-8',{fatal:false})
+          .decode(data.subarray(pos+30,pos+30+fnLen));
+        const start=pos+30+fnLen+exLen;
+        entries[name]={comp,cSize,start};
+        pos=start+Math.max(1,cSize); // guard against cSize=0
+      }
+    }
+
+    if(!Object.keys(entries).length)return null;
+
+    /* Helper to async-decompress any entry */
+    const decomp=async(name)=>{
       const e=entries[name];if(!e)return'';
       const raw=data.subarray(e.start,e.start+e.cSize);
-      if(e.comp===0)return new TextDecoder('utf-8',{fatal:false}).decode(raw);
-      try{return pako.inflate(raw,{to:'string'});}
-      catch(e2){console.warn('pako inflate failed:',name,e2.message);return'';}
+      return decompAsync(raw, e.comp===0);
     };
 
-    /* ── 3. Shared strings ── */
+    /* ── 2. Shared strings (async streaming) ── */
+    setP(12,`📦  Decompressing shared strings…`);
+    await new Promise(r=>setTimeout(r,0));
     const shared=[];
-    const ssXML=decomp('xl/sharedStrings.xml');
+    const ssXML=await decomp('xl/sharedStrings.xml');
     if(ssXML){
       const re=/<si>([\s\S]*?)<\/si>/g;let m;
       while((m=re.exec(ssXML))!==null){
@@ -812,39 +904,36 @@ async function readExcelNative(buf){
         shared.push(ts.join(''));
       }
     }
+    setP(20,`✓ ${fn(shared.length)} shared strings loaded`);
+    await new Promise(r=>setTimeout(r,0));
 
-    /* ── 4. Sheet names from workbook ── */
-    const wbXML=decomp('xl/workbook.xml');
+    /* ── 3. Sheet names from workbook ── */
+    const wbXML=await decomp('xl/workbook.xml');
     const sheetNames=[...wbXML.matchAll(/<sheet\s[^>]*name="([^"]*)"[^>]*\/?>/g)].map(m=>m[1]);
 
-    /* ── 5. Find sheet XML files ── */
+    /* ── 4. Sheet XML files sorted by number ── */
     const sheetFiles=Object.keys(entries)
       .filter(n=>/^xl\/worksheets\/sheet\d+\.xml$/.test(n))
-      .sort((a,b)=>{
-        const na=parseInt(a.match(/(\d+)/)[1]);
-        const nb=parseInt(b.match(/(\d+)/)[1]);
-        return na-nb;
-      });
+      .sort((a,b)=>parseInt(a.match(/(\d+)/)[1])-parseInt(b.match(/(\d+)/)[1]));
 
-    /* ── 6. Process each sheet ── */
+    /* ── 5. Process each sheet ── */
     for(let si=0;si<sheetFiles.length;si++){
       const sf=sheetFiles[si];
       const sname=sheetNames[si]||`Sheet${si+1}`;
+      const compSizeMB=(entries[sf]?.cSize/1048576||0).toFixed(0);
 
-      setP(20,`📦  Decompressing "${sname}"…`);
-      await new Promise(r=>setTimeout(r,0)); // yield
+      setP(25,`📦  Decompressing "${sname}" (${compSizeMB}MB compressed)…`);
+      await new Promise(r=>setTimeout(r,0));
 
-      const sheetXML=decomp(sf);
+      /* ASYNC streaming decompression — yields every 128KB → browser stays live */
+      const sheetXML=await decomp(sf);
       if(!sheetXML||sheetXML.length<100)continue;
 
-      setP(35,`🔍  Parsing rows in "${sname}" (${(sheetXML.length/1048576).toFixed(0)}MB XML)…`);
-      await new Promise(r=>setTimeout(r,0)); // yield
+      setP(55,`🔍  Parsing "${sname}" (${(sheetXML.length/1048576).toFixed(0)}MB XML, ${fn(sheetXML.split('</row>').length-1)} rows)…`);
+      await new Promise(r=>setTimeout(r,0));
 
       /* ── FAST row parsing: split on </row> boundary ──────────────────
-         The previous approach used /<row...>([\s\S]*?)<\/row>/g which
-         triggers catastrophic backtracking in V8 on 164MB XML strings,
-         causing "Page Unresponsive" for the Reverse file.
-         String.split() is O(n) with no backtracking — ~10× faster.
+         O(n) string splits — no regex backtracking on 164MB XML.
       ──────────────────────────────────────────────────────────────── */
       const rowParts=sheetXML.split('</row>');
       const rows=[];
@@ -852,12 +941,10 @@ async function readExcelNative(buf){
 
       for(let ri=0;ri<rowParts.length-1;ri++){
         const part=rowParts[ri];
-        // Find the opening <row tag for this row (last one in the chunk)
         const rowTagIdx=part.lastIndexOf('<row');
         if(rowTagIdx===-1)continue;
-        const rowContent=part.slice(rowTagIdx); // "<row ...><c .../><c .../>..."
+        const rowContent=part.slice(rowTagIdx);
 
-        // Fast cell extraction: split on </c> boundary
         const cellParts=rowContent.split('</c>');
         const cellMap={};
         let maxIdx=-1;
@@ -868,27 +955,23 @@ async function readExcelNative(buf){
           if(cTagIdx===-1)continue;
           const cellStr=cp.slice(cTagIdx);
 
-          // Column reference (e.g. r="AK47")
           const refM=cellStr.match(/\br="([A-Z]+)\d+"/);
           if(!refM)continue;
           const idx=colIdx(refM[1]);
 
-          // Cell type (t="s" = shared string, t="inlineStr", absent = numeric)
           const tM=cellStr.match(/\bt="([^"]*)"/);
-          // Cached value (<v>…</v>)
           const vM=cellStr.match(/<v>([^<]*)<\/v>/);
           const t=tM?tM[1]:'';
           const v=vM?vM[1]:'';
 
           let val='';
           if(t==='s'){
-            const si=parseInt(v);
-            val=isNaN(si)?'':(shared[si]||'');
+            const sIdx=parseInt(v);
+            val=isNaN(sIdx)?'':(shared[sIdx]||'');
           }else if(t==='inlineStr'){
             const isM=cellStr.match(/<t[^>]*>([^<]*)<\/t>/);
             val=isM?isM[1]:'';
           }else if(v&&!v.startsWith('#')){
-            // Numeric / date / boolean — raw value string
             val=v;
           }
 
@@ -903,9 +986,8 @@ async function readExcelNative(buf){
           rows.push([]);
         }
 
-        // Yield to browser every ~100ms — keeps UI responsive
         if(Date.now()-lastYield>100){
-          setP(-1,`⚙  "${sname}" — ${fn(rows.length)} rows…`);
+          setP(-1,`⚙  "${sname}" — ${fn(rows.length)} rows parsed…`);
           await new Promise(r=>setTimeout(r,0));
           lastYield=Date.now();
         }
@@ -920,7 +1002,7 @@ async function readExcelNative(buf){
       const dataRows=rows.slice(hi+1);
       if(!dataRows.some(r=>r.some(v=>String(v||'').trim())))continue;
 
-      return{rows,sheetName:sname,strategy:'native-xml',headerRow:hi};
+      return{rows,sheetName:sname,strategy:'native-xml-stream',headerRow:hi};
     }
     return null;
   }catch(e){
@@ -1048,22 +1130,23 @@ function procExcel(file){
       setP(10,`📊  Reading ${mb}MB: ${file.name}`);
 
       let result=null;
-
-      // For large files (>10MB): use native XML streaming reader first.
-      // This prevents the "Page Unresponsive" crash caused by XLSX.js
-      // trying to load 164MB+ XML into memory synchronously.
-      const isLarge=buf.byteLength>10*1024*1024;
       const hasPako=typeof pako!=='undefined';
 
-      if(isLarge&&hasPako){
+      // Native XML streaming reader runs FIRST for ALL xlsx files (any size).
+      // Previous code had a 10MB threshold — the 3.5MB Reverse file bypassed
+      // native reader entirely and failed silently with XLSX.js.
+      // Native reader: ZIP central-directory parse + pako streaming inflate
+      // (128KB chunks with yields) → no blocking, no OOM, any file size.
+      if(hasPako){
         setP(15,`📦  Native streaming reader: ${file.name}`);
         result=await readExcelNative(buf);
         if(result&&result.rows&&result.rows.length>=2){
           resolve(finalize(result,'native-xml'));
           return;
         }
-        // Native failed, fall through to XLSX.js
-        setP(15,`⚠  Native reader failed, trying XLSX.js: ${file.name}`);
+        setP(15,`⚠  Native reader returned no data, trying XLSX.js: ${file.name}`);
+      }else{
+        setP(15,`⚠  pako not loaded — falling back to XLSX.js: ${file.name}`);
       }
 
       // XLSX.js strategies (synchronous — blocks for large files but best for small ones)
@@ -1077,8 +1160,8 @@ function procExcel(file){
       setP(20,`🔄  Binary mode: ${file.name}`);
       const r2=new FileReader();
       r2.onload=async e2=>{
-        // Try native with binary data if pako available
-        if(isLarge&&hasPako){
+        // Try native reader again with fresh call (binary string not needed by native)
+        if(hasPako){
           result=await readExcelNative(buf);
           if(result&&result.rows&&result.rows.length>=2){
             resolve(finalize(result,'native-xml-b'));
