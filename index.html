@@ -419,7 +419,7 @@ function pFwd(row,date,agg){
 
 // REVERSE — Reason of Loss = Received_at_dc or MISROUTED
 // Confirmed from actual file: col M = "Reason of Loss"
-//   stores "Received_at_dc" (mixed case) / "MISROUTED" / "Connection pendency" etc.
+//   stores "Received_at_dc" / "MISROUTED" / "Connection pendency" etc.
 //   nv() normalises all to lowercase+underscores → matches Received_at_dc ✓
 // Age: col AP "Ageing" stores numeric strings like "3", "4" (actual day count)
 // Location: col AK "Current_location"
@@ -587,7 +587,7 @@ function idByHdrs(hdrs){
     'reason of Loss','Reason of loss','Reason of Loss','Reason Of Loss',
     'reason for loss','reason_for_loss','reason of return','reason_of_return',
     'return reason','loss reason','lossreason'];
-  if(hasE(hdrs,...RC)||hdrs.some(h=>mall(h,'reason','loss')||mall(h,'reason','return')))
+  if(hasE(hdrs, 'reason_of_loss','reason of loss')||hdrs.some(h=>mall(h,'reason_of_loss')||mall(h,'reason_of_loss')))
     return'reverse';
   // Per spec: Pivot column exists → ALWAYS Forward.
   // Short Shipment requires actual row values of Manifest_status=PARTIALLY_CLOSED,
@@ -634,7 +634,7 @@ function findHdrRow(raw){
    Skips all pivot-format sheets (per spec).
    Returns first valid RAW data sheet found.
 
-   Reverse file fix (47K rows × 10+ #N/A cols):
+   Reverse file fix (47K rows × 40+ #N/A cols):
    Lean mode tried FIRST: cellFormula:false +
    cellText:false + cellHTML:false skip storing
    formula strings (f), formatted text (w), and
