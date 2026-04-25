@@ -8,6 +8,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -314,7 +315,7 @@ const CPALS=['#2563eb','#dc2626','#16a34a','#d97706','#7c3aed','#0891b2','#be185
 /* ═══════════════════════════════════════════════
    STATE
 ═══════════════════════════════════════════════ */
-const SKEY='logistics_v12';
+const SKEY='logistics_v17';
 let master=loadM(),activeTab=0,charts={},debugMode=false,dlog=[],pending={};
 
 function emptyM(){return{forward:[],reverse:[],lmodc:[],forwardShort:[]}}
@@ -363,156 +364,155 @@ function cleanH(arr){
 /* ═══════════════════════════════════════════════
    FORMAT DETECTION
    "Pivot format" = column headers include ≥2
-   pure-numeric values (age buckets like 3,4,5,6…)
-   Pivot sheets inside Forward/Reverse → SKIP.
-   Pivot sheets inside LMODC/Short → PROCESS.
+   pure-numeric values (age buckets: 3,4,5,6…)
+   Per spec: ALL pivot sheets must be SKIPPED.
+   Only raw/collated data sheets are processed.
 ═══════════════════════════════════════════════ */
 function isPivotFmt(hdrs){
   const numCols=hdrs.filter(h=>/^\d+(\.\d+)?$/.test(String(h).trim()));
   return numCols.length>=2;
 }
 
-/* Parse a numeric count (handles formatted strings like "1,234") */
+/* Parse a numeric count (handles "1,234" formatted strings) */
 function parseCount(v){
-  if(v==null||v==='')return 0;
+  if(v==null||v===''||String(v).startsWith('#'))return 0;
   const n=parseInt(String(v).replace(/[^0-9\-]/g,''),10);
   return isNaN(n)||n<0?0:n;
 }
 
-/* Extract age-bucket columns from pivot headers */
-function getAgeCols(hdrs){
-  return hdrs
-    .filter(h=>/^\d+(\.\d+)?$/.test(String(h).trim()))
-    .map(h=>({col:h,age:parseFloat(h)}))
-    .sort((a,b)=>a.age-b.age);
-}
-
-/* Find the location/label column in a pivot sheet */
-function getLocCol(hdrs){
-  return hdrs.find(h=>{
-    const s=String(h).trim();
-    return s&&!/^\d+(\.\d+)?$/.test(s)&&ns(s)!=='grand total';
-  })||hdrs[0];
-}
-
-/* Expand a pivot-format sheet into individual age+location records */
-function processPivot(rows,type,date,hdrs,agg){
-  const ageCols=getAgeCols(hdrs);
-  const locCol=getLocCol(hdrs);
-  const destKey=type==='lmodc'?'destination':'location';
-  if(!ageCols.length)return;
-  for(const row of rows){
-    const rawLoc=String(row[locCol]??'').trim();
-    if(!rawLoc)continue;
-    const locN=ns(rawLoc);
-    if(locN==='grand total'||locN==='row labels'||locN==='total'||locN==='')continue;
-    const locUC=rawLoc.toUpperCase();
-    for(const {col,age} of ageCols){
-      const count=parseCount(row[col]);
-      if(count<=0)continue;
-      const k=`${age}|${locUC}`;
-      if(!agg[k]){
-        const rec={date,age,count:0,fromPivot:true};
-        rec[destKey]=locUC;
-        if(type==='reverse')rec.client='ALL';
-        agg[k]=rec;
-      }
-      agg[k].count+=count;
-    }
-  }
-}
-
 /* ═══════════════════════════════════════════════
-   APPLY ROWS
-   Forward/Reverse: SKIP pivot sheets (raw data req.)
-   LMODC/Short:     PROCESS pivot sheets (pre-agg.)
-   Raw format:      process for all types
+   RAW FILE ROW PROCESSORS
+   Each applies the correct base-filter.
+   All confirmed against actual file structures.
 ═══════════════════════════════════════════════ */
-function applyRows(rows,type,date,hdrs){
-  const pivotFormat=isPivotFmt(hdrs);
 
-  // Forward/Reverse pivot sheets → skip, raw data must come from another sheet
-  if(pivotFormat&&(type==='forward'||type==='reverse')){
-    return{awbs:0,pivot:true,records:0,skipped:true};
-  }
-
-  const agg={};
-  if(pivotFormat){
-    // LMODC / ForwardShort: legitimately pre-aggregated pivot files
-    processPivot(rows,type,date,hdrs,agg);
-  }else{
-    for(const row of rows){
-      if(!Object.values(row).some(v=>String(v).trim()))continue;
-      dispatchRaw(type,row,date,agg);
-    }
-  }
-  const recs=Object.values(agg);
-  master[type]=(master[type]||[]).filter(r=>r.date!==date);
-  master[type].push(...recs);
-  const awbs=recs.reduce((s,r)=>s+r.count,0);
-  return{awbs,pivot:pivotFormat,records:recs.length};
-}
-// FORWARD: Pivot=RECEIVED_AT_DC, order_status≠IN_MANIFEST
-// Bin stored but NOT filtered here — bin filter for BIN1/BIN2 sections is in buildPivot
+// FORWARD — Pivot=RECEIVED_AT_DC (only filter; order_status stored for BIN-section filtering)
+// Age:     Ageing_from_Bag_Rec (col DG) or Ageing_from_bag_recc (col A)
+// Location:Current_location (col AW)
+// Bin:     bin_level (col FJ)
+// Message: message (col FL)
+// OS:      order_status stored per record so BIN sections can exclude IN_MANIFEST
 function pFwd(row,date,agg){
   const pivot=nv(gv(row,'pivot','Pivot'));
   if(pivot!=='RECEIVED_AT_DC')return;
-  const os=nv(gv(row,'order_status','order status','orderstatus',
-    'Order_status','Order_Status'));
-  if(os==='IN_MANIFEST')return;
   const binStr=gv(row,'bin_level','bin level','binlevel',
     'Bin_Level','Bin_level','BinLevel','bin','Bin');
-  const bin=parseInt(binStr,10)||0;   // 0 = no bin info
-  const age=gn(row,'ageing_from_bag_rec','ageing from bag rec',
-    'Ageing_from_Bag_Rec','Ageing_From_Bag_Rec','Ageing from Bag Rec',
-    'ageingfrombagrec','ageing','Ageing','age','Age');
-  const loc=(gv(row,'current_location','current location','currentlocation',
-    'Current_location','Current_Location','CurrentLocation','location','Location')
+  const bin=parseInt(binStr,10)||0;
+  // Store order_status so BIN1/BIN2 sections can exclude IN_MANIFEST
+  const os=nv(gv(row,'order_status','order status','orderstatus',
+    'Order_status','Order_Status'));
+  // Try the more precise column first (DG), fall back to col A variant
+  const age=gn(row,
+    'ageing_from_bag_rec','Ageing_from_Bag_Rec','Ageing_From_Bag_Rec',
+    'ageing from bag rec','ageing_from_bag_recc','Ageing_from_bag_recc',
+    'ageing','Ageing','age','Age');
+  const loc=(gv(row,
+    'current_location','Current_location','Current_Location','currentlocation',
+    'current location','location','Location')
     ||'UNKNOWN').toUpperCase();
   const msg=nv(gv(row,'message','Message','msg','Msg'));
-  const k=`${age}|${loc}|${bin}|${msg}`;
-  if(!agg[k])agg[k]={date,age,location:loc,bin,msg,count:0};
+  // Include os in key so IN_MANIFEST records are tracked separately
+  const k=`${age}|${loc}|${bin}|${msg}|${os}`;
+  if(!agg[k])agg[k]={date,age,location:loc,bin,msg,os,count:0};
   agg[k].count++;
 }
 
-// REVERSE: Reason of Loss = RECEIVED_AT_DC or MISROUTED, exclude FTPL/Meesho Regional
+// REVERSE — Reason of Loss = RECEIVED_AT_DC and MISROUTED
+// Confirmed from actual file: col M = "Reason of Loss"
+//   stores "Received_at_dc" (mixed case) / "MISROUTED" / "Connection pendency" etc.
+//   nv() normalises all to uppercase+underscores → matches RECEIVED_AT_DC ✓
+// Age: col AP "Ageing" stores numeric strings like "14", "12" (actual day count)
+// Location: col AK "Current_location"
+// Client: col AR "Client"
+// Exclude: FTPL Regional, Meesho Regional
 function pRev(row,date,agg){
   const reason=nv(gv(row,
-    'reason of loss','reason_of_loss','reasonofloss',
-    'reason of Loss','Reason of loss','Reason of Loss','Reason Of Loss',
+    'reason of loss','Reason of Loss','reason_of_loss','Reason_of_Loss',
+    'Reason Of Loss','reason of Loss','reasonofloss',
     'reason for loss','reason_for_loss',
-    'reason of return','reason_of_return','return reason',
-    'loss reason','remark','remarks'));
+    'reason of return','reason_of_return','return reason','loss reason',
+    'Reason_of_loss','REASON OF LOSS','REASON_OF_LOSS'));
+  // Accept both normalised values
   if(reason!=='RECEIVED_AT_DC'&&reason!=='MISROUTED')return;
   const client=gv(row,'client','Client','CLIENT','client name','Client Name')||'UNKNOWN';
   const cu=client.toUpperCase();
   if(cu.includes('FTPL')&&cu.includes('REGIONAL'))return;
   if(cu.includes('MEESHO')&&cu.includes('REGIONAL'))return;
-  const age=gn(row,'ageing','Ageing','age','Age',
-    'ageing_from_bag_rec','Ageing_from_Bag_Rec');
-  const loc=(gv(row,'current_location','Current_location','current location',
-    'currentlocation','location','Location')||'UNKNOWN').toUpperCase();
+  // Ageing (col AP) = numeric string like "14" — parseInt handles it perfectly
+  const ageRaw=gv(row,
+    'ageing','Ageing','Ageing_Hour_Wise',    // col AP (numeric day count)
+    'ageing_from_bag_rec','Ageing_from_Bag_Rec',
+    'ageingf','AgeingF','ageing f','AgeingF'); // col L (text bucket like "11 to 15 Days")
+  // Try numeric first; AgeingF (col L) is text so parseInt will return 0 for it
+  const ageNum=parseFloat(ageRaw)||0;
+  const age=Math.round(ageNum);
+  const loc=(gv(row,
+    'current_location','Current_location','Current_Location','currentlocation',
+    'current location','location','Location')
+    ||'UNKNOWN').toUpperCase();
   const k=`${age}|${loc}|${client}`;
   if(!agg[k])agg[k]={date,age,location:loc,client,count:0};
   agg[k].count++;
 }
 
-// LMODC: map destination + age
+/* ── LMODC age parser ──────────────────────────
+   Ageing_f may store plain numbers ("3","6","10")
+   OR text bucket labels:
+     "6"        → 6   (D6 bucket)
+     "10"   → 10  (D10 bucket)
+     "7-10"      → 10  (D10 bucket — upper bound)
+     "10+"       → 10  (D10 bucket — upper bound)
+──────────────────────────────────────────────── */
+function parseLMODCAge(s){
+  s=String(s==null?'':s).trim();
+  if(!s)return 0;
+  // Pure integer or decimal: "3", "6", "10", "3.0"
+  if(/^\d+(\.\d+)?$/.test(s))return Math.round(parseFloat(s));
+  // Range "X to Y" or "X-Y": use UPPER bound Y
+  // (e.g. "6 to 10" → 10, "7-10" → 10, "4-6" → 6)
+  const rng=s.match(/(\d+)\s*(?:to|-)\s*(\d+)/i);
+  if(rng)return parseInt(rng[2]);
+  // "X+" bucket: use X ("6+" → 6, "10+" → 10)
+  const plus=s.match(/^(\d+)\s*\+/);
+  if(plus)return parseInt(plus[1]);
+  // Fallback: largest number found in string
+  const nums=[...s.matchAll(/\d+/g)].map(m=>parseInt(m[0]));
+  return nums.length?Math.max(...nums):0;
+}
+
+// LMODC — raw data sheet, one row = one AWB
+// Age:      Ageing_f (col A) — may be plain number or text bucket
+// Location: destination_name (col B)
+// Count (col M) = manifest count, NOT per-row AWB count. Each row = 1 AWB.
 function pLM(row,date,agg){
-  const age=gn(row,'ageing','Ageing','age','Age');
-  const dest=(gv(row,'destination_name','destination name','destinationname',
-    'Destination_name','Destination_Name','DestinationName','destination','Destination')
+  const ageStr=gv(row,
+    'ageing_f','Ageing_f','ageing f',   // col A in LMODC raw sheet
+    'ageing','Ageing','age','Age');      // fallback
+  const age=parseLMODCAge(ageStr);      // correctly handles text ranges
+  if(age<=0)return;                      // skip rows with no valid age
+  const dest=(gv(row,
+    'destination_name','destination name','destinationname',
+    'Destination_name','Destination_Name','DestinationName',
+    'destination','Destination')
     ||'UNKNOWN').toUpperCase();
+  // Each row = 1 AWB. Do NOT use Count column as a multiplier.
   const k=`${age}|${dest}`;
   if(!agg[k])agg[k]={date,age,destination:dest,count:0};
   agg[k].count++;
 }
 
-// FORWARD SHORT: all rows (no manifest_status filter per updated spec)
+// FORWARD SHORT SHIPMENT — same raw structure as Forward
+// Age:      Ageing_from_Bag_Rec (col DV in short file)
+// Location: Current_location (col BH in short file)
+// All rows processed (no PARTIALLY_CLOSED filter on sections per spec)
 function pSh(row,date,agg){
-  const age=gn(row,'ageing_from_bag_rec','Ageing_from_Bag_Rec',
-    'ageing from bag rec','ageing','Ageing','age','Age');
-  const loc=(gv(row,'current_location','Current_location','location','Location')
+  const age=gn(row,
+    'ageing_from_bag_rec','Ageing_from_Bag_Rec','Ageing_From_Bag_Rec',
+    'ageing from bag rec','ageing_from_bag_recc','Ageing_from_bag_recc',
+    'ageing','Ageing','age','Age');
+  const loc=(gv(row,
+    'current_location','Current_location','Current_Location','currentlocation',
+    'current location','location','Location')
     ||'UNKNOWN').toUpperCase();
   const k=`${age}|${loc}`;
   if(!agg[k])agg[k]={date,age,location:loc,count:0};
@@ -520,21 +520,19 @@ function pSh(row,date,agg){
 }
 
 function dispatchRaw(type,row,date,agg){
-  if(type==='forward')     pFwd(row,date,agg);
-  else if(type==='reverse')     pRev(row,date,agg);
-  else if(type==='lmodc')       pLM(row,date,agg);
-  else if(type==='forwardShort')pSh(row,date,agg);
+  if(type==='forward')           pFwd(row,date,agg);
+  else if(type==='reverse')      pRev(row,date,agg);
+  else if(type==='lmodc')        pLM(row,date,agg);
+  else if(type==='forwardShort') pSh(row,date,agg);
 }
 
 /* ═══════════════════════════════════════════════
    APPLY ROWS
-   CRITICAL: Pivot/aggregated sheets are SKIPPED.
-   Only raw row-per-AWB data is processed.
+   STRICT: Pivot-format sheets are ALWAYS skipped.
+   Only raw row-level data is processed (per spec).
 ═══════════════════════════════════════════════ */
 function applyRows(rows,type,date,hdrs){
-  // If headers look like a pivot table (numeric age-bucket columns), skip entirely
   if(isPivotFmt(hdrs))return{awbs:0,pivot:true,records:0,skipped:true};
-
   const agg={};
   for(const row of rows){
     if(!Object.values(row).some(v=>String(v).trim()))continue;
@@ -626,101 +624,121 @@ function findHdrRow(raw){
 
 /* ═══════════════════════════════════════════════
    ROBUST EXCEL READER
-   typeHint guides sheet selection:
-   • forward/reverse → prefer raw (non-pivot) sheets
-   • lmodc/forwardShort → prefer pivot sheets
-   Tries ArrayBuffer strategies first, then falls
-   back to BinaryString for large/complex files.
-═══════════════════════════════════════════════ */
-function readExcel(buf,typeHint,binStr){
-  // preferPivot: LMODC and Short files are legitimately pivot-format
-  const preferPivot=typeHint==='lmodc'||typeHint==='forwardShort';
+   Skips all pivot-format sheets (per spec).
+   Returns first valid RAW data sheet found.
 
-  const tryWB=(opts,type)=>{
-    try{return XLSX.read(buf,Object.assign({type:type||'array',bookVBA:false,bookProps:false},opts));}
-    catch(e){console.warn('XLSX.read failed:',e.message);return null;}
-  };
-  const tryJson=(ws,opts={})=>{
-    if(!ws)return[];
-    try{return XLSX.utils.sheet_to_json(ws,Object.assign({header:1,defval:''},opts))||[];}
-    catch(e){console.warn('sheet_to_json failed:',e.message);return[];}
-  };
-  const tryCSVSheet=(ws)=>{
-    if(!ws)return[];
+   Reverse file fix (47K rows × 10+ #N/A cols):
+   Lean mode tried FIRST: cellFormula:false +
+   cellText:false + cellHTML:false skip storing
+   formula strings (f), formatted text (w), and
+   HTML (h) — only cached value (v) + type (t)
+   kept. For ~500K formula cells this saves ~300MB
+   of RAM, preventing the browser from crashing.
+   WTF:false suppresses parse errors.
+   toRows() tries 3 independent strategies/sheet.
+═══════════════════════════════════════════════ */
+function readExcel(buf, binStr){
+  const tryWB=(data,type,opts)=>{
     try{
-      const csv=XLSX.utils.sheet_to_csv(ws,{blankrows:false});
-      if(!csv||!csv.replace(/,/g,'').trim())return[];
-      const r=Papa.parse(csv,{header:false,skipEmptyLines:true,delimiter:','});
-      return r.data||[];
-    }catch(e){return[];}
+      return XLSX.read(data,Object.assign(
+        {type, bookVBA:false, bookProps:false, WTF:false},
+        opts
+      ));
+    }catch(e){console.warn('XLSX.read failed:',type,JSON.stringify(opts),e.message);return null;}
   };
-  // Check up to 100 rows to handle files with many title/header rows at top
-  const hasData=r=>{
-    if(!r||r.length<2)return false;
-    const limit=Math.min(r.length,100);
-    for(let i=0;i<limit;i++){
-      const row=r[i];if(!row)continue;
-      const cells=Array.isArray(row)?row:Object.values(row);
+
+  // 3 independent strategies per sheet
+  const toRows=(ws)=>{
+    if(!ws)return[];
+    if(!ws['!ref']&&ws['!dim'])try{ws['!ref']=ws['!dim'];}catch(_){}
+
+    // A: raw:true — fastest, preserves exact numeric values
+    try{
+      const r=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
+      if(r&&r.length>=2)return r;
+    }catch(_){}
+
+    // B: CSV conversion — works even without proper !ref
+    try{
+      const csv=XLSX.utils.sheet_to_csv(ws,{blankrows:false,FS:','});
+      if(csv&&csv.replace(/,/g,'').trim()){
+        const r=Papa.parse(csv,{header:false,skipEmptyLines:true}).data||[];
+        if(r.length>=2)return r;
+      }
+    }catch(_){}
+
+    // C: raw:false — formats numbers/dates as strings
+    try{
+      const r=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:false});
+      if(r&&r.length>=2)return r;
+    }catch(_){}
+
+    return[];
+  };
+
+  const hasData=rows=>{
+    if(!rows||rows.length<2)return false;
+    const n=Math.min(rows.length,50);
+    for(let i=0;i<n;i++){
+      const r=rows[i];if(!r)continue;
+      const cells=Array.isArray(r)?r:Object.values(r);
       if(cells.some(c=>String(c||'').replace(/,/g,'').trim()))return true;
     }
     return false;
   };
-  const getHdrs=raw=>{
-    const hi=findHdrRow(raw);
-    return cleanH((raw[hi]||[]).map(h=>String(h==null?'':h)));
+
+  const scanWB=(wb,stratName)=>{
+    if(!wb||!wb.SheetNames||!wb.SheetNames.length)return null;
+    for(const sname of wb.SheetNames){
+      const ws=wb.Sheets[sname];if(!ws)continue;
+      const rows=toRows(ws);
+      if(!hasData(rows))continue;
+      const hi=findHdrRow(rows);
+      const hdrs=cleanH((rows[hi]||[]).map(h=>String(h==null?'':h)));
+      if(isPivotFmt(hdrs)){console.info('Skip pivot sheet:',sname);continue;}
+      const dataRows=rows.slice(hi+1);
+      if(!dataRows.some(r=>(Array.isArray(r)?r:Object.values(r||{}))
+          .some(v=>String(v||'').trim())))continue;
+      return{rows,sheetName:sname,strategy:stratName,headerRow:hi};
+    }
+    return null;
   };
 
-  // All strategies: fastest (raw:true / minimal) first for large files
-  const strategies=[
-    {name:'raw:true',   wopts:{raw:true},                                         jopts:{raw:true}   },
-    {name:'plain',      wopts:{},                                                  jopts:{}           },
-    {name:'raw:false',  wopts:{raw:false,cellText:false,cellDates:false},          jopts:{raw:false}  },
-    {name:'stubs',      wopts:{sheetStubs:true,raw:true},                         jopts:{raw:true}   },
+  // ArrayBuffer strategies — lean mode FIRST for large formula-heavy files.
+  // cellFormula:false + cellText:false + cellHTML:false skip storing f/w/h
+  // per cell, keeping only v (value) and t (type). This saves ~300MB for
+  // files with hundreds of thousands of #N/A formula cells (Reverse file).
+  const ARR_OPTS=[
+    {cellFormula:false,cellText:false,cellHTML:false},             // Lean: memory efficient
+    {cellFormula:false,cellText:false,cellHTML:false,raw:true},    // Lean + raw numbers
+    {},                                                             // Plain: most compatible
+    {raw:true},                                                     // Raw: keep numeric types
+    {cellText:false},                                               // No text cache
+    {sheetStubs:true,cellFormula:false,cellText:false},            // Lean + empty cells
   ];
 
-  // Collect results: {raw, sheetName, strategy, isPivot}
-  let rawSheet=null,pivotSheet=null;
-
-  const scanWorkbook=(wb,stratName)=>{
-    if(!wb||!wb.SheetNames||!wb.SheetNames.length)return;
-    for(const sn of wb.SheetNames){
-      const ws=wb.Sheets[sn];if(!ws)continue;
-      let raw=tryJson(ws,{raw:true});
-      if(!hasData(raw)){
-        // Try forcing !ref from !dim
-        if(ws['!ref']===undefined&&ws['!dim']){
-          try{ws['!ref']=ws['!dim'];}catch(_){}
-          raw=tryJson(ws,{raw:true});
-        }
-        if(!hasData(raw))raw=tryCSVSheet(ws);
-        if(!hasData(raw))continue;
-      }
-      const hdrs=getHdrs(raw);
-      const isPvt=isPivotFmt(hdrs);
-      if(isPvt&&!pivotSheet)pivotSheet={raw,sheetName:sn,strategy:stratName};
-      if(!isPvt&&!rawSheet)rawSheet={raw,sheetName:sn,strategy:stratName};
-      if(rawSheet&&pivotSheet)return; // have both, stop
-    }
-  };
-
-  // Try ArrayBuffer strategies
-  for(const s of strategies){
-    if(rawSheet&&pivotSheet)break;
-    const wb=tryWB(s.wopts,'array');
-    scanWorkbook(wb,s.name);
+  for(const opts of ARR_OPTS){
+    const wb=tryWB(buf,'array',opts);
+    const result=scanWB(wb,`array/${JSON.stringify(opts)}`);
+    if(result)return result;
   }
 
-  // If still missing what we need, try BinaryString (better for some large files)
-  if((!rawSheet&&!preferPivot)||(!pivotSheet&&preferPivot)){
-    if(binStr){
-      const wbBin=tryWB({},'binary');
-      scanWorkbook(wbBin,'binary');
+  // BinaryString fallback — different XLSX.js code path; often works for
+  // files that fail with ArrayBuffer strategies
+  if(binStr){
+    const BIN_OPTS=[
+      {cellFormula:false,cellText:false,cellHTML:false},
+      {},
+      {raw:true},
+    ];
+    for(const opts of BIN_OPTS){
+      const wb=tryWB(binStr,'binary',opts);
+      const result=scanWB(wb,`binary/${JSON.stringify(opts)}`);
+      if(result)return result;
     }
   }
 
-  // Return the right sheet for this file type
-  if(preferPivot)return pivotSheet||rawSheet||null;
-  return rawSheet||pivotSheet||null;
+  return null;
 }
 
 /* ═══════════════════════════════════════════════
@@ -738,33 +756,203 @@ function buildRows(raw,hi,hdrs){
 }
 
 /* ═══════════════════════════════════════════════
+   NATIVE ZIP/XML EXCEL READER
+   For large files (>10MB) where XLSX.js hangs.
+   The Reverse file is 164MB uncompressed XML —
+   XLSX.js tries to build JS objects for every cell
+   causing browser OOM / Page Unresponsive.
+   This reader decompresses with pako and parses
+   the XML directly in async chunks, keeping the
+   browser responsive throughout.
+═══════════════════════════════════════════════ */
+
+/* Convert Excel column letters to 0-based index: A→0, B→1, Z→25, AA→26 */
+function colIdx(letters){
+  let n=0;
+  for(const ch of letters.toUpperCase())n=n*26+ch.charCodeAt(0)-64;
+  return n-1;
+}
+
+async function readExcelNative(buf){
+  try{
+    const data=new Uint8Array(buf);
+    const dv=new DataView(buf);
+
+    /* ── 1. Parse ZIP local file headers ── */
+    const entries={};
+    let pos=0;
+    while(pos<data.length-30){
+      if(dv.getUint32(pos,true)!==0x04034B50){pos++;continue;}
+      const comp=dv.getUint16(pos+8,true);
+      const cSize=dv.getUint32(pos+18,true);
+      const fnLen=dv.getUint16(pos+26,true);
+      const exLen=dv.getUint16(pos+28,true);
+      const name=new TextDecoder('utf-8',{fatal:false}).decode(data.subarray(pos+30,pos+30+fnLen));
+      entries[name]={comp,cSize,start:pos+30+fnLen+exLen};
+      pos=pos+30+fnLen+exLen+cSize;
+    }
+
+    /* ── 2. Decompress a ZIP entry to string ── */
+    const decomp=(name)=>{
+      const e=entries[name];if(!e)return'';
+      const raw=data.subarray(e.start,e.start+e.cSize);
+      if(e.comp===0)return new TextDecoder('utf-8',{fatal:false}).decode(raw);
+      try{return pako.inflate(raw,{to:'string'});}
+      catch(e2){console.warn('pako inflate failed:',name,e2.message);return'';}
+    };
+
+    /* ── 3. Shared strings ── */
+    const shared=[];
+    const ssXML=decomp('xl/sharedStrings.xml');
+    if(ssXML){
+      const re=/<si>([\s\S]*?)<\/si>/g;let m;
+      while((m=re.exec(ssXML))!==null){
+        const ts=[...m[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map(t=>
+          (t[1]||'').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#(\d+);/g,(_,n)=>String.fromCharCode(+n))
+        );
+        shared.push(ts.join(''));
+      }
+    }
+
+    /* ── 4. Sheet names from workbook ── */
+    const wbXML=decomp('xl/workbook.xml');
+    const sheetNames=[...wbXML.matchAll(/<sheet\s[^>]*name="([^"]*)"[^>]*\/?>/g)].map(m=>m[1]);
+
+    /* ── 5. Find sheet XML files ── */
+    const sheetFiles=Object.keys(entries)
+      .filter(n=>/^xl\/worksheets\/sheet\d+\.xml$/.test(n))
+      .sort((a,b)=>{
+        const na=parseInt(a.match(/(\d+)/)[1]);
+        const nb=parseInt(b.match(/(\d+)/)[1]);
+        return na-nb;
+      });
+
+    /* ── 6. Process each sheet ── */
+    for(let si=0;si<sheetFiles.length;si++){
+      const sf=sheetFiles[si];
+      const sname=sheetNames[si]||`Sheet${si+1}`;
+
+      setP(20,`📦  Decompressing "${sname}"…`);
+      await new Promise(r=>setTimeout(r,0)); // yield
+
+      const sheetXML=decomp(sf);
+      if(!sheetXML||sheetXML.length<100)continue;
+
+      setP(35,`🔍  Parsing rows in "${sname}" (${(sheetXML.length/1048576).toFixed(0)}MB XML)…`);
+      await new Promise(r=>setTimeout(r,0)); // yield
+
+      /* ── FAST row parsing: split on </row> boundary ──────────────────
+         The previous approach used /<row...>([\s\S]*?)<\/row>/g which
+         triggers catastrophic backtracking in V8 on 164MB XML strings,
+         causing "Page Unresponsive" for the Reverse file.
+         String.split() is O(n) with no backtracking — ~10× faster.
+      ──────────────────────────────────────────────────────────────── */
+      const rowParts=sheetXML.split('</row>');
+      const rows=[];
+      let lastYield=Date.now();
+
+      for(let ri=0;ri<rowParts.length-1;ri++){
+        const part=rowParts[ri];
+        // Find the opening <row tag for this row (last one in the chunk)
+        const rowTagIdx=part.lastIndexOf('<row');
+        if(rowTagIdx===-1)continue;
+        const rowContent=part.slice(rowTagIdx); // "<row ...><c .../><c .../>..."
+
+        // Fast cell extraction: split on </c> boundary
+        const cellParts=rowContent.split('</c>');
+        const cellMap={};
+        let maxIdx=-1;
+
+        for(let ci=0;ci<cellParts.length-1;ci++){
+          const cp=cellParts[ci];
+          const cTagIdx=cp.lastIndexOf('<c');
+          if(cTagIdx===-1)continue;
+          const cellStr=cp.slice(cTagIdx);
+
+          // Column reference (e.g. r="AK47")
+          const refM=cellStr.match(/\br="([A-Z]+)\d+"/);
+          if(!refM)continue;
+          const idx=colIdx(refM[1]);
+
+          // Cell type (t="s" = shared string, t="inlineStr", absent = numeric)
+          const tM=cellStr.match(/\bt="([^"]*)"/);
+          // Cached value (<v>…</v>)
+          const vM=cellStr.match(/<v>([^<]*)<\/v>/);
+          const t=tM?tM[1]:'';
+          const v=vM?vM[1]:'';
+
+          let val='';
+          if(t==='s'){
+            const si=parseInt(v);
+            val=isNaN(si)?'':(shared[si]||'');
+          }else if(t==='inlineStr'){
+            const isM=cellStr.match(/<t[^>]*>([^<]*)<\/t>/);
+            val=isM?isM[1]:'';
+          }else if(v&&!v.startsWith('#')){
+            // Numeric / date / boolean — raw value string
+            val=v;
+          }
+
+          if(val){cellMap[idx]=val;if(idx>maxIdx)maxIdx=idx;}
+        }
+
+        if(maxIdx>=0){
+          const arr=new Array(maxIdx+1).fill('');
+          for(const [idx,val] of Object.entries(cellMap))arr[parseInt(idx)]=val;
+          rows.push(arr);
+        }else{
+          rows.push([]);
+        }
+
+        // Yield to browser every ~100ms — keeps UI responsive
+        if(Date.now()-lastYield>100){
+          setP(-1,`⚙  "${sname}" — ${fn(rows.length)} rows…`);
+          await new Promise(r=>setTimeout(r,0));
+          lastYield=Date.now();
+        }
+      }
+
+      if(rows.length<2)continue;
+
+      const hi=findHdrRow(rows);
+      const hdrs=cleanH((rows[hi]||[]).map(h=>String(h==null?'':h)));
+      if(isPivotFmt(hdrs)){console.info('Native: skip pivot:',sname);continue;}
+
+      const dataRows=rows.slice(hi+1);
+      if(!dataRows.some(r=>r.some(v=>String(v||'').trim())))continue;
+
+      return{rows,sheetName:sname,strategy:'native-xml',headerRow:hi};
+    }
+    return null;
+  }catch(e){
+    console.error('readExcelNative error:',e);
+    return null;
+  }
+}
+
+/* ═══════════════════════════════════════════════
    CSV PROCESSING  (Papa Parse streaming)
-   LMODC/Short pivot CSVs → buffered + processPivot
-   Forward/Reverse pivot CSVs → skip (wrong sheet)
-   Raw CSVs → streamed row-by-row
+   Pivot-format CSVs are ALWAYS skipped.
+   Raw CSVs are streamed row-by-row.
 ═══════════════════════════════════════════════ */
 function procCSV(file){
   return new Promise(resolve=>{
     const date=xDate(file.name);
-    const typeHint=idByName(file.name);
-    const preferPivot=typeHint==='lmodc'||typeHint==='forwardShort';
-    let type=null,how='',hdrs=[],pivotMode=false;
+    let type=null,how='',hdrs=[];
     const agg={};
-    const pivotBuf=[];
     let rowCount=0,skipped=false;
 
     Papa.parse(file,{
       header:true,skipEmptyLines:true,
-      transformHeader:h=>String(h==null?'':h).replace(/^\uFEFF/,'').replace(/\u00A0/g,' ').trim(),
+      transformHeader:h=>String(h==null?'':h)
+        .replace(/^\uFEFF/,'').replace(/\u00A0/g,' ').trim(),
       chunk(res){
         if(!hdrs.length){
           const f=res.meta&&res.meta.fields;
           hdrs=cleanH(f&&f.length?f:Object.keys(res.data[0]||{}));
           if(hdrs.length){
-            const isPvt=isPivotFmt(hdrs);
-            // Skip pivot CSVs for forward/reverse (need raw data)
-            if(isPvt&&!preferPivot){skipped=true;return;}
-            pivotMode=isPvt&&preferPivot;
+            // Strict: skip pivot-format CSVs
+            if(isPivotFmt(hdrs)){skipped=true;return;}
             const r=identify(hdrs,file.name);
             type=r.type;how=r.how;
           }
@@ -772,31 +960,26 @@ function procCSV(file){
         if(skipped||!type)return;
         for(const row of res.data){
           if(!Object.values(row).some(v=>String(v).trim()))continue;
-          if(pivotMode)pivotBuf.push(row);
-          else{dispatchRaw(type,row,date,agg);rowCount++;}
+          dispatchRaw(type,row,date,agg);
+          rowCount++;
         }
-        if(!pivotMode)setP(-1,`⚙  ${file.name} — ${fn(rowCount)} rows`);
+        setP(-1,`⚙  ${file.name} — ${fn(rowCount)} rows`);
       },
       complete(){
-        let awbs=0;
         if(skipped){
           dlog.push({name:file.name,hdrs,type:'skipped',how:'pivot-CSV skipped',date,rows:0,awbs:0});
           resolve({name:file.name,type:'skipped',date,rows:0,awbs:0,hdrs,how:'pivot-skipped'});
           return;
         }
+        let awbs=0;
         if(type){
-          if(pivotMode){
-            processPivot(pivotBuf,type,date,hdrs,agg);
-            rowCount=pivotBuf.length;
-          }
           const recs=Object.values(agg);
           master[type]=(master[type]||[]).filter(r=>r.date!==date);
           master[type].push(...recs);
           awbs=recs.reduce((s,r)=>s+r.count,0);
         }
-        const fmt=pivotMode?'pivot-aggregated':'raw-rows';
-        dlog.push({name:file.name,hdrs,type,how,date,rows:rowCount,awbs,pivot:pivotMode,format:fmt});
-        resolve({name:file.name,type:type||null,date,rows:rowCount,awbs,hdrs,how,pivot:pivotMode});
+        dlog.push({name:file.name,hdrs,type,how,date,rows:rowCount,awbs,format:'raw-rows'});
+        resolve({name:file.name,type:type||null,date,rows:rowCount,awbs,hdrs,how,pivot:false});
       },
       error(err){
         dlog.push({name:file.name,hdrs:[],type:'error',how:err.message});
@@ -808,25 +991,19 @@ function procCSV(file){
 
 /* ═══════════════════════════════════════════════
    EXCEL PROCESSING
-   Passes file type hint to readExcel so it selects
-   the correct sheet (raw vs pivot).
-   Falls back to BinaryString for large files where
-   ArrayBuffer strategies fail.
+   For large files (>10MB): readExcelNative first
+   (async ZIP+XML streaming — browser stays live).
+   For small files: readExcel (XLSX.js).
+   Falls back to binary string as last resort.
 ═══════════════════════════════════════════════ */
 function procExcel(file){
   return new Promise(resolve=>{
     const date=xDate(file.name);
-    const typeHint=idByName(file.name);
 
-    const processBuffer=(buf,binStr)=>{
+    const finalize=(result,strategy)=>{
       try{
-        const mb=(buf.byteLength/1048576).toFixed(1);
-        setP(15,`📊  Reading ${mb}MB: ${file.name}`);
-        if(!buf||!buf.byteLength)throw new Error('Empty buffer');
-
-        const result=readExcel(buf,typeHint,binStr);
-        if(!result||!result.raw||result.raw.length<2){
-          const {type,how}=identify([],file.name);
+        if(!result||!result.rows||result.rows.length<2){
+          const{type,how}=identify([],file.name);
           const entry={name:file.name,hdrs:[],type,how,date,rows:0,awbs:0,
             error:'No data extracted — file may be empty, password-protected, or unsupported'};
           dlog.push(entry);
@@ -834,104 +1011,91 @@ function procExcel(file){
           return{name:file.name,type,rows:0,awbs:0,hdrs:[],how,err:entry.error};
         }
 
-        setP(45,`🔍  Detecting headers: ${result.sheetName}…`);
-        const hi=findHdrRow(result.raw);
-        const hdrs=cleanH(result.raw[hi].map(h=>String(h==null?'':h)));
-        const {type,how}=identify(hdrs,file.name);
+        const hi=result.headerRow!==undefined?result.headerRow:findHdrRow(result.rows);
+        const hdrs=cleanH((result.rows[hi]||[]).map(h=>String(h==null?'':h)));
+        const{type,how}=identify(hdrs,file.name);
+
+        setP(80,`🔍  "${result.sheetName}" | ${fn(result.rows.length-hi-1)} data rows`);
 
         if(!type){
-          const rows=buildRows(result.raw,hi,hdrs);
+          const rows=buildRows(result.rows,hi,hdrs);
           pending[file.name]={hdrs,rows,date,filename:file.name};
           dlog.push({name:file.name,hdrs,type:null,how,date,
-            rows:rows.length,sheetName:result.sheetName,strategy:result.strategy});
+            rows:rows.length,sheetName:result.sheetName,strategy});
           return{name:file.name,type:null,rows:rows.length,awbs:0,hdrs,how};
         }
 
-        const isPvt=result.isPivot||isPivotFmt(hdrs);
-        const fmt=isPvt?'PIVOT (age-bucket columns)':'RAW (row-per-AWB)';
-        setP(65,`⚙  ${fn(result.raw.length-hi-1)} rows [${fmt}]…`);
-
-        const rows=buildRows(result.raw,hi,hdrs);
-        const{awbs,records,skipped}=applyRows(rows,type,date,hdrs);
+        setP(90,`⚙  Processing ${fn(result.rows.length-hi-1)} rows…`);
+        const rows=buildRows(result.rows,hi,hdrs);
+        const{awbs,records}=applyRows(rows,type,date,hdrs);
 
         dlog.push({name:file.name,hdrs,type,how,date,rows:rows.length,awbs,
-          pivot:isPvt,format:skipped?'PIVOT-SKIPPED (need raw sheet)':fmt,records,
-          headerRow:hi,sheetName:result.sheetName,strategy:result.strategy});
+          format:'RAW',records,headerRow:hi,
+          sheetName:result.sheetName,strategy:result.strategy||strategy});
 
         setP(100,`✅  ${fn(rows.length)} rows → ${fn(awbs)} AWBs`);
-        return{name:file.name,type,date,rows:rows.length,awbs,hdrs,how,pivot:isPvt,strategy:result.strategy};
-
+        return{name:file.name,type,date,rows:rows.length,awbs,hdrs,how};
       }catch(err){
-        console.error('Excel processBuffer error:',err);
+        console.error('finalize error:',err);
         dlog.push({name:file.name,hdrs:[],type:'error',how:err.message});
         return{name:file.name,type:'error',rows:0,awbs:0,err:err.message,hdrs:[]};
       }
     };
 
-    // Primary: ArrayBuffer
     const r1=new FileReader();
-    r1.onload=e=>{
-      const res=processBuffer(e.target.result,null);
-      // If primary failed with 0 data, try BinaryString fallback (works better for some large .xlsx)
-      if(!res||res.rows===0||res.type==='error'){
-        setP(10,`🔄  Retrying with binary mode: ${file.name}`);
-        const r2=new FileReader();
-        r2.onload=e2=>{
-          // build a fake buf-like object XLSX can handle with type:'binary'
-          const binResult=(() => {
-            try{
-              const wb=XLSX.read(e2.target.result,{type:'binary',bookVBA:false,bookProps:false,raw:true});
-              if(!wb||!wb.SheetNames||!wb.SheetNames.length)return null;
-              const preferPivot=typeHint==='lmodc'||typeHint==='forwardShort';
-              let rawSheet=null,pivotSheet=null;
-              for(const sn of wb.SheetNames){
-                const ws=wb.Sheets[sn];if(!ws)continue;
-                let raw=[];
-                try{raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true})||[];}catch(_){}
-                if(!raw||raw.length<2){
-                  try{
-                    const csv=XLSX.utils.sheet_to_csv(ws,{blankrows:false});
-                    if(csv){const p=Papa.parse(csv,{header:false,skipEmptyLines:true});raw=p.data||[];}
-                  }catch(_){}
-                }
-                if(!raw||raw.length<2)continue;
-                const hi2=findHdrRow(raw);
-                const h2=cleanH((raw[hi2]||[]).map(h=>String(h==null?'':h)));
-                const isPvt=isPivotFmt(h2);
-                if(isPvt&&!pivotSheet)pivotSheet={raw,sheetName:sn,strategy:'binary',isPivot:true};
-                if(!isPvt&&!rawSheet)rawSheet={raw,sheetName:sn,strategy:'binary',isPivot:false};
-                if(rawSheet&&pivotSheet)break;
-              }
-              return preferPivot?(pivotSheet||rawSheet):(rawSheet||pivotSheet);
-            }catch(e){console.warn('binary read failed:',e.message);return null;}
-          })();
-          if(binResult&&binResult.raw&&binResult.raw.length>=2){
-            try{
-              const hi=findHdrRow(binResult.raw);
-              const hdrs=cleanH(binResult.raw[hi].map(h=>String(h==null?'':h)));
-              const{type,how}=identify(hdrs,file.name);
-              if(type){
-                const rows=buildRows(binResult.raw,hi,hdrs);
-                const{awbs,records}=applyRows(rows,type,date,hdrs);
-                const isPvt=isPivotFmt(hdrs);
-                dlog.push({name:file.name,hdrs,type,how,date,rows:rows.length,awbs,
-                  pivot:isPvt,format:isPvt?'PIVOT':'RAW',records,
-                  headerRow:hi,sheetName:binResult.sheetName,strategy:'binary-fallback'});
-                updateSummary();renderTab(activeTab);
-                resolve({name:file.name,type,date,rows:rows.length,awbs,hdrs,how,strategy:'binary-fallback'});
-                return;
-              }
-            }catch(_){}
-          }
-          resolve(res||{name:file.name,type:'error',rows:0,awbs:0,err:'All strategies failed',hdrs:[]});
-        };
-        r2.onerror=()=>resolve(res||{name:file.name,type:'error',rows:0,awbs:0,err:'BinaryString read failed',hdrs:[]});
-        r2.readAsBinaryString(file);
-      }else{
-        resolve(res);
+    r1.onload=async e=>{
+      const buf=e.target.result;
+      const mb=(buf.byteLength/1048576).toFixed(1);
+      setP(10,`📊  Reading ${mb}MB: ${file.name}`);
+
+      let result=null;
+
+      // For large files (>10MB): use native XML streaming reader first.
+      // This prevents the "Page Unresponsive" crash caused by XLSX.js
+      // trying to load 164MB+ XML into memory synchronously.
+      const isLarge=buf.byteLength>10*1024*1024;
+      const hasPako=typeof pako!=='undefined';
+
+      if(isLarge&&hasPako){
+        setP(15,`📦  Native streaming reader: ${file.name}`);
+        result=await readExcelNative(buf);
+        if(result&&result.rows&&result.rows.length>=2){
+          resolve(finalize(result,'native-xml'));
+          return;
+        }
+        // Native failed, fall through to XLSX.js
+        setP(15,`⚠  Native reader failed, trying XLSX.js: ${file.name}`);
       }
+
+      // XLSX.js strategies (synchronous — blocks for large files but best for small ones)
+      result=readExcel(buf,null);
+      if(result&&result.rows&&result.rows.length>=2){
+        resolve(finalize(result,'xlsx-array'));
+        return;
+      }
+
+      // BinaryString fallback
+      setP(20,`🔄  Binary mode: ${file.name}`);
+      const r2=new FileReader();
+      r2.onload=async e2=>{
+        // Try native with binary data if pako available
+        if(isLarge&&hasPako){
+          result=await readExcelNative(buf);
+          if(result&&result.rows&&result.rows.length>=2){
+            resolve(finalize(result,'native-xml-b'));
+            return;
+          }
+        }
+        result=readExcel(buf,e2.target.result);
+        resolve(finalize(result,'xlsx-binary'));
+      };
+      r2.onerror=()=>resolve(finalize(null,'binary-error'));
+      r2.readAsBinaryString(file);
     };
-    r1.onerror=()=>resolve({name:file.name,type:'error',rows:0,awbs:0,err:'FileReader failed',hdrs:[]});
+    r1.onerror=()=>resolve({
+      name:file.name,type:'error',rows:0,awbs:0,
+      err:'FileReader failed',hdrs:[]
+    });
     r1.readAsArrayBuffer(file);
   });
 }
@@ -995,8 +1159,10 @@ function buildPivot(sec){
     if(!r.fromPivot){
       if(sec.bin!==undefined&&r.bin!==sec.bin)return false;
       if(sec.msg!==undefined&&r.msg!==sec.msg)return false;
-      // BIN sections: explicitly exclude IN_MANIFEST orders
-      if(sec.bin!==undefined&&r.msg!==undefined&&r.msg==='IN_MANIFEST')return false;
+      // BIN sections (sec.bin defined): exclude IN_MANIFEST order_status rows.
+      // r.os = normalized order_status stored by pFwd.
+      // D3/D6 FWD R@DC sections (sec.bin undefined) include ALL order statuses.
+      if(sec.bin!==undefined&&r.os==='IN_MANIFEST')return false;
     }
     return true;
   });
