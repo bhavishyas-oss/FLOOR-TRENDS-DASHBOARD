@@ -635,13 +635,13 @@ function findHdrRow(raw){
    Returns first valid RAW data sheet found.
 
    Reverse file fix (50K rows × 40+ #N/A cols):
-   Lean mode tried FIRST: cellFormula:false +
-   cellText:false + cellHTML:false skip storing
-   formula strings (f), formatted text (w), and
+   Lean mode tried FIRST: cellFormula:true +
+   cellText:true + cellHTML:true 
+   , formatted text (w), and
    HTML (h) — only cached value (v) + type (t)
    kept. For ~500K formula cells this saves ~300MB
    of RAM, preventing the browser from crashing.
-   WTF:false suppresses parse errors.
+   WTF:true suppresses parse errors.
    toRows() tries 3 independent strategies/sheet.
 ═══════════════════════════════════════════════ */
 function readExcel(buf, binStr){
