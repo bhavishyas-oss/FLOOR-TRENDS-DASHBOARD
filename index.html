@@ -645,20 +645,55 @@ function findHdrRow(raw){
    toRows() tries 3 independent strategies/sheet.
 ═══════════════════════════════════════════════ */
 function readExcel(buf, binStr){
-  const tryWB=(data,type,opts)=>{
-    try{
-      return XLSX.read(data,Object.assign(
-        {type, bookVBA:false, bookProps:false, WTF:false},
-        opts
-      ));
-    }catch(e){console.warn('XLSX.read failed:',type,JSON.stringify(opts),e.message);return null;}
-  };
+  const tryWB = (data, type, opts) => {
+  try {
+    let wb = XLSX.read(data, {
+      type: type,
+      cellFormula: false,
+      cellText: true,
+      cellHTML: false,
+      WTF: true
+    });
+
+    let rows = extractRows(wb); // your existing logic
+
+    // 🔴 FIX: fallback if empty
+    if (!rows || rows.length === 0) {
+      console.warn("Empty result, retrying with full mode...");
+
+      wb = XLSX.read(data, {
+        type: type,
+        cellFormula: true,
+        cellText: true,
+        cellHTML: true,
+        WTF: true
+      });
+
+      rows = extractRows(wb);
+    }
+
+    return rows;
+
+  } catch (e) {
+    console.error("Excel read failed:", e);
+    return [];
+  }
+};
 
   // 3 independent strategies per sheet
   const toRows=(ws)=>{
-    if(!ws)return[];
-    if(!ws['!ref']&&ws['!dim'])try{ws['!ref']=ws['!dim'];}catch(_){}
+   if (!rows || rows.length === 0) {
+  console.log("Retrying with full parsing mode...");
 
+  const wbFull = XLSX.read(data, {
+    type: type,
+    cellFormula: true,
+    cellText: true,
+    cellHTML: true
+  });
+
+  // re-run your sheet extraction logic here
+}
     // A: raw:true — fastest, preserves exact numeric values
     try{
       const r=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
