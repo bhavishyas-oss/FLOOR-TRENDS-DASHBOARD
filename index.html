@@ -315,7 +315,7 @@ const CPALS=['#2563eb','#dc2626','#16a34a','#d97706','#7c3aed','#0891b2','#be185
 /* ═══════════════════════════════════════════════
    STATE
 ═══════════════════════════════════════════════ */
-const SKEY='logistics_v29';
+const SKEY='logistics_v30';
 let master=loadM(),activeTab=0,charts={},debugMode=false,dlog=[],pending={};
 
 function emptyM(){return{forward:[],reverse:[],lmodc:[],forwardShort:[]}}
@@ -429,24 +429,30 @@ function pFwd(row,date,agg){
   agg[k].count++;
 }
 
-// REVERSE — All rows, filtered by:
-//   1. Age = exact match (3 for D3, 10 for D10) from Ageing column
-//   2. Client exclusions: FTPL Regional, Meesho Regional
-// NO Reason of Loss filter — include all reverse AWBs at the correct age.
-// Confirmed columns from actual file:
-//   Ageing        = col AO (numeric strings: "3","10","15" etc.)
-//   Current_location = col AJ
-//   Client        = col AQ
+// REVERSE — Filter logic (strictly per spec):
+//   1. Reason of Loss = "Received_at_dc" and "MISROUTED" (MISROUTED = same as Received at DC)
+//   2. Client: exclude FTPL Regional, exclude Meesho Regional, include JioMart Regional
+//   3. Age = exact match from Ageing column only (col AO in xlsx)
 function pRev(row,date,agg){
+  // Filter 1: Reason of Loss
+  const reason=nv(gv(row,
+    'reason of loss','Reason of Loss','reason_of_loss','Reason_of_Loss',
+    'Reason Of Loss','reason of Loss','reasonofloss','REASON OF LOSS'));
+  if(reason!=='RECEIVED_AT_DC'&&reason!=='MISROUTED')return;
+
+  // Filter 2: Client inclusion/exclusion rules
   const client=gv(row,'client','Client','CLIENT','client name','Client Name')||'UNKNOWN';
   const cu=client.toUpperCase();
   if(cu.includes('FTPL')&&cu.includes('REGIONAL'))return;
   if(cu.includes('MEESHO')&&cu.includes('REGIONAL'))return;
-  // Use ONLY the numeric Ageing column — never AgeingF (text bucket) or Ageing_Hour_Wise
+  // JioMart Regional: include (do not exclude)
+  // All other clients: include by default
+
+  // Filter 3: Age — ONLY from numeric Ageing column, no fallback to text buckets
   const ageRaw=gv(row,'ageing','Ageing');
-  const ageNum=parseFloat(ageRaw)||0;
-  const age=Math.round(ageNum);
+  const age=Math.round(parseFloat(ageRaw)||0);
   if(age<=0)return;
+
   const loc=(gv(row,
     'current_location','Current_location','Current_Location','currentlocation',
     'current location','location','Location')
