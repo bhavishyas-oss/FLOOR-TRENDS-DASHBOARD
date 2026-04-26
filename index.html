@@ -7,6 +7,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-datalabels/2.2.0/chartjs-plugin-datalabels.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
 <style>
@@ -134,34 +135,35 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 
 /* TABLE */
 .tsc{overflow-x:auto;max-height:400px;overflow-y:auto;border-bottom:1px solid var(--bdr)}
-.tbl{width:100%;border-collapse:collapse;font-size:11.5px}
-.tbl thead th{background:var(--navy2);color:#cbd5e1;padding:9px 11px;text-align:right;
-  font-weight:600;white-space:nowrap;position:sticky;top:0;z-index:4;
-  font-size:10.5px;border-right:1px solid var(--navy3)}
+.tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+.tbl thead th{background:#0d1f3c;color:#dce6f5;padding:11px 14px;text-align:right;
+  font-weight:800;white-space:nowrap;position:sticky;top:0;z-index:4;
+  font-size:12px;border-right:1px solid #1c3561;letter-spacing:.25px}
 .tbl thead th:first-child{text-align:left;position:sticky;left:0;z-index:5;
-  background:var(--navy2);min-width:148px;border-right:2px solid var(--navy3)}
-.tbl thead th:last-child{border-right:none}
-.tbl tbody tr:nth-child(even) td{background:var(--sur2)}
-.tbl tbody tr:hover td{background:#eff6ff!important}
-.tbl tbody td{padding:7px 11px;text-align:right;border-bottom:1px solid var(--bdr);
-  border-right:1px solid #f1f5f9;font-family:var(--mono);white-space:nowrap;font-size:11px}
-.tbl tbody td:first-child{text-align:left;font-family:var(--sans);font-weight:600;
-  font-size:12px;background:var(--sur);position:sticky;left:0;
-  border-right:2px solid var(--bdr);z-index:2;min-width:148px}
-.tbl tbody tr:nth-child(even) td:first-child{background:var(--sur2)}
-.tbl tbody tr:hover td:first-child{background:#eff6ff!important}
-.tbl tbody td:last-child{border-right:none;font-weight:700}
-.tbl tfoot td{background:var(--navy2)!important;color:#e2e8f0!important;
-  font-weight:700;padding:8px 11px;border-right:1px solid var(--navy3);
-  font-family:var(--mono);font-size:11px;position:sticky;bottom:0;z-index:3}
+  background:#0d1f3c;min-width:170px;border-right:2.5px solid #1c3561}
+.tbl thead th:last-child{border-right:none;background:#081628}
+.tbl tbody tr:nth-child(even) td{background:#f4f7fc}
+.tbl tbody tr:hover td{background:#dbeafe!important}
+.tbl tbody td{padding:9px 14px;text-align:right;border-bottom:1px solid #dee4ec;
+  border-right:1px solid #eaeff6;font-family:var(--mono);white-space:nowrap;
+  font-size:12px;font-weight:600;color:#1e293b}
+.tbl tbody td:first-child{text-align:left;font-family:var(--sans);font-weight:700;
+  font-size:13px;background:#fff;position:sticky;left:0;
+  border-right:2.5px solid #cbd5e1;z-index:2;min-width:170px;color:#0f172a}
+.tbl tbody tr:nth-child(even) td:first-child{background:#f4f7fc}
+.tbl tbody tr:hover td:first-child{background:#dbeafe!important}
+.tbl tbody td:last-child{border-right:none;font-weight:800;color:#0f172a}
+.tbl tfoot td{background:#0d1f3c!important;color:#dce6f5!important;
+  font-weight:800;padding:10px 14px;border-right:1px solid #1c3561;
+  font-family:var(--mono);font-size:12.5px;position:sticky;bottom:0;z-index:3}
 .tbl tfoot td:first-child{position:sticky;left:0;z-index:4;font-family:var(--sans);
-  font-size:12px;background:var(--navy2)!important;border-right:2px solid var(--navy3)}
+  font-size:13px;background:#081628!important;border-right:2.5px solid #1c3561;letter-spacing:.3px}
 .tbl tfoot td:last-child{border-right:none}
 
 /* CONDITIONAL FORMATTING */
-.cup{background:#fef2f2!important;color:#991b1b;font-weight:800}
-.cdn{background:#f0fdf4!important;color:#15803d}
-.czr{color:#e2e8f0}
+.cup{background:#fce8ed!important;color:#9b1c2e;font-weight:800}
+.cdn{background:#f1f5f9!important;color:#334155;font-weight:600}
+.czr{color:#94a3b8;font-weight:400}
 
 /* DC DROPDOWN IN CHART AREA */
 .ctoolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px}
@@ -226,9 +228,14 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 #toast.te{background:#7f1d1d;color:#fecaca;border-left:4px solid #ef4444}
 #toast.tw{background:#78350f;color:#fde68a;border-left:4px solid #f59e0b}
 
-::-webkit-scrollbar{width:5px;height:5px}
-::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
+/* MAIN TABS (Floor Trends / HOV Tracking) */
+#maintabs{background:var(--navy);padding:0 18px;display:flex;border-bottom:3px solid var(--navy3)}
+.mtab{color:#64748b;background:none;border:none;border-bottom:3px solid transparent;
+  padding:11px 22px;font-size:13px;font-weight:700;cursor:pointer;margin-bottom:-3px;
+  font-family:var(--sans);letter-spacing:.2px;transition:.15s}
+.mtab:hover{color:#93c5fd;background:rgba(255,255,255,.04)}
+.mtab.active{color:#60a5fa;border-bottom-color:#60a5fa}
+
 </style>
 </head>
 <body>
@@ -244,6 +251,12 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
   <span class="hst" id="hst">No data loaded</span>
 </header>
 
+<div id="maintabs">
+  <button class="mtab active" onclick="switchMainTab('floor')">📊 Floor Trends</button>
+  <button class="mtab" onclick="switchMainTab('hov')">🚁 HOV Tracking</button>
+</div>
+
+<div id="floorSection">
 <div id="tbar">
   <input type="file" id="fi" multiple accept=".csv,.xlsx,.xls" style="display:none">
   <button class="btn bp" onclick="document.getElementById('fi').click()">📂 Upload Files</button>
@@ -253,6 +266,8 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
   <input type="file" id="ii" accept=".json" style="display:none">
   <div class="sp"></div>
   <button class="btn bd" id="dbgbtn" onclick="toggleDebug()">🔍 Debug</button>
+  <button class="btn bd" onclick="showAppsScriptCode()" title="Download Apps Script code for Google Sheets setup">📄 AS Code</button>
+  <button class="btn bd" id="sheetsbtn" onclick="configSheets()">📊 Sheets</button>
   <button class="btn br" onclick="onClear()">🗑 Clear All</button>
 </div>
 
@@ -289,6 +304,53 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 </div>
 
 <div id="content"><div id="panels"></div></div>
+</div><!-- /floorSection -->
+
+<!-- ═══ HOV TRACKING — Independent Section ═══ -->
+<div id="hovSection" style="display:none">
+  <div id="hovTbar" style="background:var(--sur);border-bottom:1px solid var(--bdr);padding:9px 18px;display:flex;align-items:center;gap:7px;flex-wrap:wrap">
+    <input type="file" id="hovFi" multiple accept=".csv,.xlsx,.xls" style="display:none">
+    <button class="btn bp" onclick="document.getElementById('hovFi').click()">📂 Upload HOV Files</button>
+    <button class="btn bk" onclick="onHovSave()">💾 Save HOV Data</button>
+    <button class="btn br" onclick="onHovClear()">🗑 Clear HOV Data</button>
+    <div class="sp"></div>
+  </div>
+  <div id="hovBrow" style="background:var(--sur2);border-bottom:1px solid var(--bdr);padding:6px 18px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;min-height:36px">
+    <span style="color:#94a3b8;font-size:11px">Upload Forward, Reverse, LMODC or Short Shipment files — HOV data extracted independently</span>
+  </div>
+  <div id="hovProg" style="display:none;background:var(--navy2);padding:7px 18px">
+    <div class="ptxt" id="hovPtxt">Processing…</div>
+    <div class="ptrk"><div class="pbar" id="hovPbar" style="width:0"></div></div>
+  </div>
+  <div style="padding:18px">
+    <div class="card">
+      <div class="chead">
+        <span class="ct">HOV Tracking — D2 to D15</span>
+        <div class="cm" style="gap:8px;flex-wrap:wrap">
+          <span class="cc" id="hovGrandTotal">–</span>
+          <!-- Searchable PC dropdown wrapper -->
+          <div id="hovPCwrap" style="position:relative;display:inline-block;margin-left:10px">
+            <input id="hovPCsearch" type="text" placeholder="Search Product Category…"
+              style="font-size:11px;padding:5px 28px 5px 9px;border-radius:5px;border:1px solid var(--bdr2);
+                background:var(--sur);color:var(--tx);font-family:var(--sans);min-width:200px;outline:none"
+              oninput="filterHovPCList(this.value)"
+              onfocus="document.getElementById('hovPClist').style.display='block'"
+              onblur="setTimeout(()=>{document.getElementById('hovPClist').style.display='none'},200)"
+            >
+            <span style="position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:11px;pointer-events:none;color:#94a3b8">▾</span>
+            <div id="hovPClist" style="display:none;position:absolute;top:100%;left:0;min-width:100%;
+              max-height:220px;overflow-y:auto;background:#fff;border:1px solid var(--bdr2);
+              border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.15);z-index:200;margin-top:2px">
+            </div>
+          </div>
+          <button class="btn bk" onclick="exportHovCSV()" style="font-size:11px;padding:5px 11px">⬇ CSV</button>
+          <button class="btn bg" onclick="downloadHovTableImage()" style="font-size:11px;padding:5px 11px" title="Download table as PNG image">⬇ Image</button>
+        </div>
+      </div>
+      <div id="hovTableWrap"></div>
+    </div>
+  </div>
+</div>
 <div id="toast"></div>
 
 <script>
@@ -315,10 +377,10 @@ const CPALS=['#2563eb','#dc2626','#16a34a','#d97706','#7c3aed','#0891b2','#be185
 /* ═══════════════════════════════════════════════
    STATE
 ═══════════════════════════════════════════════ */
-const SKEY='logistics_v30';
+const SKEY='logistics_v36';
 let master=loadM(),activeTab=0,charts={},debugMode=false,dlog=[],pending={};
 
-function emptyM(){return{forward:[],reverse:[],lmodc:[],forwardShort:[]}}
+function emptyM(){return{forward:[],reverse:[],lmodc:[],forwardShort:[],hov:[]}}
 function loadM(){
   try{const r=localStorage.getItem(SKEY);return r?Object.assign(emptyM(),JSON.parse(r)):emptyM()}
   catch{return emptyM()}
@@ -426,11 +488,12 @@ function pFwd(row,date,agg){
   // Include os in key so IN_MANIFEST records are tracked separately
   const k=`${age}|${loc}|${bin}|${msg}|${os}`;
   if(!agg[k])agg[k]={date,age,location:loc,bin,msg,os,count:0};
+  captureRaw('forward',row,date);
   agg[k].count++;
 }
 
 // REVERSE — Filter logic (strictly per spec):
-//   1. Reason of Loss = "Received_at_dc" and "MISROUTED" (MISROUTED = same as Received at DC)
+//   1. Reason of Loss = "Received_at_dc" AND "MISROUTED" (MISROUTED = same as Received at DC)
 //   2. Client: exclude FTPL Regional, exclude Meesho Regional, include JioMart Regional
 //   3. Age = exact match from Ageing column only (col AO in xlsx)
 function pRev(row,date,agg){
@@ -459,6 +522,7 @@ function pRev(row,date,agg){
     ||'UNKNOWN').toUpperCase();
   const k=`${age}|${loc}|${client}`;
   if(!agg[k])agg[k]={date,age,location:loc,client,count:0};
+  captureRaw('reverse',row,date);
   agg[k].count++;
 }
 
@@ -513,6 +577,7 @@ function pLM(row,date,agg){
   // Each row = 1 AWB. Do NOT use Count column as a multiplier.
   const k=`${age}|${dest}`;
   if(!agg[k])agg[k]={date,age,destination:dest,count:0};
+  captureRaw('lmodc',row,date);
   agg[k].count++;
 }
 
@@ -531,10 +596,12 @@ function pSh(row,date,agg){
     ||'UNKNOWN').toUpperCase();
   const k=`${age}|${loc}`;
   if(!agg[k])agg[k]={date,age,location:loc,count:0};
+  captureRaw('forwardShort',row,date);
   agg[k].count++;
 }
 
 function dispatchRaw(type,row,date,agg){
+  // captureRaw is called inside each processor AFTER the base filter passes
   if(type==='forward')           pFwd(row,date,agg);
   else if(type==='reverse')      pRev(row,date,agg);
   else if(type==='lmodc')        pLM(row,date,agg);
@@ -542,16 +609,19 @@ function dispatchRaw(type,row,date,agg){
 }
 
 /* ═══════════════════════════════════════════════
-   APPLY ROWS
-   STRICT: Pivot-format sheets are ALWAYS skipped.
-   Only raw row-level data is processed (per spec).
+   APPLY ROWS — async chunked to avoid blocking
+   Yields every 5000 rows so browser stays live.
 ═══════════════════════════════════════════════ */
-function applyRows(rows,type,date,hdrs){
+async function applyRows(rows,type,date,hdrs){
   if(isPivotFmt(hdrs))return{awbs:0,pivot:true,records:0,skipped:true};
   const agg={};
-  for(const row of rows){
-    if(!Object.values(row).some(v=>String(v).trim()))continue;
-    dispatchRaw(type,row,date,agg);
+  const CHUNK=5000;
+  for(let i=0;i<rows.length;i+=CHUNK){
+    const end=Math.min(i+CHUNK,rows.length);
+    for(let j=i;j<end;j++){
+      dispatchRaw(type,rows[j],date,agg);
+    }
+    if(end<rows.length)await new Promise(r=>setTimeout(r,0)); // yield
   }
   const recs=Object.values(agg);
   master[type]=(master[type]||[]).filter(r=>r.date!==date);
@@ -748,14 +818,20 @@ function readExcel(buf, binStr){
    BUILD ROW OBJECTS FROM RAW ARRAY + HEADERS
 ═══════════════════════════════════════════════ */
 function buildRows(raw,hi,hdrs){
-  return raw.slice(hi+1).map(r=>{
+  const out=[];
+  for(let i=hi+1;i<raw.length;i++){
+    const r=raw[i];if(!r)continue;
+    let hasVal=false;
     const obj={};
-    hdrs.forEach((h,i)=>{
-      const v=Array.isArray(r)?r[i]:r[h];
-      obj[h]=v!=null?String(v):'';
-    });
-    return obj;
-  }).filter(o=>Object.values(o).some(v=>String(v).trim()));
+    for(let j=0;j<hdrs.length;j++){
+      const v=Array.isArray(r)?r[j]:r[hdrs[j]];
+      const s=v!=null?String(v):'';
+      obj[hdrs[j]]=s;
+      if(!hasVal&&s.trim())hasVal=true;
+    }
+    if(hasVal)out.push(obj);
+  }
+  return out;
 }
 
 /* ═══════════════════════════════════════════════
@@ -1090,7 +1166,6 @@ function procCSV(file){
         }
         if(skipped||!type)return;
         for(const row of res.data){
-          if(!Object.values(row).some(v=>String(v).trim()))continue;
           dispatchRaw(type,row,date,agg);
           rowCount++;
         }
@@ -1133,7 +1208,7 @@ function procExcel(file){
   return new Promise(resolve=>{
     const date=xDate(file.name);
 
-    const finalize=(result,strategy)=>{
+    const finalize=async(result,strategy)=>{
       try{
         if(!result||!result.rows||result.rows.length<2){
           const{type,how}=identify([],file.name);
@@ -1160,7 +1235,7 @@ function procExcel(file){
 
         setP(90,`⚙  Processing ${fn(result.rows.length-hi-1)} rows…`);
         const rows=buildRows(result.rows,hi,hdrs);
-        const{awbs,records}=applyRows(rows,type,date,hdrs);
+        const{awbs,records}=await applyRows(rows,type,date,hdrs);
 
         dlog.push({name:file.name,hdrs,type,how,date,rows:rows.length,awbs,
           format:'RAW',records,headerRow:hi,
@@ -1191,7 +1266,7 @@ function procExcel(file){
         setP(15,`📖  Reading: ${file.name}`);
         result=await readExcelNative(buf);
         if(result&&result.rows&&result.rows.length>=2){
-          resolve(finalize(result,'native-xml'));return;
+          resolve(await finalize(result,'native-xml'));return;
         }
       }
 
@@ -1199,16 +1274,16 @@ function procExcel(file){
       setP(50,`📖  Retrying: ${file.name}`);
       result=readExcel(buf,null);
       if(result&&result.rows&&result.rows.length>=2){
-        resolve(finalize(result,'xlsx'));return;
+        resolve(await finalize(result,'xlsx'));return;
       }
 
       /* ── 3. Binary string — last resort ─────────────────────────────── */
       const r2=new FileReader();
-      r2.onload=e2=>{
+      r2.onload=async e2=>{
         result=readExcel(buf,e2.target.result);
-        resolve(finalize(result,'xlsx-binary'));
+        resolve(await finalize(result,'xlsx-binary'));
       };
-      r2.onerror=()=>resolve(finalize(null,'binary-error'));
+      r2.onerror=async()=>resolve(await finalize(null,'binary-error'));
       r2.readAsBinaryString(file);
     };
     r1.onerror=()=>resolve({
@@ -1222,10 +1297,10 @@ function procExcel(file){
 /* ═══════════════════════════════════════════════
    MANUAL TYPE OVERRIDE
 ═══════════════════════════════════════════════ */
-function manualType(filename,type){
+async function manualType(filename,type){
   if(!type||!pending[filename])return;
   const{rows,date,hdrs}=pending[filename];
-  const{awbs}=applyRows(rows,type,date,hdrs||[]);
+  const{awbs}=await applyRows(rows,type,date,hdrs||[]);
   delete pending[filename];
   const bid=bId(filename);
   const el=document.getElementById(bid);
@@ -1260,6 +1335,7 @@ async function runFiles(files){
   if(debugMode)renderDebug();
   updateSummary();
   renderTab(activeTab);
+  runSheetsPush(results); // async, non-blocking — pushes Floor Trends data to Google Sheets
   return results;
 }
 
@@ -1532,6 +1608,16 @@ function renderChart(cid,piv,idx){
       tooltip:{backgroundColor:'#0f172a',titleColor:'#e2e8f0',bodyColor:'#94a3b8',
         borderColor:'#1e293b',borderWidth:1,padding:10,
         callbacks:{label(c){return` ${c.dataset.label}: ${fn(c.parsed.y)}`;}}
+      },
+      datalabels:{
+        display:ctx=>{
+          // Only show labels on Total dataset (index 0) and only if value > 0
+          if(ctx.datasetIndex!==0)return false;
+          return ctx.dataset.data[ctx.dataIndex]>0;
+        },
+        anchor:'end',align:'top',offset:4,
+        color:'#1e40af',font:{size:9,family:'Inter',weight:'700'},
+        formatter(v){return v>=1000?(v/1000).toFixed(1)+'K':v;}
       }
     },
     scales:{
@@ -1567,18 +1653,25 @@ function initPanels(){
       <div class="card">
         <div class="chead">
           <span class="ct">§${i+1} · ${s.title}</span>
-          <div class="cm"><span class="cc" id="cnt${i}">–</span><span class="cbg">${s.badge}</span></div>
+          <div class="cm"><span class="cc" id="cnt${i}">–</span><span class="cbg">${s.badge}</span><button class="btn bg" onclick="downloadSectionReport(${i})" style="font-size:10px;padding:4px 9px;margin-left:8px;color:#94a3b8;border-color:#475569" title="Download Excel report for this section">⬇ Report</button></div>
         </div>
         <div id="tbl${i}"></div>
         <div class="tarea">
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:0 8px 8px">
+            <span style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.8px">📈 ${s.title} Trends</span>
+            <button class="btn bg" onclick="downloadChart('tchrt${i}','${s.title.replace(/[^\w]/g,'_')}_trend.png')" style="font-size:10px;padding:3px 9px" title="Download trend chart as HD image">⬇ PNG</button>
+          </div>
           <div class="twrap"><canvas id="tchrt${i}"></canvas></div>
         </div>
         <div class="carea">
           <div class="ctoolbar">
             <span class="ctoolbar-lbl">📈 Location Breakdown — Date vs AWB Count</span>
-            <select class="dc-select" id="dcsel${i}" onchange="onDCChange(${i},this.value)">
-              <option value="ALL">All DCs (Overview)</option>
-            </select>
+            <div style="display:flex;align-items:center;gap:8px">
+              <select class="dc-select" id="dcsel${i}" onchange="onDCChange(${i},this.value)">
+                <option value="ALL">All DCs (Overview)</option>
+              </select>
+              <button class="btn bg" onclick="downloadChart('ch${i}','${s.title.replace(/[^\w]/g,'_')}_breakdown.png')" style="font-size:10px;padding:3px 9px" title="Download breakdown chart as HD image">⬇ PNG</button>
+            </div>
           </div>
           <div class="cwrap"><canvas id="ch${i}"></canvas></div>
         </div>
@@ -1767,7 +1860,851 @@ q('#fi').addEventListener('change',async e=>{
 /* ═══════════════════════════════════════════════
    BOOT
 ═══════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════
+   HOV TRACKING — Processors, Reader, UI
+═══════════════════════════════════════════════ */
+
+/* Read a specific named sheet from an xlsx ArrayBuffer */
+function readNamedSheet(buf,targetName){
+  const tryWB=opts=>{
+    try{return XLSX.read(buf,Object.assign({type:'array',WTF:false},opts));}
+    catch(e){return null;}
+  };
+  for(const opts of [{cellFormula:false,cellText:false,cellHTML:false},{raw:true},{}]){
+    const wb=tryWB(opts);
+    if(!wb||!wb.SheetNames)continue;
+    const sname=wb.SheetNames.find(n=>n.trim().toLowerCase()===targetName.trim().toLowerCase());
+    if(!sname)continue;
+    const ws=wb.Sheets[sname];if(!ws)continue;
+    if(!ws['!ref']&&ws['!dim'])try{ws['!ref']=ws['!dim'];}catch(_){}
+    try{
+      const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
+      if(rows&&rows.length>=2){
+        const hi=findHdrRow(rows);
+        const hdrs=cleanH((rows[hi]||[]).map(h=>String(h==null?'':h)));
+        return{rows,sheetName:sname,headerRow:hi,hdrs};
+      }
+    }catch(_){}
+  }
+  return null;
+}
+
+/* HOV row processors */
+function pHovFwd(row,date,agg){
+  const age=Math.round(gn(row,
+    'ageing_from_bag_rec','Ageing_from_Bag_Rec','Ageing_From_Bag_Rec',
+    'ageing from bag rec','ageing_from_bag_recc','ageing','Ageing','age','Age'));
+  if(age<2||age>15)return;
+  const loc=(gv(row,'current_location','Current_location','Current_Location','location','Location')||'UNKNOWN').toUpperCase();
+  const pc=gv(row,'pc','PC','product category','Product Category','product_category','Product_Category')||'UNKNOWN';
+  const k=`${age}|${loc}|${pc}`;
+  if(!agg[k])agg[k]={date,age,location:loc,pc,fileType:'forward',count:0};
+  agg[k].count++;
+}
+
+function pHovRev(row,date,agg){
+  // X-RAY REMARKS: exclude rows where value is "original" (case-insensitive)
+  const xray=String(gv(row,
+    'x-ray remarks','X-RAY REMARKS','X_RAY_REMARKS','xray remarks',
+    'xray_remarks','XRAY_REMARKS','xray','XRAY','X Ray Remarks',
+    'X-Ray Remarks','x ray remarks')||'').trim().toLowerCase();
+  if(xray==='original')return;
+  // Age from Ageing column (numeric) — same as pRev
+  const ageRaw=gv(row,'ageing','Ageing');
+  const age=Math.round(parseFloat(ageRaw)||0);
+  if(age<2||age>15)return;
+  const loc=(gv(row,'current_location','Current_location','Current_Location','location','Location')||'UNKNOWN').toUpperCase();
+  const pc=gv(row,'pc','PC','product category','Product Category','product_category','Product_Category')||'UNKNOWN';
+  const k=`${age}|${loc}|${pc}`;
+  if(!agg[k])agg[k]={date,age,location:loc,pc,fileType:'reverse',count:0};
+  agg[k].count++;
+}
+
+function pHovLM(row,date,agg){
+  const flag=String(gv(row,'hov non hov','HOV Non HOV','hov_non_hov','HOV_Non_HOV')||'').trim().toUpperCase();
+  if(flag!=='HOV')return;
+  const ageStr=gv(row,'ageing','Ageing');
+  const age=Math.round(parseLMODCAge(ageStr));
+  if(age<2||age>15)return;
+  const loc=(gv(row,'destination_name','Destination_name','Destination_Name','destination','Destination')||'UNKNOWN').toUpperCase();
+  const pc=gv(row,'pc','PC','product category','Product Category','product_category','Product_Category')||'UNKNOWN';
+  const k=`${age}|${loc}|${pc}`;
+  if(!agg[k])agg[k]={date,age,location:loc,pc,fileType:'lmodc',count:0};
+  agg[k].count++;
+}
+
+function pHovSh(row,date,agg){
+  const hov2=String(gv(row,'hov2','HOV2')||'').trim().toUpperCase();
+  if(hov2!=='HOV')return;
+  const age=Math.round(gn(row,
+    'ageing_from_bag_rec','Ageing_from_Bag_Rec','Ageing_From_Bag_Rec',
+    'ageing from bag rec','ageing_from_bag_recc','ageing','Ageing','age','Age'));
+  if(age<2||age>15)return;
+  const loc=(gv(row,'current_location','Current_location','Current_Location','location','Location')||'UNKNOWN').toUpperCase();
+  const pc=gv(row,'pc','PC','product category','Product Category','product_category','Product_Category')||'UNKNOWN';
+  const k=`${age}|${loc}|${pc}`;
+  if(!agg[k])agg[k]={date,age,location:loc,pc,fileType:'forwardShort',count:0};
+  agg[k].count++;
+}
+
+/* Apply HOV rows and merge into master.hov */
+function applyHovRows(rows,proc,type,date){
+  const agg={};
+  for(const row of rows){
+    if(!Object.values(row).some(v=>String(v).trim()))continue;
+    proc(row,date,agg);
+  }
+  const recs=Object.values(agg);
+  master.hov=(master.hov||[]).filter(r=>!(r.date===date&&r.fileType===type));
+  master.hov.push(...recs);
+}
+
+/* HOV file processor — called from runFiles after main processing */
+async function procHovFile(file,type,date){
+  const ext=file.name.split('.').pop().toLowerCase();
+  const isXlsx=ext==='xlsx'||ext==='xls';
+  try{
+    if(type==='forward'||type==='reverse'){
+      if(!isXlsx)return; // HOV PD PC sheet only in xlsx
+      const buf=await file.arrayBuffer();
+      const result=readNamedSheet(buf,'HOV PD PC');
+      if(!result||result.rows.length<2)return;
+      const rows=buildRows(result.rows,result.headerRow,result.hdrs);
+      applyHovRows(rows,type==='forward'?pHovFwd:pHovRev,type,date);
+    }else{
+      // LMODC / Short Ship — HOV columns in the same raw sheet
+      const proc=type==='lmodc'?pHovLM:pHovSh;
+      if(isXlsx){
+        const buf=await file.arrayBuffer();
+        const result=readExcel(buf,null);
+        if(!result||result.rows.length<2)return;
+        const rows=buildRows(result.rows,result.headerRow,result.hdrs);
+        applyHovRows(rows,proc,type,date);
+      }else if(ext==='csv'){
+        await new Promise(resolve=>{
+          const agg={};
+          Papa.parse(file,{
+            header:true,skipEmptyLines:true,
+            transformHeader:h=>String(h==null?'':h).replace(/^\uFEFF/,'').replace(/\u00A0/g,' ').trim(),
+            chunk(res){
+              for(const row of res.data){
+                if(!Object.values(row).some(v=>String(v).trim()))continue;
+                proc(row,date,agg);
+              }
+            },
+            complete(){
+              const recs=Object.values(agg);
+              master.hov=(master.hov||[]).filter(r=>!(r.date===date&&r.fileType===type));
+              master.hov.push(...recs);
+              resolve();
+            },
+            error(){resolve();}
+          });
+        });
+      }
+    }
+  }catch(e){console.warn('procHovFile:',e);}
+}
+
+/* HOV data builder — rows=location, cols=D2..D15 */
+const HOV_AGES=[2,3,4,5,6,7,8,9,10,11,12,13,14,15];
+function buildHovData(selectedPC){
+  const all=master.hov||[];
+  const filt=all.filter(r=>{
+    if(r.age<2||r.age>15)return false;
+    if(selectedPC&&selectedPC!=='ALL'&&r.pc!==selectedPC)return false;
+    return true;
+  });
+  if(!filt.length)return{locs:[],ages:HOV_AGES,grid:{},rowTotals:{},colTotals:{}};
+  const locs=[...new Set(filt.map(r=>r.location))].sort();
+  const grid={};
+  locs.forEach(l=>{grid[l]={};HOV_AGES.forEach(a=>{grid[l][a]=0;});});
+  filt.forEach(r=>{
+    if(!grid[r.location])grid[r.location]={};
+    grid[r.location][r.age]=(grid[r.location][r.age]||0)+r.count;
+  });
+  const rowTotals={},colTotals={};
+  HOV_AGES.forEach(a=>{colTotals[a]=0;});
+  locs.forEach(l=>{
+    rowTotals[l]=0;
+    HOV_AGES.forEach(a=>{rowTotals[l]+=(grid[l][a]||0);colTotals[a]+=(grid[l][a]||0);});
+  });
+  return{locs,ages:HOV_AGES,grid,rowTotals,colTotals};
+}
+
+/* Populate PC dropdown from master.hov */
+/* HOV searchable PC dropdown state */
+let _hovPCselected='ALL';
+let _hovPCall=[];
+
+function populateHovPC(){
+  _hovPCall=['ALL',...new Set((master.hov||[]).map(r=>r.pc).filter(p=>p&&p!=='UNKNOWN'))].sort((a,b)=>a==='ALL'?-1:b==='ALL'?1:a.localeCompare(b));
+  renderHovPCList('');
+  // Update search box placeholder
+  const inp=document.getElementById('hovPCsearch');
+  if(inp&&_hovPCselected!=='ALL')inp.value=_hovPCselected;
+}
+
+function renderHovPCList(query){
+  const list=document.getElementById('hovPClist');if(!list)return;
+  const q=query.toLowerCase().trim();
+  const filtered=_hovPCall.filter(p=>p.toLowerCase().includes(q));
+  list.innerHTML=filtered.map(p=>`
+    <div onclick="selectHovPC('${p.replace(/'/g,"\\'")}',this)"
+      style="padding:7px 12px;font-size:12px;cursor:pointer;
+        background:${p===_hovPCselected?'#dbeafe':'#fff'};color:${p==='ALL'?'#2563eb':'#0f172a'};
+        font-weight:${p===_hovPCselected?'700':'400'}"
+      onmouseover="this.style.background='#eff6ff'"
+      onmouseout="this.style.background='${p===_hovPCselected?'#dbeafe':'#fff'}'">
+      ${xe(p==='ALL'?'All Product Categories':p)}
+    </div>`).join('');
+}
+
+function filterHovPCList(query){
+  document.getElementById('hovPClist').style.display='block';
+  renderHovPCList(query);
+}
+
+function selectHovPC(pc,el){
+  _hovPCselected=pc;
+  const inp=document.getElementById('hovPCsearch');
+  if(inp)inp.value=pc==='ALL'?'':pc;
+  const list=document.getElementById('hovPClist');
+  if(list)list.style.display='none';
+  renderHovTab();
+}
+
+/* Download HOV table as PNG image */
+function downloadHovTableImage(){
+  const wrap=document.getElementById('hovTableWrap');
+  if(!wrap||!wrap.querySelector('table')){toast('No HOV table to download','tw');return;}
+  // Use html2canvas if available, otherwise fallback to XLSX
+  if(typeof html2canvas!=='undefined'){
+    html2canvas(wrap,{scale:2,backgroundColor:'#fff',useCORS:true}).then(canvas=>{
+      const a=document.createElement('a');
+      a.href=canvas.toDataURL('image/png',1.0);
+      a.download=`HOV_Table_${new Date().toISOString().slice(0,10)}.png`;
+      document.body.appendChild(a);a.click();document.body.removeChild(a);
+      toast('⬇ HOV table image downloaded','tok');
+    });
+  }else{
+    // Fallback: download as styled Excel instead
+    const pc=_hovPCselected||'ALL';
+    const d=buildHovData(pc==='ALL'?null:pc);
+    if(!d.locs.length){toast('No HOV data','tw');return;}
+    const hdr=['Location',...d.ages.map(a=>`D${a}`),'Total'];
+    const rows2=[hdr];
+    d.locs.forEach(l=>rows2.push([l,...d.ages.map(a=>d.grid[l]?d.grid[l][a]||0:0),d.rowTotals[l]||0]));
+    const total=d.locs.reduce((s,l)=>s+(d.rowTotals[l]||0),0);
+    rows2.push(['TOTAL',...d.ages.map(a=>d.colTotals[a]||0),total]);
+    const ws=XLSX.utils.aoa_to_sheet(rows2);
+    ws['!cols']=[{wch:28},...d.ages.map(()=>({wch:6})),{wch:8}];
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,'HOV Tracking');
+    XLSX.writeFile(wb,`HOV_Table_${new Date().toISOString().slice(0,10)}.xlsx`);
+    toast('⬇ HOV table downloaded as Excel (install html2canvas for PNG)','tw');
+  }
+}
+
+/* Render HOV table */
+function renderHovTab(){
+  populateHovPC();
+  const pc=_hovPCselected==='ALL'?null:_hovPCselected;
+  const d=buildHovData(pc);
+  const el=document.getElementById('hovTableWrap');if(!el)return;
+  const tot=document.getElementById('hovGrandTotal');
+
+  if(!d.locs.length){
+    el.innerHTML=`<div class="empty"><div class="ei">🚁</div>
+      <div class="et">No HOV data yet</div>
+      <div class="em">Upload files containing HOV data:<br>
+        • <strong>Forward/Reverse</strong>: requires "HOV PD PC" sheet in xlsx<br>
+        • <strong>LMODC</strong>: requires "HOV Non HOV" column = HOV<br>
+        • <strong>Short Ship</strong>: requires "HOV2" column = HOV</div></div>`;
+    if(tot)tot.textContent='–';
+    return;
+  }
+
+  const grand=d.locs.reduce((s,l)=>s+(d.rowTotals[l]||0),0);
+  if(tot)tot.textContent=fn(grand)+' AWBs';
+
+  let html=`<div class="tsc" style="max-height:500px">
+    <table class="tbl"><thead><tr>
+    <th>Location</th>${d.ages.map(a=>`<th>D${a}</th>`).join('')}<th>TOTAL</th>
+    </tr></thead><tbody>`;
+  d.locs.forEach(loc=>{
+    const rt=d.rowTotals[loc]||0;
+    html+=`<tr><td>${xe(loc)}</td>`;
+    d.ages.forEach((a,ai)=>{
+      const v=d.grid[loc]?d.grid[loc][a]||0:0;
+      const prev=ai>0?d.grid[loc][d.ages[ai-1]]||0:null;
+      const cls=v===0?'czr':prev!==null&&v>prev?'cup':prev!==null&&v<prev?'cdn':'';
+      html+=`<td class="${cls}">${v===0?'–':fn(v)}</td>`;
+    });
+    html+=`<td style="font-weight:700">${fn(rt)}</td></tr>`;
+  });
+  const total=d.locs.reduce((s,l)=>s+(d.rowTotals[l]||0),0);
+  html+=`</tbody><tfoot><tr><td>TOTAL</td>
+    ${d.ages.map(a=>`<td>${fn(d.colTotals[a]||0)}</td>`).join('')}
+    <td>${fn(total)}</td></tr></tfoot></table></div>
+    <div class="leg">
+      <span class="lc"><span class="lb lu"></span>▲ Higher than previous age bucket</span>
+      <span class="lc"><span class="lb ld"></span>▼ Lower than previous age bucket</span>
+    </div>`;
+  el.innerHTML=html;
+}
+
+/* Export HOV as CSV */
+function exportHovCSV(){
+  const pc=_hovPCselected==='ALL'?null:_hovPCselected;
+  const d=buildHovData(pc);
+  if(!d.locs.length){toast('No HOV data to export','tw');return;}
+  const hdr=['Location',...d.ages.map(a=>`D${a}`),'Total'];
+  const rows2=[hdr.join(',')];
+  d.locs.forEach(loc=>{
+    const r=[`"${loc}"`,...d.ages.map(a=>d.grid[loc]?d.grid[loc][a]||0:0),d.rowTotals[loc]||0];
+    rows2.push(r.join(','));
+  });
+  const grand=d.locs.reduce((s,l)=>s+(d.rowTotals[l]||0),0);
+  rows2.push(['TOTAL',...d.ages.map(a=>d.colTotals[a]||0),grand].join(','));
+  const blob=new Blob([rows2.join('\n')],{type:'text/csv'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download=`HOV_Tracking_${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  toast('⬇ HOV data exported','tok');
+}
+
+/* ═══════════════════════════════════════════════
+   MAIN TAB SWITCHER (Floor Trends ↔ HOV Tracking)
+═══════════════════════════════════════════════ */
+function switchMainTab(tab){
+  const isHov=tab==='hov';
+  // Toggle Floor Trends section
+  const fs=document.getElementById('floorSection');
+  if(fs)fs.style.display=isHov?'none':'block';
+  // Toggle HOV section
+  const hs=document.getElementById('hovSection');
+  if(hs)hs.style.display=isHov?'block':'none';
+  // Update main tab buttons
+  document.querySelectorAll('.mtab').forEach((b,i)=>b.classList.toggle('active',i===(isHov?1:0)));
+  if(isHov)renderHovTab();
+}
+
+/* ═══════════════════════════════════════════════
+   HOV-INDEPENDENT UPLOAD & PROCESSING
+═══════════════════════════════════════════════ */
+function setHovP(show,txt){
+  const p=document.getElementById('hovProg');
+  const t=document.getElementById('hovPtxt');
+  const b=document.getElementById('hovPbar');
+  if(p)p.style.display=show?'block':'none';
+  if(t&&txt)t.textContent=txt;
+  if(b)b.style.width=show?'55%':'0';
+}
+
+async function runHovFiles(files){
+  setHovP(true,'⚙  Identifying files…');
+  const brow=document.getElementById('hovBrow');
+  const badges=[];
+
+  for(let i=0;i<files.length;i++){
+    const f=files[i];
+    const ext=f.name.split('.').pop().toLowerCase();
+    const date=xDate(f.name);
+    setHovP(true,`⚙  ${i+1}/${files.length}: ${f.name}`);
+
+    // Identify file type — filename first, then headers
+    let type=idByName(f.name);
+    if(!type){
+      try{
+        const buf=await f.arrayBuffer();
+        const result=readExcel(buf,null);
+        if(result&&result.rows.length>=2){
+          const hi=result.headerRow!==undefined?result.headerRow:findHdrRow(result.rows);
+          const hdrs=cleanH((result.rows[hi]||[]).map(h=>String(h==null?'':h)));
+          type=idByHdrs(hdrs);
+        }
+      }catch(_){}
+    }
+
+    if(!type){
+      badges.push({name:f.name,type:null});
+      continue;
+    }
+
+    try{
+      await procHovFile(f,type,date);
+      badges.push({name:f.name,type,ok:true});
+    }catch(e){
+      console.warn('HOV file error:',e);
+      badges.push({name:f.name,type:'error',err:e.message});
+    }
+  }
+
+  setHovP(false);
+  // Render badges in hovBrow
+  if(brow){
+    if(!badges.length){
+      brow.innerHTML='<span style="color:#94a3b8;font-size:11px">No files uploaded</span>';
+    }else{
+      brow.innerHTML=badges.map(b=>{
+        if(!b.type||b.type===null)
+          return`<span class="badge bun">❓ <span>Undetected: ${xe(b.name.slice(0,28))}</span></span>`;
+        if(b.type==='error')
+          return`<span class="badge ber">❌ <span>Error: ${xe(b.name.slice(0,28))}</span></span>`;
+        const m=BM[b.type]||{c:'bun',i:'📄',l:b.type.toUpperCase()};
+        return`<span class="badge ${m.c}">${m.i} <span>HOV · ${xe(b.name.slice(0,28))}</span></span>`;
+      }).join('');
+    }
+  }
+  renderHovTab();
+  toast(`🚁 HOV: ${badges.filter(b=>b.ok).length}/${files.length} files processed`,'tok');
+}
+
+function onHovSave(){if(persistM())toast('✅ HOV data saved to master','tok');}
+function onHovClear(){
+  if(!confirm('Clear all HOV data?'))return;
+  master.hov=[];persistM();
+  const b=document.getElementById('hovBrow');
+  if(b)b.innerHTML='<span style="color:#94a3b8;font-size:11px">HOV data cleared</span>';
+  renderHovTab();toast('🗑 HOV data cleared','tw');
+}
+
+/* HOV file input */
+document.getElementById('hovFi').addEventListener('change',async e=>{
+  const files=Array.from(e.target.files);e.target.value='';
+  if(!files.length)return;
+  await runHovFiles(files);
+});
+
+/* ═══════════════════════════════════════════════
+   SECTION EXCEL REPORT DOWNLOAD
+   One ⬇ Report button per Floor Trends section.
+   Generates a date-wise location×count Excel file.
+═══════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════
+   RAW ROW CAPTURE (in-memory, not persisted)
+   Stores rows per type per date AFTER base filter.
+   Only ages relevant to sections are kept.
+   Used exclusively by downloadSectionReport().
+═══════════════════════════════════════════════ */
+const rawData={};
+const _VALID_AGES={forward:[3,6],reverse:[3,10],lmodc:[3,6,10],forwardShort:[3,6]};
+
+function captureRaw(type,row,date){
+  // 1. Apply base filter (mirrors each type's processor)
+  if(type==='forward'){
+    if(nv(gv(row,'pivot','Pivot'))!=='RECEIVED_AT_DC')return;
+  }else if(type==='reverse'){
+    const reason=nv(gv(row,
+      'reason of loss','Reason of Loss','reason_of_loss','Reason_of_Loss',
+      'Reason Of Loss','reasonofloss','REASON OF LOSS'));
+    if(reason!=='RECEIVED_AT_DC'&&reason!=='MISROUTED')return;
+    const cu=(gv(row,'client','Client','CLIENT')||'').toUpperCase();
+    if(cu.includes('FTPL')&&cu.includes('REGIONAL'))return;
+    if(cu.includes('MEESHO')&&cu.includes('REGIONAL'))return;
+  }
+  // lmodc + forwardShort: no extra base filter
+
+  // 2. Age pre-filter — only store rows needed by sections
+  let age=0;
+  if(type==='lmodc'){
+    age=Math.round(parseLMODCAge(gv(row,'ageing','Ageing')));
+  }else if(type==='reverse'){
+    age=Math.round(parseFloat(gv(row,'ageing','Ageing'))||0);
+  }else{
+    age=Math.round(gn(row,
+      'ageing_from_bag_rec','Ageing_from_Bag_Rec','Ageing_From_Bag_Rec',
+      'ageing_from_bag_recc','Ageing_from_bag_recc','ageing','Ageing'));
+  }
+  if(!(_VALID_AGES[type]||[]).includes(age))return;
+
+  // 3. Store
+  if(!rawData[type])rawData[type]={};
+  if(!rawData[type][date])rawData[type][date]=[];
+  rawData[type][date].push(row);
+}
+
+/* Filter raw captured rows for one specific section */
+function filterRawForSection(sec){
+  const typeData=rawData[sec.src]||{};
+  const out=[];
+  for(const [date,rows] of Object.entries(typeData)){
+    for(const row of rows){
+      // Age must match section exactly
+      let age=0;
+      if(sec.src==='lmodc'){age=Math.round(parseLMODCAge(gv(row,'ageing','Ageing')));}
+      else if(sec.src==='reverse'){age=Math.round(parseFloat(gv(row,'ageing','Ageing'))||0);}
+      else{age=Math.round(gn(row,
+        'ageing_from_bag_rec','Ageing_from_Bag_Rec','Ageing_From_Bag_Rec',
+        'ageing_from_bag_recc','Ageing_from_bag_recc','ageing','Ageing'));}
+      if(age!==sec.age)continue;
+
+      // Bin filter (BIN1/BIN2 sections)
+      if(sec.bin!==undefined){
+        const bin=parseInt(gv(row,'bin_level','bin level','Bin_Level','Bin_level')||'0',10)||0;
+        if(bin!==sec.bin)continue;
+      }
+      // Message filter (SUCCESS sections)
+      if(sec.msg!==undefined){
+        if(nv(gv(row,'message','Message'))!==sec.msg)continue;
+      }
+      // Order status: exclude IN_MANIFEST for BIN sections
+      if(sec.bin!==undefined){
+        if(nv(gv(row,'order_status','Order_status','order status'))==='IN_MANIFEST')continue;
+      }
+
+      out.push({_date:date,...row});
+    }
+  }
+  out.sort((a,b)=>a._date.localeCompare(b._date));
+  return out;
+}
+
+/* SECTION EXCEL REPORT — raw row-level data */
+function downloadSectionReport(idx){
+  const sec=SECS[idx];
+  const rawRows=filterRawForSection(sec);
+
+  if(rawRows.length>0){
+    // Full raw report: Date + all original columns
+    const colSet=new Set();
+    rawRows.forEach(r=>Object.keys(r).forEach(k=>{if(k!=='_date')colSet.add(k);}));
+    const cols=['Date',...colSet];
+
+    const wsData=[cols];
+    rawRows.forEach(r=>{
+      wsData.push(cols.map(c=>{
+        if(c==='Date')return r._date;
+        const v=r[c];
+        return(v!==undefined&&v!==null)?String(v):'';
+      }));
+    });
+
+    const ws=XLSX.utils.aoa_to_sheet(wsData);
+    ws['!cols']=cols.map(c=>({wch:Math.min(35,Math.max(10,c.length+4))}));
+
+    const wb=XLSX.utils.book_new();
+    const safeTitle=sec.title.replace(/[^\w\s]/g,'_').trim().slice(0,31);
+    XLSX.utils.book_append_sheet(wb,ws,safeTitle);
+    const fname=`${safeTitle}_${new Date().toISOString().slice(0,10)}.xlsx`;
+    XLSX.writeFile(wb,fname);
+    toast(`⬇ ${fn(rawRows.length)} rows · ${cols.length} cols downloaded`,'tok');
+
+  }else{
+    // Fallback when page was reloaded (raw cache cleared) — show aggregated summary
+    const piv=buildPivot(sec);
+    if(!piv.locs.length){toast('No data — upload the matching file first','tw');return;}
+
+    const wsData=[
+      ['Section:',sec.title],['Filter:',sec.badge],
+      ['Note:','Raw row data unavailable (page reloaded). Showing aggregated summary.'],
+      ['Generated:',new Date().toLocaleString('en-IN')],[],
+      ['Date','Location','Count']
+    ];
+    piv.dates.forEach(date=>{
+      piv.locs.forEach(loc=>{
+        const c=(piv.grid[loc]&&piv.grid[loc][date])||0;
+        if(c>0)wsData.push([date,loc,c]);
+      });
+    });
+    const ws=XLSX.utils.aoa_to_sheet(wsData);
+    ws['!cols']=[{wch:14},{wch:34},{wch:10}];
+    const wb=XLSX.utils.book_new();
+    const safeTitle=sec.title.replace(/[^\w\s]/g,'_').trim().slice(0,31);
+    XLSX.utils.book_append_sheet(wb,ws,safeTitle);
+    XLSX.writeFile(wb,`${safeTitle}_summary_${new Date().toISOString().slice(0,10)}.xlsx`);
+    toast('⬇ Aggregated summary downloaded (re-upload file for full raw report)','tw');
+  }
+}
+
+/* ═══════════════════════════════════════════════
+   CHART PNG DOWNLOAD — HD quality
+═══════════════════════════════════════════════ */
+function downloadChart(canvasId,filename){
+  const canvas=document.getElementById(canvasId);
+  if(!canvas||!canvas.width){toast('No chart available','tw');return;}
+  // 2× scale for HD output
+  const sc=2;
+  const off=document.createElement('canvas');
+  off.width=canvas.width*sc;off.height=canvas.height*sc;
+  const ctx=off.getContext('2d');
+  ctx.fillStyle='#ffffff';ctx.fillRect(0,0,off.width,off.height);
+  ctx.scale(sc,sc);ctx.drawImage(canvas,0,0);
+  const a=document.createElement('a');
+  a.href=off.toDataURL('image/png',1.0);
+  a.download=filename||'chart.png';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  toast(`⬇ Chart saved: ${filename}`,'tok');
+}
+
+/* ═══════════════════════════════════════════════
+   GOOGLE SHEETS INTEGRATION (Floor Trends only)
+   Backend: Google Apps Script web app.
+   Data flow: Upload → aggregate → POST to Sheets.
+   Deduplication: per date per sheet (Apps Script
+   deletes existing date rows before appending).
+═══════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════
+   GOOGLE SHEETS INTEGRATION
+   Spreadsheet: 17JbybSZkKtdoHZBua3QyC5tcxwKYozhnILQcoXb3rYQ
+   Data flow:   Upload → aggregate → POST → Apps Script → Sheet
+   Each section gets its own tab (≤31 chars).
+   Deduplication: existing rows for the same date
+   are deleted before new ones are appended.
+═══════════════════════════════════════════════ */
+const GS_URL_KEY='logistics_gsheets_url_v2';
+const GS_SHEET_ID='17JbybSZkKtdoHZBua3QyC5tcxwKYozhnILQcoXb3rYQ';
+
+/* ── PASTE YOUR WEB APP URL HERE ──────────────────────────────────────
+   Replace the empty string '' with your Apps Script Web App URL.
+   Example:
+   const GS_HARDCODED_URL='https://script.google.com/macros/s/AKfy.../exec';
+   Once set, every file upload auto-syncs to Google Sheets permanently.
+   You can also set it at runtime via the 📊 Sheets button in the toolbar.
+──────────────────────────────────────────────────────────────────── */
+const GS_HARDCODED_URL='';
+
+function getGsUrl(){
+  // localStorage URL (set via 📊 Sheets button) takes priority over hardcoded
+  return localStorage.getItem(GS_URL_KEY)||GS_HARDCODED_URL||'';
+}
+
+/* ── Save / clear the deployed Web App URL ── */
+function configSheets(){
+  const cur=getGsUrl();
+  const hint=cur?`\nCurrent URL: ${cur.slice(0,55)}…`:'';
+  const url=prompt(
+    `Paste your Google Apps Script Web App URL below.${hint}\n\n`+
+    `How to get it:\n`+
+    `  1. Click "📄 AS Code" → download the .gs file\n`+
+    `  2. Open script.google.com → New project\n`+
+    `  3. Paste the code, Save (Ctrl+S)\n`+
+    `  4. Deploy → New deployment → Web App\n`+
+    `       Execute as : Me\n`+
+    `       Who can access : Anyone\n`+
+    `  5. Copy the Web App URL and paste here\n\n`+
+    `Leave blank to disable sync.`,
+    cur||''
+  );
+  if(url===null)return; // cancelled
+  const trimmed=url.trim();
+  if(trimmed){
+    localStorage.setItem(GS_URL_KEY,trimmed);
+    toast('✅ Google Sheets URL saved — data will sync on next upload','tok');
+  }else{
+    localStorage.removeItem(GS_URL_KEY);
+    toast('Google Sheets sync disabled','tw');
+  }
+  const btn=document.getElementById('sheetsbtn');
+  if(btn)btn.textContent=trimmed?'📊 Sheets ✓':'📊 Sheets';
+}
+
+/* ── Download the Apps Script .gs file ── */
+function showAppsScriptCode(){
+  const gs=`/**
+ * Logistics Analytics Dashboard — Google Apps Script Backend
+ * Spreadsheet ID: ${GS_SHEET_ID}
+ *
+ * DEPLOYMENT STEPS:
+ *  1. Go to https://script.google.com  → New project
+ *  2. Delete existing code, paste this entire file
+ *  3. File → Save  (Ctrl + S)
+ *  4. Deploy → New deployment
+ *       Type        : Web app
+ *       Execute as  : Me
+ *       Who can access : Anyone
+ *  5. Click Deploy → copy the Web App URL
+ *  6. In the dashboard click "📊 Sheets" → paste the URL
+ *
+ * Each dashboard section writes to its own sheet tab.
+ * Rows for the same date are removed before new ones are added (deduplication).
+ */
+
+const SPREADSHEET_ID = '${GS_SHEET_ID}';
+
+// ── Allowed origin for CORS (set to '*' or your specific domain) ──
+const ALLOWED_ORIGIN = '*';
+
+function doOptions(e) {
+  return buildCorsResponse('');
+}
+
+function doGet(e) {
+  return buildCorsResponse(
+    JSON.stringify({ ok: true, service: 'Logistics Dashboard Sheets API', version: '2.0' })
+  );
+}
+
+function doPost(e) {
+  try {
+    const payload = JSON.parse(e.postData.contents);
+    const result  = processPayload(payload);
+    return buildCorsResponse(JSON.stringify(result));
+  } catch (err) {
+    return buildCorsResponse(JSON.stringify({ ok: false, error: err.message }));
+  }
+}
+
+function processPayload(payload) {
+  const ss        = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const rawName   = (payload.sheet || 'Floor Trends').toString().replace(/[\\/:*?\\[\\]]/g, ' ').trim();
+  const sheetName = rawName.substring(0, 31) || 'Data';
+
+  // Get or create the target sheet tab
+  let sheet = ss.getSheetByName(sheetName);
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+    Logger.log('Created new sheet: ' + sheetName);
+  }
+
+  const headers = payload.headers || ['Date', 'Location', 'Count'];
+  const newRows = payload.rows   || [];
+  const dateKey = String(payload.date || '');
+
+  // ── Write header row if the sheet is empty ──
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(headers);
+    sheet.getRange(1, 1, 1, headers.length)
+      .setFontWeight('bold')
+      .setBackground('#0d1f3c')
+      .setFontColor('#dce6f5');
+    sheet.setFrozenRows(1);
+  }
+
+  // ── Delete existing rows for this date (deduplication) ──
+  let deletedCount = 0;
+  if (dateKey && sheet.getLastRow() > 1) {
+    const lastRow  = sheet.getLastRow();
+    const dateVals = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    // Collect rows to delete in reverse order so indexes stay valid
+    const toDelete = [];
+    for (let i = dateVals.length - 1; i >= 0; i--) {
+      if (String(dateVals[i][0]) === dateKey) {
+        toDelete.push(i + 2); // +2 because data starts at row 2
+      }
+    }
+    toDelete.forEach(r => { sheet.deleteRow(r); deletedCount++; });
+  }
+
+  // ── Append new rows in one batch ──
+  let appendedCount = 0;
+  if (newRows.length > 0) {
+    const startRow = sheet.getLastRow() + 1;
+    const numCols  = Math.max(headers.length, newRows[0].length);
+    // Pad rows to consistent column count
+    const paddedRows = newRows.map(r => {
+      const row = r.slice();
+      while (row.length < numCols) row.push('');
+      return row;
+    });
+    sheet.getRange(startRow, 1, paddedRows.length, numCols).setValues(paddedRows);
+    appendedCount = paddedRows.length;
+  }
+
+  SpreadsheetApp.flush();
+
+  return {
+    ok         : true,
+    sheet      : sheetName,
+    date       : dateKey,
+    deleted    : deletedCount,
+    appended   : appendedCount,
+    totalRows  : sheet.getLastRow() - 1  // excluding header
+  };
+}
+
+// ── Build response with CORS headers ──
+function buildCorsResponse(body) {
+  return ContentService
+    .createTextOutput(body)
+    .setMimeType(ContentService.MimeType.JSON);
+  // Note: Apps Script handles CORS automatically for web apps set to "Anyone"
+}
+`;
+
+  const blob=new Blob([gs],{type:'text/plain'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='logistics_dashboard_appscript.gs';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  toast('📄 Apps Script downloaded — follow the steps inside the file','ti');
+}
+
+/* ── POST one section/date batch to the deployed web app ── */
+async function pushSectionDate(sheetName,headers,rows,date){
+  const url=getGsUrl();
+  if(!url||!rows.length)return false;
+  try{
+    await fetch(url,{
+      method:'POST',
+      // no-cors: browser can't read response but the write always reaches Apps Script
+      mode:'no-cors',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({sheet:sheetName,headers,rows,date})
+    });
+    return true;
+  }catch(err){
+    console.warn('Sheets push error:',sheetName,err.message);
+    return false;
+  }
+}
+
+/* ── Push all Floor Trends sections after every upload ── */
+async function runSheetsPush(results){
+  const url=getGsUrl();
+  if(!url)return;
+
+  // Only run if at least one file was successfully processed
+  const hasData=(results||[]).some(r=>
+    r.type&&!['error','unsupported','skipped',null].includes(r.type)&&r.awbs>0
+  );
+  if(!hasData)return;
+
+  const headers=['Date','Location','Count'];
+  let pushed=0,total=0;
+
+  setP(true,'📊  Syncing to Google Sheets…');
+
+  for(let i=0;i<SECS.length;i++){
+    const sec=SECS[i];
+    const piv=buildPivot(sec);
+    if(!piv.locs.length)continue;
+
+    // Sanitise sheet name: no special chars, max 31 chars
+    const sheetName=sec.title
+      .replace(/[^\w\s\-]/g,' ')
+      .replace(/\s+/g,' ')
+      .trim()
+      .slice(0,31);
+
+    // Push one batch per date so deduplication is date-precise
+    for(const date of piv.dates){
+      const rows=[];
+      piv.locs.forEach(loc=>{
+        const count=(piv.grid[loc]&&piv.grid[loc][date])||0;
+        if(count>0)rows.push([date,loc,count]);
+      });
+      if(!rows.length)continue;
+      const ok=await pushSectionDate(sheetName,headers,rows,date);
+      if(ok)pushed++;
+      total++;
+    }
+  }
+
+  showP(false);
+
+  if(pushed>0){
+    console.info(`Google Sheets: synced ${pushed}/${total} batches`);
+    toast(`📊 Synced to Google Sheets (${pushed} section-date batches)`,'ti');
+  }else if(total>0){
+    toast('⚠ Google Sheets sync failed — check your Web App URL in ⚙ Sheets','tw');
+  }
+}
+
 initPanels();updateSummary();renderTab(0);
+// Restore Sheets button indicator on load
+(()=>{const btn=document.getElementById('sheetsbtn');if(btn&&getGsUrl())btn.textContent='📊 Sheets ✓';})();
 const _tot=Object.values(master).reduce((a,arr)=>a+arr.reduce((s,r)=>s+r.count,0),0);
 if(_tot>0)setTimeout(()=>toast(`📊 Restored ${fn(_tot)} AWBs from saved data`,'ti'),400);
 </script>
