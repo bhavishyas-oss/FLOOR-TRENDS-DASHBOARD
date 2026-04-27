@@ -3062,7 +3062,7 @@ function processPayload(payload) {
   const newRows = payload.rows   || [];
   const dateKey = String(payload.date || '');
 
-  // ── Write header row if the sheet is empty ──
+  // ── Write header row if empty; or expand headers if new columns arrive ──
   if (sheet.getLastRow() === 0) {
     sheet.appendRow(headers);
     sheet.getRange(1, 1, 1, headers.length)
@@ -3070,6 +3070,16 @@ function processPayload(payload) {
       .setBackground('#0d1f3c')
       .setFontColor('#dce6f5');
     sheet.setFrozenRows(1);
+    sheet.setFrozenColumns(1);
+  } else if (headers.length > sheet.getLastColumn()) {
+    // New columns added (e.g., switching from pivot summary to full row-level data)
+    const startCol = sheet.getLastColumn() + 1;
+    const extraCols = headers.length - sheet.getLastColumn();
+    sheet.getRange(1, startCol, 1, extraCols).setValues([headers.slice(startCol - 1)]);
+    sheet.getRange(1, 1, 1, headers.length)
+      .setFontWeight('bold')
+      .setBackground('#0d1f3c')
+      .setFontColor('#dce6f5');
   }
 
   // ── Delete existing rows for this date (deduplication) ──
@@ -3138,7 +3148,6 @@ async function pushSectionDate(sheetName,headers,rows,date){
   try{
     await fetch(url,{
       method:'POST',
-      // no-cors: browser can't read response but the write always reaches Apps Script
       mode:'no-cors',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({sheet:sheetName,headers,rows,date})
@@ -3150,55 +3159,84 @@ async function pushSectionDate(sheetName,headers,rows,date){
   }
 }
 
-/* ── Push all Floor Trends sections after every upload ── */
+/* ── Push all Floor Trends sections to Sheets after every upload ──
+   PRIMARY  : rawData in-memory cache → full row-level data pushed.
+              Format: Date | AWB | Location | Age | Bin | Msg | OS | …
+              Same data as what ⬇ Report downloads to Excel.
+   FALLBACK : rawData empty (backup restored without re-upload) →
+              sends aggregated pivot (Date, Location, Count).           */
 async function runSheetsPush(results){
   const url=getGsUrl();
   if(!url)return;
 
-  // Only run if at least one file was successfully processed
   const hasData=(results||[]).some(r=>
     r.type&&!['error','unsupported','skipped',null].includes(r.type)&&r.awbs>0
   );
   if(!hasData)return;
 
-  const headers=['Date','Location','Count'];
+  setP(true,'📊  Syncing full report data to Google Sheets…');
   let pushed=0,total=0;
-
-  setP(true,'📊  Syncing to Google Sheets…');
 
   for(let i=0;i<SECS.length;i++){
     const sec=SECS[i];
-    const piv=buildPivot(sec);
-    if(!piv.locs.length)continue;
+    const sheetName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().slice(0,31);
 
-    // Sanitise sheet name: no special chars, max 31 chars
-    const sheetName=sec.title
-      .replace(/[^\w\s\-]/g,' ')
-      .replace(/\s+/g,' ')
-      .trim()
-      .slice(0,31);
+    /* PRIMARY: full row-level data from rawData (populated during this upload session) */
+    const rawRows=filterRawForSection(sec);
 
-    // Push one batch per date so deduplication is date-precise
-    for(const date of piv.dates){
-      const rows=[];
-      piv.locs.forEach(loc=>{
-        const count=(piv.grid[loc]&&piv.grid[loc][date])||0;
-        if(count>0)rows.push([date,loc,count]);
+    if(rawRows.length>0){
+      // Build complete column list from all rows — identical to downloadSectionReport
+      const colSet=new Set();
+      rawRows.forEach(r=>Object.keys(r).forEach(k=>{if(k!=='_date')colSet.add(k);}));
+      const allCols=['Date',...colSet];
+
+      // Group rows by date for per-date deduplication on Apps Script side
+      const byDate={};
+      rawRows.forEach(r=>{
+        const d=r._date;
+        if(!byDate[d])byDate[d]=[];
+        byDate[d].push(allCols.map(c=>{
+          if(c==='Date')return d;
+          const v=r[c];
+          return(v!==undefined&&v!==null&&v!=='')?String(v):'';
+        }));
       });
-      if(!rows.length)continue;
-      const ok=await pushSectionDate(sheetName,headers,rows,date);
-      if(ok)pushed++;
-      total++;
+
+      for(const[date,rows] of Object.entries(byDate)){
+        if(!rows.length)continue;
+        total++;
+        const ok=await pushSectionDate(sheetName,allCols,rows,date);
+        if(ok)pushed++;
+        await new Promise(r=>setTimeout(r,60)); // yield between requests
+      }
+
+    }else{
+      /* FALLBACK: rawData not available — push aggregated pivot counts */
+      const piv=buildPivot(sec);
+      if(!piv.locs.length)continue;
+      const headers=['Date','Location','Count'];
+      for(const date of piv.dates){
+        const rows=[];
+        piv.locs.forEach(loc=>{
+          const count=(piv.grid[loc]&&piv.grid[loc][date])||0;
+          if(count>0)rows.push([date,loc,count]);
+        });
+        if(!rows.length)continue;
+        total++;
+        const ok=await pushSectionDate(sheetName,headers,rows,date);
+        if(ok)pushed++;
+        await new Promise(r=>setTimeout(r,60));
+      }
     }
   }
 
   showP(false);
 
   if(pushed>0){
-    console.info(`Google Sheets: synced ${pushed}/${total} batches`);
-    toast(`📊 Synced to Google Sheets (${pushed} section-date batches)`,'ti');
+    console.info(`Google Sheets: ${pushed}/${total} section-date batches synced (full row data)`);
+    toast(`📊 Synced to Google Sheets — ${pushed} batches (full row-level data)`,'ti');
   }else if(total>0){
-    toast('⚠ Google Sheets sync failed — check your Web App URL in ⚙ Sheets','tw');
+    toast('⚠ Google Sheets sync failed — check Web App URL in 📊 Sheets','tw');
   }
 }
 
