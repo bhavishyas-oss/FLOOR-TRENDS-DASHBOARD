@@ -3008,31 +3008,31 @@ function showAppsScriptCode(){
  *
  * DEPLOYMENT STEPS:
  *  1. Go to https://script.google.com  → New project
- *  2. Delete existing code, paste this entire file
+ *  2. Delete ALL existing code, paste this ENTIRE file
  *  3. File → Save  (Ctrl + S)
  *  4. Deploy → New deployment
  *       Type        : Web app
  *       Execute as  : Me
  *       Who can access : Anyone
  *  5. Click Deploy → copy the Web App URL
- *  6. In the dashboard click "📊 Sheets" → paste the URL
+ *  6. In the dashboard click "📊 Sheets" → paste the URL → Enter
  *
- * Each dashboard section writes to its own sheet tab.
- * Rows for the same date are removed before new ones are added (deduplication).
+ * HOW DATA IS STORED:
+ *  • Each dashboard section gets its own sheet tab (D3 FWD R@DC TRENDS, etc.)
+ *  • Format: Date | AWB | Location | Age | Bin | Msg | OS | … (full row-level data)
+ *  • Deduplication: rows for the same date are deleted before new rows are appended
+ *  • This script handles both 3-column pivot summaries and 100+ column full reports
  */
 
 const SPREADSHEET_ID = '${GS_SHEET_ID}';
 
-// ── Allowed origin for CORS (set to '*' or your specific domain) ──
-const ALLOWED_ORIGIN = '*';
-
 function doOptions(e) {
-  return buildCorsResponse('');
+  return buildResponse('');
 }
 
 function doGet(e) {
-  return buildCorsResponse(
-    JSON.stringify({ ok: true, service: 'Logistics Dashboard Sheets API', version: '2.0' })
+  return buildResponse(
+    JSON.stringify({ ok: true, service: 'Logistics Dashboard Sheets API', version: '3.0' })
   );
 }
 
@@ -3040,15 +3040,34 @@ function doPost(e) {
   try {
     const payload = JSON.parse(e.postData.contents);
     const result  = processPayload(payload);
-    return buildCorsResponse(JSON.stringify(result));
+    return buildResponse(JSON.stringify(result));
   } catch (err) {
-    return buildCorsResponse(JSON.stringify({ ok: false, error: err.message }));
+    Logger.log('doPost error: ' + err.message);
+    return buildResponse(JSON.stringify({ ok: false, error: err.message }));
   }
+}
+
+// ── Normalize a cell value from column A into "YYYY-MM-DD" string ──
+// ROOT CAUSE OF DEDUPLICATION FAILURE: Google Sheets stores dates as Date objects.
+// String(new Date("2026-04-01")) returns "Fri Apr 01 2026 00:00:00 GMT+..." ≠ "2026-04-01"
+// Fix: use Utilities.formatDate for Date objects; take first 10 chars for plain strings.
+function normDate(cellValue) {
+  if (!cellValue) return '';
+  if (cellValue instanceof Date) {
+    try {
+      return Utilities.formatDate(cellValue, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    } catch (_) {
+      return cellValue.toISOString().slice(0, 10);
+    }
+  }
+  // Handle plain strings like "2026-04-01" or "2026-04-01 00:00:00"
+  return String(cellValue).trim().slice(0, 10);
 }
 
 function processPayload(payload) {
   const ss        = SpreadsheetApp.openById(SPREADSHEET_ID);
-  const rawName   = (payload.sheet || 'Floor Trends').toString().replace(/[\\/:*?\\[\\]]/g, ' ').trim();
+  const rawName   = (payload.sheet || 'Floor Trends').toString()
+    .replace(/[\\/:*?\\[\\]]/g, ' ').replace(/\\s+/g, ' ').trim();
   const sheetName = rawName.substring(0, 31) || 'Data';
 
   // Get or create the target sheet tab
@@ -3060,9 +3079,12 @@ function processPayload(payload) {
 
   const headers = payload.headers || ['Date', 'Location', 'Count'];
   const newRows = payload.rows   || [];
-  const dateKey = String(payload.date || '');
+  const dateKey = normDate(payload.date || '');
 
-  // ── Write header row if empty; or expand headers if new columns arrive ──
+  // ── Write or refresh header row ──
+  // If the sheet is empty: write headers fresh.
+  // If headers have MORE columns than the sheet currently has: rewrite row 1 entirely
+  // (handles upgrade from 3-col pivot to 100+ col full-data format).
   if (sheet.getLastRow() === 0) {
     sheet.appendRow(headers);
     sheet.getRange(1, 1, 1, headers.length)
@@ -3072,64 +3094,77 @@ function processPayload(payload) {
     sheet.setFrozenRows(1);
     sheet.setFrozenColumns(1);
   } else if (headers.length > sheet.getLastColumn()) {
-    // New columns added (e.g., switching from pivot summary to full row-level data)
-    const startCol = sheet.getLastColumn() + 1;
-    const extraCols = headers.length - sheet.getLastColumn();
-    sheet.getRange(1, startCol, 1, extraCols).setValues([headers.slice(startCol - 1)]);
+    // Expand: write full header row from scratch (safer than partial update)
+    // First expand the sheet if needed
+    if (headers.length > sheet.getMaxColumns()) {
+      sheet.insertColumnsAfter(sheet.getMaxColumns(), headers.length - sheet.getMaxColumns());
+    }
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(1, 1, 1, headers.length)
       .setFontWeight('bold')
       .setBackground('#0d1f3c')
       .setFontColor('#dce6f5');
+    sheet.setFrozenRows(1);
+    sheet.setFrozenColumns(1);
   }
 
   // ── Delete existing rows for this date (deduplication) ──
+  // Uses normDate() to correctly compare Date objects stored by Sheets.
   let deletedCount = 0;
   if (dateKey && sheet.getLastRow() > 1) {
     const lastRow  = sheet.getLastRow();
     const dateVals = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-    // Collect rows to delete in reverse order so indexes stay valid
     const toDelete = [];
     for (let i = dateVals.length - 1; i >= 0; i--) {
-      if (String(dateVals[i][0]) === dateKey) {
-        toDelete.push(i + 2); // +2 because data starts at row 2
+      if (normDate(dateVals[i][0]) === dateKey) {
+        toDelete.push(i + 2); // i+2: row index is 1-based, data starts at row 2
       }
     }
+    // Delete in reverse order so row indexes stay valid
+    toDelete.sort((a, b) => b - a);
     toDelete.forEach(r => { sheet.deleteRow(r); deletedCount++; });
+    Logger.log('Dedup: deleted ' + deletedCount + ' rows for date ' + dateKey + ' on sheet ' + sheetName);
   }
 
   // ── Append new rows in one batch ──
   let appendedCount = 0;
   if (newRows.length > 0) {
     const startRow = sheet.getLastRow() + 1;
-    const numCols  = Math.max(headers.length, newRows[0].length);
-    // Pad rows to consistent column count
+    const numCols  = Math.max(headers.length, newRows[0] ? newRows[0].length : 0);
+
+    // Expand columns if needed
+    if (numCols > sheet.getMaxColumns()) {
+      sheet.insertColumnsAfter(sheet.getMaxColumns(), numCols - sheet.getMaxColumns());
+    }
+
+    // Pad all rows to the same column count
     const paddedRows = newRows.map(r => {
       const row = r.slice();
       while (row.length < numCols) row.push('');
       return row;
     });
+
     sheet.getRange(startRow, 1, paddedRows.length, numCols).setValues(paddedRows);
     appendedCount = paddedRows.length;
+    Logger.log('Appended ' + appendedCount + ' rows to sheet ' + sheetName + ' for date ' + dateKey);
   }
 
   SpreadsheetApp.flush();
 
   return {
-    ok         : true,
-    sheet      : sheetName,
-    date       : dateKey,
-    deleted    : deletedCount,
-    appended   : appendedCount,
-    totalRows  : sheet.getLastRow() - 1  // excluding header
+    ok        : true,
+    sheet     : sheetName,
+    date      : dateKey,
+    deleted   : deletedCount,
+    appended  : appendedCount,
+    totalRows : sheet.getLastRow() - 1
   };
 }
 
-// ── Build response with CORS headers ──
-function buildCorsResponse(body) {
+function buildResponse(body) {
   return ContentService
     .createTextOutput(body)
     .setMimeType(ContentService.MimeType.JSON);
-  // Note: Apps Script handles CORS automatically for web apps set to "Anyone"
 }
 `;
 
@@ -3142,29 +3177,41 @@ function buildCorsResponse(body) {
 }
 
 /* ── POST one section/date batch to the deployed web app ── */
+/* ── Push one batch (≤200 rows) to Sheets ─────────────────────────────
+   Large payloads silently fail: Apps Script POST limit ~6MB.
+   With 100+ source columns × many rows, a single push can easily exceed
+   this. Chunking guarantees every row actually reaches the sheet.         */
 async function pushSectionDate(sheetName,headers,rows,date){
   const url=getGsUrl();
   if(!url||!rows.length)return false;
-  try{
-    await fetch(url,{
-      method:'POST',
-      mode:'no-cors',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({sheet:sheetName,headers,rows,date})
-    });
-    return true;
-  }catch(err){
-    console.warn('Sheets push error:',sheetName,err.message);
-    return false;
+  const CHUNK=200; // safe chunk size: ~100 cols × 200 rows ≈ 200KB per request
+  let allOk=true;
+  for(let i=0;i<rows.length;i+=CHUNK){
+    const chunk=rows.slice(i,i+CHUNK);
+    try{
+      await fetch(url,{
+        method:'POST',
+        mode:'no-cors',
+        headers:{'Content-Type':'application/json'},
+        // Only send date for the FIRST chunk — deduplication runs once per date
+        body:JSON.stringify({sheet:sheetName,headers,rows:chunk,date:i===0?date:''})
+      });
+    }catch(err){
+      console.warn('Sheets push error:',sheetName,'chunk',i,err.message);
+      allOk=false;
+    }
+    if(rows.length>CHUNK&&i+CHUNK<rows.length){
+      await new Promise(r=>setTimeout(r,80)); // yield between chunks
+    }
   }
+  return allOk;
 }
 
 /* ── Push all Floor Trends sections to Sheets after every upload ──
-   PRIMARY  : rawData in-memory cache → full row-level data pushed.
-              Format: Date | AWB | Location | Age | Bin | Msg | OS | …
-              Same data as what ⬇ Report downloads to Excel.
-   FALLBACK : rawData empty (backup restored without re-upload) →
-              sends aggregated pivot (Date, Location, Count).           */
+   FORMAT: Full row-level data (same as Excel report download).
+   Each row = one AWB with Date + all original source columns.
+   Falls back to pivot summary (Date, Location, Count) when rawData
+   is not available (e.g. imported from backup without re-uploading).  */
 async function runSheetsPush(results){
   const url=getGsUrl();
   if(!url)return;
@@ -3181,16 +3228,14 @@ async function runSheetsPush(results){
     const sec=SECS[i];
     const sheetName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().slice(0,31);
 
-    /* PRIMARY: full row-level data from rawData (populated during this upload session) */
+    /* PRIMARY: full row-level data from rawData cache */
     const rawRows=filterRawForSection(sec);
 
     if(rawRows.length>0){
-      // Build complete column list from all rows — identical to downloadSectionReport
       const colSet=new Set();
       rawRows.forEach(r=>Object.keys(r).forEach(k=>{if(k!=='_date')colSet.add(k);}));
       const allCols=['Date',...colSet];
 
-      // Group rows by date for per-date deduplication on Apps Script side
       const byDate={};
       rawRows.forEach(r=>{
         const d=r._date;
@@ -3207,11 +3252,10 @@ async function runSheetsPush(results){
         total++;
         const ok=await pushSectionDate(sheetName,allCols,rows,date);
         if(ok)pushed++;
-        await new Promise(r=>setTimeout(r,60)); // yield between requests
+        await new Promise(r=>setTimeout(r,60));
       }
-
     }else{
-      /* FALLBACK: rawData not available — push aggregated pivot counts */
+      /* FALLBACK: rawData empty — send aggregated pivot counts */
       const piv=buildPivot(sec);
       if(!piv.locs.length)continue;
       const headers=['Date','Location','Count'];
@@ -3233,8 +3277,8 @@ async function runSheetsPush(results){
   showP(false);
 
   if(pushed>0){
-    console.info(`Google Sheets: ${pushed}/${total} section-date batches synced (full row data)`);
-    toast(`📊 Synced to Google Sheets — ${pushed} batches (full row-level data)`,'ti');
+    console.info(`Google Sheets: ${pushed}/${total} section-date batches synced`);
+    toast(`📊 Synced to Google Sheets — ${pushed} batches`,'ti');
   }else if(total>0){
     toast('⚠ Google Sheets sync failed — check Web App URL in 📊 Sheets','tw');
   }
