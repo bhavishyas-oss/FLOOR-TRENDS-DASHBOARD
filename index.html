@@ -456,9 +456,9 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
       <div id="hovTableWrap"></div>
     </div>
 
-    <!-- 4. Product Value Table -->
+    <!-- 4. PRODUCT VALUE Table -->
     <div class="card">
-      <div class="chead"><span class="ct">Product Value — AWB List</span><span class="cbg">SORTED: HIGHEST VALUE FIRST</span></div>
+      <div class="chead"><span class="ct">PRODUCT VALUE — AWB List</span><span class="cbg">SORTED: HIGHEST VALUE FIRST</span></div>
       <div id="hovPVWrap" style="max-height:420px;overflow-y:auto"></div>
     </div>
 
@@ -2371,24 +2371,24 @@ function renderHovTab(){
     }
   }
 
-  // 4. Product Value Table
+  // 4. PRODUCT VALUE Table
   renderHovPVTable(pcs);
 
   // 5. Age-wise Trends
   renderHovAgeTrends(pcs);
 }
 
-/* Product Value Table */
+/* PRODUCT VALUE Table */
 function renderHovPVTable(pcs){
   const wrap=document.getElementById('hovPVWrap');if(!wrap)return;
   const pvRows=(master.hovPV||[]).filter(r=>!pcs||pcs.includes(r.pc))
     .sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
   if(!pvRows.length){
-    wrap.innerHTML=`<div class="empty" style="padding:24px"><div class="et">No product value data</div>
+    wrap.innerHTML=`<div class="empty" style="padding:24px"><div class="et">No PRODUCT VALUE data</div>
       <div class="em">Extracted from HOV PD PC sheet (PRODUCT VALUE column)</div></div>`;return;
   }
   let html=`<table class="tbl"><thead><tr>
-    <th style="text-align:left">AWB Number</th><th>Product Value</th><th style="text-align:left">Current Location</th>
+    <th style="text-align:left">AWB Number</th><th>PRODUCT VALUE</th><th style="text-align:left">Current Location</th>
   </tr></thead><tbody>`;
   pvRows.slice(0,500).forEach(r=>{
     const pv=parseFloat(r.pv)||0;
