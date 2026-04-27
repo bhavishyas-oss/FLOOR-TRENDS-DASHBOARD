@@ -1580,28 +1580,24 @@ function renderTrendChart(cid,sec){
   const titleText=`${sec.title} — Trends`;
 
   charts[cid]=new Chart(cv,{
-    type:'line',
-    plugins:[valueLabelPlugin],
+    type:'bar',
+    plugins:[ChartDataLabels],
     data:{labels,datasets:[{
       label:`D${sec.age} Total Pendency`,
       data,
-      borderColor:'#0e7490',
-      backgroundColor:'rgba(14,116,144,.10)',
-      borderWidth:2.5,
-      pointRadius:6,
-      pointHoverRadius:9,
-      pointStyle:'circle',
-      pointBackgroundColor:'#0e7490',
-      pointBorderColor:'#fff',
-      pointBorderWidth:2,
-      fill:true,
-      tension:0.3,
+      backgroundColor:'rgba(28,133,111,0.82)',
+      borderColor:'#1C856F',
+      borderWidth:1.5,
+      borderRadius:5,
+      borderSkipped:false,
+      hoverBackgroundColor:'rgba(233,223,67,0.85)',
+      hoverBorderColor:'#E9DF43',
     }]},
     options:{
       responsive:true,
       maintainAspectRatio:false,
       animation:{duration:400},
-      layout:{padding:{top:24,right:10,bottom:4,left:4}},
+      layout:{padding:{top:32,right:10,bottom:4,left:4}},
       plugins:{
         title:{
           display:true,
@@ -1619,11 +1615,19 @@ function renderTrendChart(cid,sec){
           borderWidth:1,
           padding:10,
           callbacks:{label(c){return` Total: ${fn(c.parsed.y)}`;}}
+        },
+        datalabels:{
+          anchor:'end',
+          align:'end',
+          offset:2,
+          color:'#0a2520',
+          font:{size:11,family:'Inter',weight:'800'},
+          formatter(v){return v>=1000?(v/1000).toFixed(1)+'K':fn(v);}
         }
       },
       scales:{
         x:{
-          grid:{color:'#e2e8f0',drawBorder:false},
+          grid:{display:false},
           ticks:{font:{size:11,family:'Inter',weight:'700'},color:'#1e293b',maxRotation:45,autoSkip:true,maxTicksLimit:12}
         },
         y:{
@@ -1802,17 +1806,23 @@ function initPanels(){
             <button class="btn bg" onclick="downloadTableImage('tbl${i}','${s.title.replace(/[^\w]/g,'_')}_table.png')" style="font-size:10px;padding:4px 9px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download table as HD PNG">🖼 Table</button>
           </div>
         </div>
-        <div id="tbl${i}"></div>
+
+        <!-- 1. Trend Bar Chart -->
         <div class="tarea">
           <div style="display:flex;justify-content:space-between;align-items:center;padding:0 8px 8px">
-            <span style="font-size:11px;font-weight:800;color:var(--brand);text-transform:uppercase;letter-spacing:.8px">📈 ${s.title} — Trends</span>
+            <span style="font-size:11px;font-weight:800;color:var(--brand);text-transform:uppercase;letter-spacing:.8px">📊 ${s.title} — Trends</span>
             <button class="btn bg" onclick="downloadChart('tchrt${i}','${s.title.replace(/[^\w]/g,'_')}_trend.png')" style="font-size:10px;padding:3px 9px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download trend chart as HD PNG">🖼 PNG</button>
           </div>
           <div class="twrap"><canvas id="tchrt${i}"></canvas></div>
         </div>
+
+        <!-- 2. Trend Table -->
+        <div id="tbl${i}"></div>
+
+        <!-- 3. Location Breakdown Chart -->
         <div class="carea">
           <div class="ctoolbar">
-            <span class="ctoolbar-lbl">📊 Location Breakdown — Date vs AWB Count</span>
+            <span class="ctoolbar-lbl">📈 Location Breakdown — Date vs AWB Count</span>
             <div style="display:flex;align-items:center;gap:8px">
               <select class="dc-select" id="dcsel${i}" onchange="onDCChange(${i},this.value)">
                 <option value="ALL">All DCs (Overview)</option>
@@ -1822,6 +1832,7 @@ function initPanels(){
           </div>
           <div class="cwrap"><canvas id="ch${i}"></canvas></div>
         </div>
+
       </div>
     </div>`).join('');
 }
