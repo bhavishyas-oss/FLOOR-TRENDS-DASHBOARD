@@ -2331,93 +2331,107 @@ document.addEventListener('click',e=>{
 /* Download HOV table as PNG */
 function downloadHovTableImage(){
   const wrap=document.getElementById('hovTableWrap');
-  if(!wrap||!wrap.querySelector('table')){toast('No HOV table to download','tw');return;}
-  if(typeof html2canvas==='undefined'){toast('⚠ html2canvas not loaded — refresh and try','tw');return;}
+  const table=wrap?wrap.querySelector('table'):null;
+  if(!table){toast('No HOV table to download — upload files first','tw');return;}
 
-  toast('⏳ Preparing full table image…','ti');
+  toast('⏳ Building table image…','ti');
 
-  // Build a standalone HTML page containing just the table with all styles inlined
-  // This avoids any viewport / scroll-clip constraints from the parent page
-  const table=wrap.querySelector('table');
-  if(!table){toast('No table found','tw');return;}
+  // Draw table directly onto an off-screen Canvas.
+  // This bypasses html2canvas entirely — no DOM capture, no scroll-clip, no flip.
+  const SCALE=2;
+  const ROW_H=36*SCALE;   // row height
+  const PAD=14*SCALE;     // cell padding
+  const FONT_SZ=12*SCALE;
 
-  // Clone the full table (including hidden rows due to scroll)
-  const tableClone=table.cloneNode(true);
+  // Gather all rows
+  const allRows=[...table.querySelectorAll('thead tr, tbody tr, tfoot tr')];
+  if(!allRows.length){toast('Table is empty','tw');return;}
 
-  // Create an off-screen container with no constraints
-  const container=document.createElement('div');
-  container.style.cssText=[
-    'position:fixed','left:-200vw','top:0',
-    'width:max-content','height:auto',
-    'overflow:visible','max-height:none','max-width:none',
-    'background:#fff','padding:12px','font-family:Inter,sans-serif',
-    'z-index:-9999'
-  ].join(';');
+  // Measure column count and widths
+  const firstRow=allRows[0];
+  const cells=[...firstRow.querySelectorAll('th,td')];
+  const nCols=cells.length;
 
-  // Apply dashboard table styles inline so html2canvas picks them up
-  tableClone.style.cssText='border-collapse:collapse;font-size:12.5px;width:auto';
-  tableClone.querySelectorAll('th').forEach(th=>{
-    th.style.cssText='background:#0f2b25;color:#fff;padding:11px 16px;text-align:center;'+
-      'font-weight:900;white-space:nowrap;font-size:12px;border-right:1px solid #1a5045;';
-  });
-  tableClone.querySelectorAll('td').forEach(td=>{
-    const cl=td.classList;
-    let bg='#fff',color='#0a2520',fw='700';
-    if(cl.contains('cup')){bg='#ef4444';color='#fff';fw='900';}
-    else if(cl.contains('cdn')){bg='#dff0ea';color='#0a4a35';}
-    else if(cl.contains('czr')){color='#94a3b8';fw='500';}
-    td.style.cssText=`background:${bg};color:${color};font-weight:${fw};`+
-      'padding:9px 16px;text-align:center;border-bottom:1.5px solid #c8dfd9;'+
-      'border-right:1px solid #daeee9;font-size:12px;white-space:nowrap;';
-  });
-  // Sticky first column style
-  tableClone.querySelectorAll('tbody td:first-child,tfoot td:first-child').forEach(td=>{
-    td.style.textAlign='left';td.style.fontWeight='800';
-  });
-  tableClone.querySelectorAll('tfoot td').forEach(td=>{
-    td.style.background='#0f2b25';td.style.color='#fff';
-    td.style.fontWeight='900';td.style.padding='10px 16px';
-  });
-
-  container.appendChild(tableClone);
-  document.body.appendChild(container);
-
-  // Measure true full dimensions after layout
-  requestAnimationFrame(()=>{
-    const W=container.scrollWidth+24;
-    const H=container.scrollHeight+24;
-    html2canvas(container,{
-      scale:2,
-      backgroundColor:'#ffffff',
-      useCORS:true,
-      allowTaint:true,
-      width:W,
-      height:H,
-      windowWidth:W+200,
-      windowHeight:H+200,
-      x:0,y:0,
-      scrollX:0,scrollY:0,
-      logging:false,
-      onclone(doc){
-        // Remove any residual overflow in the cloned doc
-        doc.querySelectorAll('*').forEach(el=>{
-          el.style.overflow='visible';
-          el.style.maxHeight='none';
-        });
-      }
-    }).then(canvas=>{
-      document.body.removeChild(container);
-      const a=document.createElement('a');
-      a.href=canvas.toDataURL('image/png',1.0);
-      a.download=`HOV_Table_${new Date().toISOString().slice(0,10)}.png`;
-      document.body.appendChild(a);a.click();document.body.removeChild(a);
-      toast('🖼 Full HOV table downloaded as PNG','tok');
-    }).catch(err=>{
-      if(document.body.contains(container))document.body.removeChild(container);
-      console.warn('html2canvas:',err);
-      toast('Table image failed — try again','te');
+  // Build col widths by scanning all cells
+  const colW=new Array(nCols).fill(0);
+  const tmpCv=document.createElement('canvas');
+  const tmpCtx=tmpCv.getContext('2d');
+  tmpCtx.font=`bold ${FONT_SZ}px Inter,sans-serif`;
+  allRows.forEach(row=>{
+    [...row.querySelectorAll('th,td')].forEach((cell,ci)=>{
+      if(ci>=nCols)return;
+      const txt=cell.textContent.trim();
+      const w=tmpCtx.measureText(txt).width+PAD*2;
+      if(w>colW[ci])colW[ci]=w;
     });
   });
+  // First col wider for location names
+  colW[0]=Math.max(colW[0],160*SCALE);
+  const totalW=colW.reduce((a,b)=>a+b,0)+4*SCALE;
+  const totalH=allRows.length*ROW_H+4*SCALE;
+
+  const cv=document.createElement('canvas');
+  cv.width=totalW;cv.height=totalH;
+  const ctx=cv.getContext('2d');
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,totalW,totalH);
+
+  // Colours
+  const C_HEADER='#0f2b25',C_FOOTER='#0a2520',C_WHITE='#fff';
+  const C_RED='#ef4444',C_TEAL='#dff0ea',C_MUTED='#94a3b8';
+  const C_TEXT='#0a2520',C_TEXT_TEAL='#0a4a35';
+
+  let y=2*SCALE;
+  allRows.forEach(row=>{
+    const isHead=row.closest('thead')!==null;
+    const isFoot=row.closest('tfoot')!==null;
+    let x=2*SCALE;
+    [...row.querySelectorAll('th,td')].forEach((cell,ci)=>{
+      if(ci>=nCols)return;
+      const w=colW[ci];
+      const txt=cell.textContent.trim();
+      const cl=cell.classList;
+
+      // Background
+      let bg=C_WHITE,fg=C_TEXT,fw='700';
+      if(isHead){bg=C_HEADER;fg=C_WHITE;}
+      else if(isFoot){bg=C_FOOTER;fg=C_WHITE;}
+      else if(cl.contains('cup')){bg=C_RED;fg=C_WHITE;fw='900';}
+      else if(cl.contains('cdn')){bg=C_TEAL;fg=C_TEXT_TEAL;}
+      else if(cl.contains('czr')){fg=C_MUTED;fw='500';}
+      else if(row.closest('tbody')&&row.parentElement.children&&
+        [...row.parentElement.children].indexOf(row)%2===1){bg='#f3faf7';}
+
+      ctx.fillStyle=bg;
+      ctx.fillRect(x,y,w,ROW_H);
+
+      // Grid lines
+      ctx.strokeStyle='#c8dfd9';ctx.lineWidth=1;
+      ctx.strokeRect(x,y,w,ROW_H);
+
+      // Text
+      ctx.fillStyle=fg;
+      ctx.font=`${fw} ${FONT_SZ}px Inter,sans-serif`;
+      ctx.textBaseline='middle';
+      // First col: left-align; others: center
+      const isFirst=ci===0;
+      if(isFirst){
+        ctx.textAlign='left';
+        ctx.fillText(txt,x+PAD,y+ROW_H/2);
+      }else{
+        ctx.textAlign='center';
+        ctx.fillText(txt,x+w/2,y+ROW_H/2);
+      }
+      x+=w;
+    });
+    y+=ROW_H;
+  });
+
+  // Download
+  const a=document.createElement('a');
+  a.href=cv.toDataURL('image/png',1.0);
+  a.download=`HOV_Table_${new Date().toISOString().slice(0,10)}.png`;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  toast('🖼 Full HOV table downloaded as PNG','tok');
 }
 
 /* Donut chart helper */
@@ -2440,10 +2454,10 @@ function renderHovDonut(key,canvasId,labels,values,title){
     options:{
       responsive:true,
       maintainAspectRatio:false,
-      cutout:'45%',
-      layout:{padding:{top:2,bottom:2,left:0,right:0}},
+      cutout:'42%',
+      // Extra padding so outside labels don't clip at canvas edge
+      layout:{padding:{top:30,bottom:30,left:60,right:60}},
       plugins:{
-        // Title lives in card header — keep it OFF inside chart to prevent overlap
         title:{display:false},
         legend:{
           display:true,
@@ -2451,9 +2465,7 @@ function renderHovDonut(key,canvasId,labels,values,title){
           align:'center',
           labels:{
             font:{size:9,family:'Inter',weight:'600'},
-            padding:5,
-            boxWidth:9,
-            boxHeight:9,
+            padding:5,boxWidth:9,boxHeight:9,
             generateLabels(chart){
               return chart.data.labels.map((l,i)=>({
                 text:`${l}: ${fn(chart.data.datasets[0].data[i])} (${total?Math.round(chart.data.datasets[0].data[i]/total*100):0}%)`,
@@ -2467,19 +2479,23 @@ function renderHovDonut(key,canvasId,labels,values,title){
           bodyFont:{size:11,family:'Inter'},
           callbacks:{label(c){return` ${c.label}: ${fn(c.parsed)} AWBs (${total?Math.round(c.parsed/total*100):0}%)`;}}
         },
-        // Fix 3: data labels INSIDE each segment — show count, white bold text
+        // Outside arc labels — bold value above each slice, matching reference image
         datalabels:{
           display(ctx){
-            const pct=ctx.dataset.data[ctx.dataIndex]/total;
-            return pct>=0.05; // only slices ≥5% — avoids clutter on tiny slices
+            // Only label slices that are ≥3% so small ones stay clean
+            return ctx.dataset.data[ctx.dataIndex]/total>=0.03;
           },
-          anchor:'center',
-          align:'center',
-          color:'#ffffff',
+          anchor:'end',
+          align:'end',
+          offset:6,
+          color:'#0a2520',
           font:{size:9,weight:'800',family:'Inter'},
-          textStrokeColor:'rgba(0,0,0,0.5)',
-          textStrokeWidth:2,
-          formatter(v){return fn(v);}
+          // Show value in K format for large numbers
+          formatter(v){
+            return v>=1000?(v/1000).toFixed(1)+'K':fn(v);
+          },
+          // Clamp label inside canvas
+          clamp:true
         }
       }
     }
@@ -2547,25 +2563,33 @@ function renderHovTab(){
 /* Product Value Table */
 function renderHovPVTable(pcs){
   const wrap=document.getElementById('hovPVWrap');if(!wrap)return;
-  const pvRows=(master.hovPV||[]).filter(r=>!pcs||pcs.includes(r.pc))
+  const pvRows=(master.hovPV||[])
+    .filter(r=>{
+      if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
+      return(parseFloat(r.pv)||0)>=5000; // show only Product Value ≥ ₹5,000
+    })
     .sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
   if(!pvRows.length){
-    wrap.innerHTML=`<div class="empty" style="padding:24px"><div class="et">No product value data</div>
-      <div class="em">Extracted from HOV PD PC sheet (product_value column)</div></div>`;return;
+    wrap.innerHTML=`<div class="empty" style="padding:24px">
+      <div class="et">No product value data ≥ ₹5,000</div>
+      <div class="em">Only items with Product Value ≥ ₹5,000 are shown.<br>
+        Extracted from HOV PD PC sheet (PRODUCT VALUE column)</div></div>`;return;
   }
   let html=`<table class="tbl"><thead><tr>
-    <th style="text-align:left">AWB Number</th><th>Product Value</th><th style="text-align:left">Current Location</th>
+    <th style="text-align:left">AWB Number</th>
+    <th>Product Value</th>
+    <th style="text-align:left">Current Location</th>
   </tr></thead><tbody>`;
   pvRows.slice(0,500).forEach(r=>{
     const pv=parseFloat(r.pv)||0;
     html+=`<tr>
       <td style="text-align:left;font-family:var(--mono)">${xe(r.awb||'–')}</td>
-      <td>${pv>0?'₹'+fn(Math.round(pv)):'–'}</td>
+      <td>₹${fn(Math.round(pv))}</td>
       <td style="text-align:left">${xe(r.loc||'–')}</td>
     </tr>`;
   });
   if(pvRows.length>500)html+=`<tr><td colspan="3" style="text-align:center;color:#94a3b8;font-style:italic">Showing top 500 of ${fn(pvRows.length)}</td></tr>`;
-  html+='</tbody></table>';
+  html+=`</tbody></table>`;
   wrap.innerHTML=html;
 }
 
