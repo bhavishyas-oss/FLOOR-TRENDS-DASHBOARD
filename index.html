@@ -2389,7 +2389,7 @@ document.getElementById('hovFi').addEventListener('change',async e=>{
 ═══════════════════════════════════════════════ */
 const rawData={};
 const _VALID_AGES={forward:[3,6],reverse:[3,10],lmodc:[3,6,10],forwardShort:[3,6]};
-
+ 
 function captureRaw(type,row,date){
   // 1. Apply base filter (mirrors each type's processor)
   if(type==='forward'){
@@ -2404,7 +2404,7 @@ function captureRaw(type,row,date){
     if(cu.includes('MEESHO')&&cu.includes('REGIONAL'))return;
   }
   // lmodc + forwardShort: no extra base filter
-
+ 
   // 2. Age pre-filter — only store rows needed by sections
   let age=0;
   if(type==='lmodc'){
@@ -2417,13 +2417,13 @@ function captureRaw(type,row,date){
       'ageing_from_bag_recc','Ageing_from_bag_recc','ageing','Ageing'));
   }
   if(!(_VALID_AGES[type]||[]).includes(age))return;
-
+ 
   // 3. Store
   if(!rawData[type])rawData[type]={};
   if(!rawData[type][date])rawData[type][date]=[];
   rawData[type][date].push(row);
 }
-
+ 
 /* Filter raw captured rows for one specific section */
 function filterRawForSection(sec){
   const typeData=rawData[sec.src]||{};
@@ -2438,7 +2438,7 @@ function filterRawForSection(sec){
         'ageing_from_bag_rec','Ageing_from_Bag_Rec','Ageing_From_Bag_Rec',
         'ageing_from_bag_recc','Ageing_from_bag_recc','ageing','Ageing'));}
       if(age!==sec.age)continue;
-
+ 
       // Bin filter (BIN1/BIN2 sections)
       if(sec.bin!==undefined){
         const bin=parseInt(gv(row,'bin_level','bin level','Bin_Level','Bin_level')||'0',10)||0;
@@ -2452,21 +2452,21 @@ function filterRawForSection(sec){
       if(sec.bin!==undefined){
         if(nv(gv(row,'order_status','Order_status','order status'))==='IN_MANIFEST')continue;
       }
-
+ 
       out.push({_date:date,...row});
     }
   }
   out.sort((a,b)=>a._date.localeCompare(b._date));
   return out;
 }
-
+ 
 /* SECTION EXCEL REPORT
    PRIMARY  : rawData in-memory cache → exact source columns (Date + all 100+ original cols)
    FALLBACK : page was reloaded → rawData cleared → honest message, no misleading data    */
 function downloadSectionReport(idx){
   const sec=SECS[idx];
   const rawRows=filterRawForSection(sec);
-
+ 
   /* ── PRIMARY: full source-column report ─────────────────────────────────────────
      rawRows come from captureRaw() which stores the full buildRows() row object.
      buildRows() maps every header from the source file, so rawRows[i] has every
@@ -2480,11 +2480,11 @@ function downloadSectionReport(idx){
         if(k!=='_date')colSet.add(k);
       });
     });
-
+ 
     // Column order: Date first, then every source column in the order they first appeared
     const sourceCols=[...colSet];
     const allCols=['Date',...sourceCols];
-
+ 
     // Build worksheet rows — one row per AWB
     const wsRows=[allCols]; // header
     rawRows.forEach(r=>{
@@ -2495,11 +2495,11 @@ function downloadSectionReport(idx){
         return String(v);
       }));
     });
-
+ 
     const ws=XLSX.utils.aoa_to_sheet(wsRows);
     // Auto column widths
     ws['!cols']=allCols.map(c=>({wch:Math.min(38,Math.max(8,c.length+3))}));
-
+ 
     const wb=XLSX.utils.book_new();
     const safeTitle=sec.title.replace(/[^\w\s]/g,'_').trim().slice(0,31);
     XLSX.utils.book_append_sheet(wb,ws,safeTitle);
@@ -2508,7 +2508,7 @@ function downloadSectionReport(idx){
     toast(`⬇ ${fn(rawRows.length)} rows · ${allCols.length} columns downloaded`,'tok');
     return;
   }
-
+ 
   /* ── FALLBACK: raw cache empty (page was reloaded after upload) ─────────────────
      rawData is in-memory only and cleared on every page load.
      The master store only has aggregated fields (location, age, count…),
@@ -2519,7 +2519,7 @@ function downloadSectionReport(idx){
     toast('No data — upload the matching file and click ⬇ Report WITHOUT reloading the page','tw');
     return;
   }
-
+ 
   // Still produce a useful summary so the button is never silent
   const wsRows=[
     ['IMPORTANT NOTE:',''],
@@ -2534,7 +2534,7 @@ function downloadSectionReport(idx){
       if(c>0)wsRows.push([date,loc,c]);
     });
   });
-
+ 
   const ws=XLSX.utils.aoa_to_sheet(wsRows);
   ws['!cols']=[{wch:14},{wch:34},{wch:10}];
   const wb=XLSX.utils.book_new();
