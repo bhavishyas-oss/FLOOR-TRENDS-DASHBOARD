@@ -401,7 +401,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
       <!-- 1. Donut: AWB Count by Site -->
       <div class="card">
         <div class="chead"><span class="ct">AWB Count by Site</span><span class="cbg">ALL CATEGORIES</span></div>
-        <div style="padding:16px;height:320px;display:flex;align-items:center;justify-content:center">
+        <div style="padding:16px;height:420px;display:flex;align-items:center;justify-content:center">
           <canvas id="hovDonut1"></canvas>
         </div>
       </div>
@@ -438,7 +438,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
             </div>
           </div>
         </div>
-        <div style="padding:16px;height:320px;display:flex;align-items:center;justify-content:center">
+        <div style="padding:16px;height:420px;display:flex;align-items:center;justify-content:center">
           <canvas id="hovDonut2"></canvas>
         </div>
       </div>
@@ -456,9 +456,9 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
       <div id="hovTableWrap"></div>
     </div>
 
-    <!-- 4. PRODUCT VALUE Table -->
+    <!-- 4. Product Value Table -->
     <div class="card">
-      <div class="chead"><span class="ct">PRODUCT VALUE — AWB List</span><span class="cbg">SORTED: HIGHEST VALUE FIRST</span></div>
+      <div class="chead"><span class="ct">Product Value — AWB List</span><span class="cbg">SORTED: HIGHEST VALUE FIRST</span></div>
       <div id="hovPVWrap" style="max-height:420px;overflow-y:auto"></div>
     </div>
 
@@ -2048,6 +2048,15 @@ function pHovFwd(row,date,agg){
   if(age<2||age>15)return;
   const loc=(gv(row,'current_location','Current_location','Current_Location','location','Location')||'UNKNOWN').toUpperCase();
   const pc=gv(row,'pc','PC','product category','Product Category','product_category','Product_Category')||'UNKNOWN';
+  // Capture product value row (col F in Forward HOV PD PC = "PRODUCT VALUE")
+  const awb=gv(row,'awb_number','Awb_number','AWB_NUMBER','awb number','awb','AWB')||'';
+  const pvRaw=gv(row,'product value','PRODUCT VALUE','product_value','Product_Value','Product Value','productvalue')||'';
+  const pv=parseFloat(String(pvRaw).replace(/[₹,\s]/g,''))||0;
+  if(awb){
+    // Store PV in a temp array on agg (we collect in applyHovRows)
+    if(!agg.__pv)agg.__pv=[];
+    agg.__pv.push({awb,pv,loc,pc,date});
+  }
   const k=`${age}|${loc}|${pc}`;
   if(!agg[k])agg[k]={date,age,location:loc,pc,fileType:'forward',count:0};
   agg[k].count++;
@@ -2066,6 +2075,14 @@ function pHovRev(row,date,agg){
   if(age<2||age>15)return;
   const loc=(gv(row,'current_location','Current_location','Current_Location','location','Location')||'UNKNOWN').toUpperCase();
   const pc=gv(row,'pc','PC','product category','Product Category','product_category','Product_Category')||'UNKNOWN';
+  // Capture product value row (col E in Reverse HOV PD PC = "PRODUCT VALUE")
+  const awb=gv(row,'awb_number','Awb_number','AWB_NUMBER','DSP_Awb_number','dsp_awb_number','awb number','awb','AWB')||'';
+  const pvRaw=gv(row,'product value','PRODUCT VALUE','product_value','Product_Value','Product Value','productvalue')||'';
+  const pv=parseFloat(String(pvRaw).replace(/[₹,\s]/g,''))||0;
+  if(awb){
+    if(!agg.__pv)agg.__pv=[];
+    agg.__pv.push({awb,pv,loc,pc,date});
+  }
   const k=`${age}|${loc}|${pc}`;
   if(!agg[k])agg[k]={date,age,location:loc,pc,fileType:'reverse',count:0};
   agg[k].count++;
@@ -2098,16 +2115,28 @@ function pHovSh(row,date,agg){
   agg[k].count++;
 }
 
-/* Apply HOV rows and merge into master.hov */
+/* Apply HOV rows and merge into master.hov + master.hovPV */
 function applyHovRows(rows,proc,type,date){
   const agg={};
   for(const row of rows){
     if(!Object.values(row).some(v=>String(v).trim()))continue;
     proc(row,date,agg);
   }
+  // Extract PV rows collected by pHovFwd/pHovRev
+  const pvRows=agg.__pv||[];
+  delete agg.__pv;
+
   const recs=Object.values(agg);
   master.hov=(master.hov||[]).filter(r=>!(r.date===date&&r.fileType===type));
   master.hov.push(...recs);
+
+  // Merge product value rows — remove old same-date+type, add new
+  if(pvRows.length){
+    if(!master.hovPV)master.hovPV=[];
+    master.hovPV=master.hovPV.filter(r=>!(r.date===date&&r.fileType===type));
+    pvRows.forEach(r=>r.fileType=type);
+    master.hovPV.push(...pvRows);
+  }
 }
 
 /* HOV file processor — called from runFiles after main processing */
@@ -2272,16 +2301,43 @@ function downloadHovTableImage(){
   const wrap=document.getElementById('hovTableWrap');
   if(!wrap||!wrap.querySelector('table')){toast('No HOV table to download','tw');return;}
   if(typeof html2canvas==='undefined'){toast('⚠ html2canvas not loaded — refresh and try','tw');return;}
-  html2canvas(wrap,{scale:2,backgroundColor:'#ffffff',useCORS:true,
-    width:wrap.scrollWidth,height:wrap.scrollHeight,
-    windowWidth:wrap.scrollWidth,windowHeight:wrap.scrollHeight,logging:false
-  }).then(canvas=>{
-    const a=document.createElement('a');
-    a.href=canvas.toDataURL('image/png',1.0);
-    a.download=`HOV_Table_${new Date().toISOString().slice(0,10)}.png`;
-    document.body.appendChild(a);a.click();document.body.removeChild(a);
-    toast('🖼 HOV table downloaded as PNG','tok');
-  }).catch(()=>toast('Table image failed — try again','te'));
+
+  // Clone the wrap, remove all scroll/overflow constraints so html2canvas
+  // captures the full table — not just the visible viewport portion
+  const clone=wrap.cloneNode(true);
+  clone.style.cssText='position:fixed;top:-99999px;left:0;overflow:visible;' +
+    'max-height:none;height:auto;width:'+wrap.scrollWidth+'px;background:#fff;' +
+    'z-index:-1;';
+  // Also remove overflow on the inner tsc div
+  const tsc=clone.querySelector('.tsc');
+  if(tsc){tsc.style.maxHeight='none';tsc.style.overflowY='visible';tsc.style.overflowX='visible';}
+  document.body.appendChild(clone);
+
+  // Wait one frame for layout to settle before capturing
+  requestAnimationFrame(()=>{
+    html2canvas(clone,{
+      scale:2,
+      backgroundColor:'#ffffff',
+      useCORS:true,
+      width:clone.scrollWidth,
+      height:clone.scrollHeight,
+      windowWidth:clone.scrollWidth,
+      windowHeight:clone.scrollHeight,
+      logging:false,
+      allowTaint:true
+    }).then(canvas=>{
+      document.body.removeChild(clone);
+      const a=document.createElement('a');
+      a.href=canvas.toDataURL('image/png',1.0);
+      a.download=`HOV_Table_${new Date().toISOString().slice(0,10)}.png`;
+      document.body.appendChild(a);a.click();document.body.removeChild(a);
+      toast('🖼 Full HOV table downloaded as PNG','tok');
+    }).catch(err=>{
+      document.body.removeChild(clone);
+      console.warn('html2canvas:',err);
+      toast('Table image failed — try again','te');
+    });
+  });
 }
 
 /* Donut chart helper */
@@ -2290,20 +2346,28 @@ function renderHovDonut(key,canvasId,labels,values,title){
   if(_hovCharts[key]){_hovCharts[key].destroy();_hovCharts[key]=null;}
   if(!labels.length){
     const ctx=cv.getContext('2d');ctx.clearRect(0,0,cv.width,cv.height);
-    ctx.font='13px Inter';ctx.fillStyle='#94a3b8';ctx.textAlign='center';
-    ctx.fillText('No data',cv.width/2,cv.height/2);return;
+    ctx.font='14px Inter';ctx.fillStyle='#94a3b8';ctx.textAlign='center';
+    ctx.fillText('No data — upload HOV files',cv.width/2,cv.height/2);return;
   }
   const total=values.reduce((a,b)=>a+b,0);
   _hovCharts[key]=new Chart(cv,{
     type:'doughnut',
     data:{labels,datasets:[{data:values,
       backgroundColor:HOV_PALETTE.slice(0,labels.length),
-      borderWidth:2,borderColor:'#fff',hoverOffset:8}]},
-    options:{responsive:true,maintainAspectRatio:true,cutout:'60%',
+      borderWidth:3,borderColor:'#fff',hoverOffset:12}]},
+    options:{
+      responsive:true,
+      maintainAspectRatio:false, // allow chart to fill container height
+      cutout:'55%',
       plugins:{
-        title:{display:true,text:title,font:{size:12,weight:'700',family:'Inter'},color:'#0a2520',padding:{bottom:6}},
+        title:{display:true,text:title,
+          font:{size:14,weight:'800',family:'Inter'},
+          color:'#0a2520',padding:{top:8,bottom:10}},
         legend:{display:true,position:'right',
-          labels:{font:{size:9,family:'Inter'},padding:6,
+          labels:{
+            font:{size:11,family:'Inter',weight:'600'},
+            padding:10,
+            boxWidth:14,
             generateLabels(chart){
               return chart.data.labels.map((l,i)=>({
                 text:`${l}: ${fn(chart.data.datasets[0].data[i])} (${total?Math.round(chart.data.datasets[0].data[i]/total*100):0}%)`,
@@ -2313,8 +2377,16 @@ function renderHovDonut(key,canvasId,labels,values,title){
             }
           }
         },
-        tooltip:{callbacks:{label(c){return` ${c.label}: ${fn(c.parsed)} (${total?Math.round(c.parsed/total*100):0}%)`; }}},
-        datalabels:{display:false}
+        tooltip:{
+          bodyFont:{size:12,family:'Inter'},
+          callbacks:{label(c){return` ${c.label}: ${fn(c.parsed)} AWBs (${total?Math.round(c.parsed/total*100):0}%)`;}}
+        },
+        datalabels:{
+          display:ctx=>ctx.dataset.data[ctx.dataIndex]/total>0.04, // show if slice >4%
+          color:'#fff',
+          font:{size:11,weight:'800',family:'Inter'},
+          formatter(v){return fn(v);}
+        }
       }
     }
   });
@@ -2371,24 +2443,24 @@ function renderHovTab(){
     }
   }
 
-  // 4. PRODUCT VALUE Table
+  // 4. Product Value Table
   renderHovPVTable(pcs);
 
   // 5. Age-wise Trends
   renderHovAgeTrends(pcs);
 }
 
-/* PRODUCT VALUE Table */
+/* Product Value Table */
 function renderHovPVTable(pcs){
   const wrap=document.getElementById('hovPVWrap');if(!wrap)return;
   const pvRows=(master.hovPV||[]).filter(r=>!pcs||pcs.includes(r.pc))
     .sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
   if(!pvRows.length){
-    wrap.innerHTML=`<div class="empty" style="padding:24px"><div class="et">No PRODUCT VALUE data</div>
-      <div class="em">Extracted from HOV PD PC sheet (PRODUCT VALUE column)</div></div>`;return;
+    wrap.innerHTML=`<div class="empty" style="padding:24px"><div class="et">No product value data</div>
+      <div class="em">Extracted from HOV PD PC sheet (product_value column)</div></div>`;return;
   }
   let html=`<table class="tbl"><thead><tr>
-    <th style="text-align:left">AWB Number</th><th>PRODUCT VALUE</th><th style="text-align:left">Current Location</th>
+    <th style="text-align:left">AWB Number</th><th>Product Value</th><th style="text-align:left">Current Location</th>
   </tr></thead><tbody>`;
   pvRows.slice(0,500).forEach(r=>{
     const pv=parseFloat(r.pv)||0;
