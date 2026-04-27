@@ -499,7 +499,7 @@ const CPALS=['#2563eb','#dc2626','#16a34a','#d97706','#7c3aed','#0891b2','#be185
 const SKEY='logistics_v36';
 let master=loadM(),activeTab=0,charts={},debugMode=false,dlog=[],pending={};
 
-function emptyM(){return{forward:[],reverse:[],lmodc:[],forwardShort:[],hov:[]}}
+function emptyM(){return{forward:[],reverse:[],lmodc:[],forwardShort:[],hov:[],hovPV:[]}}
 function loadM(){
   try{const r=localStorage.getItem(SKEY);return r?Object.assign(emptyM(),JSON.parse(r)):emptyM()}
   catch{return emptyM()}
@@ -2150,26 +2150,40 @@ function applyHovRows(rows,proc,type,date){
   }
 }
 
-/* HOV file processor — called from runFiles after main processing */
+/* HOV file processor — called from runHovFiles after identification */
 async function procHovFile(file,type,date){
   const ext=file.name.split('.').pop().toLowerCase();
   const isXlsx=ext==='xlsx'||ext==='xls';
   try{
     if(type==='forward'||type==='reverse'){
-      if(!isXlsx)return; // HOV PD PC sheet only in xlsx
+      // Forward/Reverse: HOV data is on the "HOV PD PC" named sheet
+      if(!isXlsx)return;
       const buf=await file.arrayBuffer();
       const result=readNamedSheet(buf,'HOV PD PC');
-      if(!result||result.rows.length<2)return;
+      if(!result||result.rows.length<2){
+        console.warn('HOV PD PC sheet not found in',file.name);return;
+      }
       const rows=buildRows(result.rows,result.headerRow,result.hdrs);
       applyHovRows(rows,type==='forward'?pHovFwd:pHovRev,type,date);
     }else{
-      // LMODC / Short Ship — HOV columns in the same raw sheet
+      // LMODC: filter HOV Non HOV = HOV column from raw data sheet
+      // Short Ship: filter HOV2 = HOV column from raw data sheet
+      // Both use readExcel which correctly skips pivot sheets and finds raw data
       const proc=type==='lmodc'?pHovLM:pHovSh;
       if(isXlsx){
         const buf=await file.arrayBuffer();
-        const result=readExcel(buf,null);
-        if(!result||result.rows.length<2)return;
-        const rows=buildRows(result.rows,result.headerRow,result.hdrs);
+        // Use native reader first for large files, then XLSX.js
+        let result=null;
+        const hasPako=typeof pako!=='undefined';
+        if(hasPako){result=await readExcelNative(buf);}
+        if(!result||result.rows.length<2)result=readExcel(buf,null);
+        if(!result||result.rows.length<2){
+          console.warn('HOV: no rows found in',file.name);return;
+        }
+        const rows=buildRows(result.rows,
+          result.headerRow!==undefined?result.headerRow:findHdrRow(result.rows),
+          cleanH((result.rows[result.headerRow!==undefined?result.headerRow:findHdrRow(result.rows)]||[]).map(h=>String(h==null?'':h)))
+        );
         applyHovRows(rows,proc,type,date);
       }else if(ext==='csv'){
         await new Promise(resolve=>{
@@ -2184,9 +2198,16 @@ async function procHovFile(file,type,date){
               }
             },
             complete(){
+              const pvRows=agg.__pv||[];delete agg.__pv;
               const recs=Object.values(agg);
               master.hov=(master.hov||[]).filter(r=>!(r.date===date&&r.fileType===type));
               master.hov.push(...recs);
+              if(pvRows.length){
+                if(!master.hovPV)master.hovPV=[];
+                master.hovPV=master.hovPV.filter(r=>!(r.date===date&&r.fileType===type));
+                pvRows.forEach(r=>r.fileType=type);
+                master.hovPV.push(...pvRows);
+              }
               resolve();
             },
             error(){resolve();}
@@ -2313,29 +2334,40 @@ function downloadHovTableImage(){
   if(!wrap||!wrap.querySelector('table')){toast('No HOV table to download','tw');return;}
   if(typeof html2canvas==='undefined'){toast('⚠ html2canvas not loaded — refresh and try','tw');return;}
 
-  // Clone the wrap, remove all scroll/overflow constraints so html2canvas
-  // captures the full table — not just the visible viewport portion
+  // Clone the wrap and strip ALL scroll/overflow constraints recursively
+  // so html2canvas captures the complete table, not just the visible scroll area
   const clone=wrap.cloneNode(true);
-  clone.style.cssText='position:fixed;top:-99999px;left:0;overflow:visible;' +
-    'max-height:none;height:auto;width:'+wrap.scrollWidth+'px;background:#fff;' +
-    'z-index:-1;';
-  // Also remove overflow on the inner tsc div
-  const tsc=clone.querySelector('.tsc');
-  if(tsc){tsc.style.maxHeight='none';tsc.style.overflowY='visible';tsc.style.overflowX='visible';}
+  clone.style.cssText=[
+    'position:fixed','top:-99999px','left:0',
+    'overflow:visible','max-height:none','height:auto',
+    'width:'+Math.max(wrap.scrollWidth,wrap.offsetWidth)+'px',
+    'background:#fff','z-index:-1','pointer-events:none'
+  ].join(';');
+  // Remove overflow from every descendant that could clip content
+  clone.querySelectorAll('*').forEach(el=>{
+    el.style.overflow='visible';
+    el.style.overflowX='visible';
+    el.style.overflowY='visible';
+    el.style.maxHeight='none';
+    el.style.maxWidth='none';
+  });
   document.body.appendChild(clone);
 
-  // Wait one frame for layout to settle before capturing
   requestAnimationFrame(()=>{
+    const W=clone.scrollWidth;
+    const H=clone.scrollHeight;
     html2canvas(clone,{
       scale:2,
       backgroundColor:'#ffffff',
       useCORS:true,
-      width:clone.scrollWidth,
-      height:clone.scrollHeight,
-      windowWidth:clone.scrollWidth,
-      windowHeight:clone.scrollHeight,
-      logging:false,
-      allowTaint:true
+      allowTaint:true,
+      width:W,
+      height:H,
+      windowWidth:W,
+      windowHeight:H,
+      x:0,y:0,
+      scrollX:0,scrollY:0,
+      logging:false
     }).then(canvas=>{
       document.body.removeChild(clone);
       const a=document.createElement('a');
@@ -2370,10 +2402,11 @@ function renderHovDonut(key,canvasId,labels,values,title){
       responsive:true,
       maintainAspectRatio:false, // allow chart to fill container height
       cutout:'55%',
+      layout:{padding:{top:16,bottom:16,left:8,right:8}},
       plugins:{
         title:{display:true,text:title,
           font:{size:14,weight:'800',family:'Inter'},
-          color:'#0a2520',padding:{top:8,bottom:10}},
+          color:'#0a2520',padding:{top:4,bottom:14}},
         legend:{display:true,position:'right',
           labels:{
             font:{size:11,family:'Inter',weight:'600'},
@@ -2611,7 +2644,7 @@ async function runHovFiles(files){
 function onHovSave(){if(persistM())toast('✅ HOV data saved to master','tok');}
 function onHovClear(){
   if(!confirm('Clear all HOV data?'))return;
-  master.hov=[];persistM();
+  master.hov=[];master.hovPV=[];persistM();
   const b=document.getElementById('hovBrow');
   if(b)b.innerHTML='<span style="color:#94a3b8;font-size:11px">HOV data cleared</span>';
   renderHovTab();toast('🗑 HOV data cleared','tw');
