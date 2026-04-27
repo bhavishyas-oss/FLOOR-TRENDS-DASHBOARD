@@ -2460,94 +2460,88 @@ function filterRawForSection(sec){
   return out;
 }
 
-/* SECTION EXCEL REPORT — full row-level data
-   PRIMARY path  : rawData cache (populated during upload) → exact source columns
-   FALLBACK path  : master aggregates (always available) → Date + Location + all stored fields
-   Both paths produce date-wise rows, never just a count summary.             */
+/* SECTION EXCEL REPORT
+   PRIMARY  : rawData in-memory cache → exact source columns (Date + all 100+ original cols)
+   FALLBACK : page was reloaded → rawData cleared → honest message, no misleading data    */
 function downloadSectionReport(idx){
   const sec=SECS[idx];
-
-  /* ── PRIMARY: in-memory raw rows captured during this session ── */
   const rawRows=filterRawForSection(sec);
 
+  /* ── PRIMARY: full source-column report ─────────────────────────────────────────
+     rawRows come from captureRaw() which stores the full buildRows() row object.
+     buildRows() maps every header from the source file, so rawRows[i] has every
+     column the source file had (Awb_number, Current_location, bin_level, message,
+     Ageing_from_Bag_Rec, order_status, Client, … all 100+ columns).             */
   if(rawRows.length>0){
-    // Build column list from all rows (preserves every source column)
+    // Collect ALL column names seen across rows (preserves source file structure)
     const colSet=new Set();
-    rawRows.forEach(r=>Object.keys(r).forEach(k=>{if(k!=='_date')colSet.add(k);}));
-    const cols=['Date',...colSet];
-
-    const wsData=[cols];
     rawRows.forEach(r=>{
-      wsData.push(cols.map(c=>{
+      Object.keys(r).forEach(k=>{
+        if(k!=='_date')colSet.add(k);
+      });
+    });
+
+    // Column order: Date first, then every source column in the order they first appeared
+    const sourceCols=[...colSet];
+    const allCols=['Date',...sourceCols];
+
+    // Build worksheet rows — one row per AWB
+    const wsRows=[allCols]; // header
+    rawRows.forEach(r=>{
+      wsRows.push(allCols.map(c=>{
         if(c==='Date')return r._date;
         const v=r[c];
-        return(v!==undefined&&v!==null)?String(v):'';
+        if(v===undefined||v===null||v==='')return '';
+        return String(v);
       }));
     });
 
-    const ws=XLSX.utils.aoa_to_sheet(wsData);
-    ws['!cols']=cols.map(c=>({wch:Math.min(35,Math.max(10,c.length+4))}));
-    // Bold header row
-    cols.forEach((_,i)=>{
-      const cellRef=XLSX.utils.encode_cell({r:0,c:i});
-      if(ws[cellRef])ws[cellRef].s={font:{bold:true}};
-    });
+    const ws=XLSX.utils.aoa_to_sheet(wsRows);
+    // Auto column widths
+    ws['!cols']=allCols.map(c=>({wch:Math.min(38,Math.max(8,c.length+3))}));
 
     const wb=XLSX.utils.book_new();
     const safeTitle=sec.title.replace(/[^\w\s]/g,'_').trim().slice(0,31);
     XLSX.utils.book_append_sheet(wb,ws,safeTitle);
     const fname=`${safeTitle}_${new Date().toISOString().slice(0,10)}.xlsx`;
     XLSX.writeFile(wb,fname);
-    toast(`⬇ ${fn(rawRows.length)} rows · ${cols.length} cols downloaded`,'tok');
+    toast(`⬇ ${fn(rawRows.length)} rows · ${allCols.length} columns downloaded`,'tok');
     return;
   }
 
-  /* ── FALLBACK: master aggregate data (available even after page reload) ──
-     Produces: Date | Location | Age | Count | [extra fields per type]
-     This is structured row-level data, not a pivot/summary.                  */
-  const all=(master[sec.src]||[]).filter(r=>{
-    if(r.age!==sec.age)return false;
-    if(sec.bin!==undefined&&r.bin!==sec.bin)return false;
-    if(sec.msg!==undefined&&r.msg!==sec.msg)return false;
-    if(sec.bin!==undefined&&r.os==='IN_MANIFEST')return false;
-    return true;
+  /* ── FALLBACK: raw cache empty (page was reloaded after upload) ─────────────────
+     rawData is in-memory only and cleared on every page load.
+     The master store only has aggregated fields (location, age, count…),
+     NOT the original AWB-level source columns.
+     Correct workflow: keep the page open after upload, then click ⬇ Report.     */
+  const piv=buildPivot(sec);
+  if(!piv.locs.length){
+    toast('No data — upload the matching file and click ⬇ Report WITHOUT reloading the page','tw');
+    return;
+  }
+
+  // Still produce a useful summary so the button is never silent
+  const wsRows=[
+    ['IMPORTANT NOTE:',''],
+    ['This report only shows aggregated counts because the page was reloaded after upload.',''],
+    ['For full AWB-level data (all source columns): upload the file again and immediately click ⬇ Report.',''],
+    ['',''],
+    ['Date','Location','Count']
+  ];
+  piv.dates.forEach(date=>{
+    piv.locs.forEach(loc=>{
+      const c=(piv.grid[loc]&&piv.grid[loc][date])||0;
+      if(c>0)wsRows.push([date,loc,c]);
+    });
   });
 
-  if(!all.length){toast('No data — upload the matching file first','tw');return;}
-
-  // Sort by date then location
-  all.sort((a,b)=>a.date.localeCompare(b.date)||(a.location||a.destination||'').localeCompare(b.location||b.destination||''));
-
-  // Determine columns dynamically from data shape
-  const fieldSet=new Set();
-  all.forEach(r=>Object.keys(r).forEach(k=>fieldSet.add(k)));
-  // Ensure Date is first, then common fields, then rest
-  const priority=['date','location','destination','age','bin','msg','os','client','count'];
-  const orderedFields=['Date',...priority.filter(f=>fieldSet.has(f)),...[...fieldSet].filter(f=>!priority.includes(f))];
-
-  const wsData=[orderedFields];
-  all.forEach(r=>{
-    wsData.push(orderedFields.map(col=>{
-      if(col==='Date')return r.date||'';
-      const v=r[col];
-      return(v!==undefined&&v!==null)?String(v):'';
-    }));
-  });
-
-  const ws=XLSX.utils.aoa_to_sheet(wsData);
-  ws['!cols']=orderedFields.map(c=>({wch:Math.min(35,Math.max(10,c.length+4))}));
-  // Bold header row
-  orderedFields.forEach((_,i)=>{
-    const cellRef=XLSX.utils.encode_cell({r:0,c:i});
-    if(ws[cellRef])ws[cellRef].s={font:{bold:true}};
-  });
-
+  const ws=XLSX.utils.aoa_to_sheet(wsRows);
+  ws['!cols']=[{wch:14},{wch:34},{wch:10}];
   const wb=XLSX.utils.book_new();
   const safeTitle=sec.title.replace(/[^\w\s]/g,'_').trim().slice(0,31);
   XLSX.utils.book_append_sheet(wb,ws,safeTitle);
-  const fname=`${safeTitle}_${new Date().toISOString().slice(0,10)}.xlsx`;
-  XLSX.writeFile(wb,fname);
-  toast(`⬇ ${fn(all.length)} records · ${orderedFields.length} columns (re-upload for full source columns)`,'tok');
+  XLSX.writeFile(wb,`${safeTitle}_summary_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast('⚠ Aggregated summary only — re-upload file and click Report immediately for full data','tw');
 }
 
 /* ═══════════════════════════════════════════════
