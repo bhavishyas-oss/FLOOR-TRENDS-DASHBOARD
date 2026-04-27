@@ -3,13 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Logistics Analytics Dashboard</title>
+<title>Floor Trends Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-datalabels/2.2.0/chartjs-plugin-datalabels.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -60,8 +61,8 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
   border:1.5px solid rgba(255,255,255,.35);
   border-radius:8px;display:flex;align-items:center;justify-content:center;
   font-size:17px;box-shadow:inset 0 1px 0 rgba(255,255,255,.25)}
-.htit{font-size:14px;font-weight:800;letter-spacing:-.2px;color:#ffffff}
-.hsub{font-size:9px;color:rgba(255,255,255,.7);letter-spacing:1px;text-transform:uppercase;margin-top:1px}
+.htit{font-size:16px;font-weight:900;letter-spacing:.4px;color:#ffffff;text-transform:uppercase}
+.hsub{font-size:9.5px;color:rgba(255,255,255,.75);letter-spacing:1.2px;text-transform:uppercase;margin-top:2px;font-weight:600}
 .hst{background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.2);
   padding:4px 13px;border-radius:20px;font-family:var(--mono);font-size:11px;
   color:var(--gold);font-weight:600;letter-spacing:.3px}
@@ -166,7 +167,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 .chead{background:linear-gradient(135deg,var(--navy),var(--navy2));
   color:#e2e8f0;padding:14px 16px;
   display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
-.ct{font-size:13px;font-weight:800;letter-spacing:.3px;color:#ffffff}
+.ct{font-size:15px;font-weight:900;letter-spacing:.5px;color:#ffffff;text-transform:uppercase}
 .cm{display:flex;align-items:center;gap:8px}
 .cbg{font-size:10px;background:rgba(233,223,67,.15);color:var(--gold);
   padding:2px 8px;border-radius:4px;font-family:var(--mono);font-weight:700}
@@ -287,8 +288,8 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
   <div class="hb">
     <div class="hic">📦</div>
     <div>
-      <div class="htit">Logistics Analytics Dashboard</div>
-      <div class="hsub">AWB Pendency Intelligence System</div>
+      <div class="htit">FLOOR TRENDS DASHBOARD</div>
+      <div class="hsub">Pendency Tracking System</div>
     </div>
   </div>
   <span class="hst" id="hst">No data loaded</span>
@@ -337,13 +338,13 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
   <button class="tab" onclick="sw(1)"><span class="tn">2</span>D6 FWD R@DC</button>
   <button class="tab" onclick="sw(2)"><span class="tn">3</span>BIN2 SUCCESS</button>
   <button class="tab" onclick="sw(3)"><span class="tn">4</span>BIN1 SUCCESS</button>
-  <button class="tab" onclick="sw(4)"><span class="tn">5</span>D3 REVERSE</button>
-  <button class="tab" onclick="sw(5)"><span class="tn">6</span>D10 REVERSE</button>
+  <button class="tab" onclick="sw(4)"><span class="tn">5</span>D3 RVP R@DC</button>
+  <button class="tab" onclick="sw(5)"><span class="tn">6</span>D10 RVP R@DC</button>
   <button class="tab" onclick="sw(6)"><span class="tn">7</span>D3 LMODC</button>
   <button class="tab" onclick="sw(7)"><span class="tn">8</span>D6 LMODC</button>
   <button class="tab" onclick="sw(8)"><span class="tn">9</span>D10 LMODC</button>
-  <button class="tab" onclick="sw(9)"><span class="tn">10</span>D3 SHORT SHIP</button>
-  <button class="tab" onclick="sw(10)"><span class="tn">11</span>D6 SHORT SHIP</button>
+  <button class="tab" onclick="sw(9)"><span class="tn">10</span>D3 DCH</button>
+  <button class="tab" onclick="sw(10)"><span class="tn">11</span>D6 DCH</button>
 </div>
 
 <div id="content"><div id="panels"></div></div>
@@ -405,15 +406,15 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 const SECS=[
   {title:'D3 FWD R@DC TRENDS',    badge:'AGE=3 · PIVOT=R@DC',              src:'forward',      age:3               },
   {title:'D6 FWD R@DC TRENDS',    badge:'AGE=6 · PIVOT=R@DC',              src:'forward',      age:6               },
-  {title:'FWD BIN2 SUCCESS',      badge:'AGE=3 · BIN=2 · MSG=SUCCESS · ORDER≠IN_MANIFEST',src:'forward',      age:3,bin:2,msg:'SUCCESS'},
-  {title:'FWD BIN1 SUCCESS',      badge:'AGE=3 · BIN=1 · MSG=SUCCESS · ORDER≠IN_MANIFEST',src:'forward',      age:3,bin:1,msg:'SUCCESS'},
-  {title:'D3 REVERSE (RVP)',      badge:'AGE=3 · R@DC · CLIENT FILT.',     src:'reverse',      age:3               },
-  {title:'D10 REVERSE (RVP)',     badge:'AGE=10 · R@DC · CLIENT FILT.',    src:'reverse',      age:10              },
+  {title:'D3 FWD R@DC BIN2 SUCCESS', badge:'AGE=3 · BIN=2 · MSG=SUCCESS · ORDER≠IN_MANIFEST',src:'forward',      age:3,bin:2,msg:'SUCCESS'},
+  {title:'D3 FWD R@DC BIN1 SUCCESS', badge:'AGE=3 · BIN=1 · MSG=SUCCESS · ORDER≠IN_MANIFEST',src:'forward',      age:3,bin:1,msg:'SUCCESS'},
+  {title:'D3 RVP R@DC',              badge:'AGE=3 · R@DC · CLIENT FILT.',     src:'reverse',      age:3               },
+  {title:'D10 RVP R@DC',             badge:'AGE=10 · R@DC · CLIENT FILT.',    src:'reverse',      age:10              },
   {title:'D3 LMODC',              badge:'AGE=3 · DESTINATION PIVOT',        src:'lmodc',        age:3               },
   {title:'D6 LMODC',              badge:'AGE=6 · DESTINATION PIVOT',        src:'lmodc',        age:6               },
   {title:'D10 LMODC',             badge:'AGE=10 · DESTINATION PIVOT',       src:'lmodc',        age:10              },
-  {title:'D3 FWD SHORT SHIP',     badge:'AGE=3 · SHORT SHIPMENT',           src:'forwardShort', age:3               },
-  {title:'D6 FWD SHORT SHIP',     badge:'AGE=6 · SHORT SHIPMENT',           src:'forwardShort', age:6               },
+  {title:'D3 DCH',                badge:'AGE=3 · SHORT SHIPMENT',           src:'forwardShort', age:3               },
+  {title:'D6 DCH',                badge:'AGE=6 · SHORT SHIPMENT',           src:'forwardShort', age:6               },
 ];
 const CPALS=['#2563eb','#dc2626','#16a34a','#d97706','#7c3aed','#0891b2','#be185d','#0e7490','#ca8a04'];
 
@@ -1498,7 +1499,7 @@ function renderTrendChart(cid,sec){
   const data=dates.map(d=>dateTotals[d]||0);
   const maxVal=Math.max(...data,0);
   const yMax=maxVal<=400?400:Math.ceil(maxVal*1.18/100)*100;
-  const titleText=`${sec.title} Trends`;
+  const titleText=`${sec.title} — Trends`;
 
   charts[cid]=new Chart(cv,{
     type:'line',
@@ -1714,24 +1715,27 @@ function initPanels(){
       <div class="card">
         <div class="chead">
           <span class="ct">§${i+1} · ${s.title}</span>
-          <div class="cm"><span class="cc" id="cnt${i}">–</span><span class="cbg">${s.badge}</span><button class="btn bg" onclick="downloadSectionReport(${i})" style="font-size:10px;padding:4px 9px;margin-left:8px;color:#94a3b8;border-color:#475569" title="Download Excel report for this section">⬇ Report</button></div>
+          <div class="cm"><span class="cc" id="cnt${i}">–</span><span class="cbg">${s.badge}</span>
+            <button class="btn bg" onclick="downloadSectionReport(${i})" style="font-size:10px;padding:4px 9px;margin-left:8px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download Excel report">⬇ Report</button>
+            <button class="btn bg" onclick="downloadTableImage('tbl${i}','${s.title.replace(/[^\w]/g,'_')}_table.png')" style="font-size:10px;padding:4px 9px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download table as HD PNG">🖼 Table</button>
+          </div>
         </div>
         <div id="tbl${i}"></div>
         <div class="tarea">
           <div style="display:flex;justify-content:space-between;align-items:center;padding:0 8px 8px">
-            <span style="font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.8px">📈 ${s.title} Trends</span>
-            <button class="btn bg" onclick="downloadChart('tchrt${i}','${s.title.replace(/[^\w]/g,'_')}_trend.png')" style="font-size:10px;padding:3px 9px" title="Download trend chart as HD image">⬇ PNG</button>
+            <span style="font-size:11px;font-weight:800;color:var(--brand);text-transform:uppercase;letter-spacing:.8px">📈 ${s.title} — Trends</span>
+            <button class="btn bg" onclick="downloadChart('tchrt${i}','${s.title.replace(/[^\w]/g,'_')}_trend.png')" style="font-size:10px;padding:3px 9px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download trend chart as HD PNG">🖼 PNG</button>
           </div>
           <div class="twrap"><canvas id="tchrt${i}"></canvas></div>
         </div>
         <div class="carea">
           <div class="ctoolbar">
-            <span class="ctoolbar-lbl">📈 Location Breakdown — Date vs AWB Count</span>
+            <span class="ctoolbar-lbl">📊 Location Breakdown — Date vs AWB Count</span>
             <div style="display:flex;align-items:center;gap:8px">
               <select class="dc-select" id="dcsel${i}" onchange="onDCChange(${i},this.value)">
                 <option value="ALL">All DCs (Overview)</option>
               </select>
-              <button class="btn bg" onclick="downloadChart('ch${i}','${s.title.replace(/[^\w]/g,'_')}_breakdown.png')" style="font-size:10px;padding:3px 9px" title="Download breakdown chart as HD image">⬇ PNG</button>
+              <button class="btn bg" onclick="downloadChart('ch${i}','${s.title.replace(/[^\w]/g,'_')}_breakdown.png')" style="font-size:10px;padding:3px 9px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download breakdown chart as HD PNG">🖼 PNG</button>
             </div>
           </div>
           <div class="cwrap"><canvas id="ch${i}"></canvas></div>
@@ -2486,6 +2490,25 @@ function downloadSectionReport(idx){
 /* ═══════════════════════════════════════════════
    CHART PNG DOWNLOAD — HD quality
 ═══════════════════════════════════════════════ */
+/* ── Download a table container as HD PNG ── */
+function downloadTableImage(wrapperId,filename){
+  const wrap=document.getElementById(wrapperId);
+  if(!wrap||!wrap.querySelector('table')){toast('No table data to download','tw');return;}
+  if(typeof html2canvas==='undefined'){toast('⚠ html2canvas not loaded — try refreshing','tw');return;}
+  html2canvas(wrap,{
+    scale:2,backgroundColor:'#ffffff',useCORS:true,
+    width:wrap.scrollWidth,height:wrap.scrollHeight,
+    windowWidth:wrap.scrollWidth,windowHeight:wrap.scrollHeight,
+    logging:false
+  }).then(canvas=>{
+    const a=document.createElement('a');
+    a.href=canvas.toDataURL('image/png',1.0);
+    a.download=filename||'table.png';
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    toast(`🖼 Table saved: ${filename}`,'tok');
+  }).catch(e=>{console.warn('html2canvas error:',e);toast('Table image failed — try again','te');});
+}
+
 function downloadChart(canvasId,filename){
   const canvas=document.getElementById(canvasId);
   if(!canvas||!canvas.width){toast('No chart available','tw');return;}
