@@ -2385,7 +2385,7 @@ function renderHovPVTable(pcs){
     .sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
   if(!pvRows.length){
     wrap.innerHTML=`<div class="empty" style="padding:24px"><div class="et">No product value data</div>
-      <div class="em">Extracted from HOV PD PC sheet (product_value column)</div></div>`;return;
+      <div class="em">Extracted from HOV PD PC sheet (PRODUCT VALUE column)</div></div>`;return;
   }
   let html=`<table class="tbl"><thead><tr>
     <th style="text-align:left">AWB Number</th><th>Product Value</th><th style="text-align:left">Current Location</th>
