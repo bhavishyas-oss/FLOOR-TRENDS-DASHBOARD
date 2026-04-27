@@ -682,7 +682,7 @@ function dispatchRaw(type,row,date,agg){
 async function applyRows(rows,type,date,hdrs){
   if(isPivotFmt(hdrs))return{awbs:0,pivot:true,records:0,skipped:true};
   const agg={};
-  const CHUNK=5000;
+  const CHUNK=2000; // yield every 2000 rows — more frequent UI updates on large files
   for(let i=0;i<rows.length;i+=CHUNK){
     const end=Math.min(i+CHUNK,rows.length);
     for(let j=i;j<end;j++){
@@ -1382,9 +1382,10 @@ async function manualType(filename,type){
 
 /* ═══════════════════════════════════════════════
    ORCHESTRATOR
-   Files are processed ONE AT A TIME with a
-   setTimeout(0) yield between each so the browser
-   event loop stays alive → no "Not Responding".
+   Files processed ONE AT A TIME.
+   Yields 16ms (one animation frame) between each
+   file so the browser event loop stays alive and
+   the "Page Unresponsive" watchdog resets.
    master is auto-persisted after every file so
    data is never lost even if user closes mid-upload.
 ═══════════════════════════════════════════════ */
@@ -1395,8 +1396,8 @@ async function runFiles(files){
     const f=files[i],ext=f.name.split('.').pop().toLowerCase();
     setP(Math.round((i/files.length)*80),`📂  File ${i+1}/${files.length}: ${f.name}`);
 
-    // Yield to browser BEFORE processing each file — prevents "Not Responding"
-    await new Promise(r=>setTimeout(r,0));
+    // Yield ONE ANIMATION FRAME before processing — resets browser unresponsive timer
+    await new Promise(r=>setTimeout(r,16));
 
     try{
       const r=ext==='csv'?await procCSV(f):
@@ -1409,8 +1410,8 @@ async function runFiles(files){
         persistM();
       }
 
-      // Yield after processing so UI can repaint progress bar
-      await new Promise(r2=>setTimeout(r2,0));
+      // Yield TWO FRAMES after processing — lets progress bar repaint + UI breathe
+      await new Promise(r2=>setTimeout(r2,32));
     }catch(e){
       results.push({name:f.name,type:'error',rows:0,awbs:0,err:e.message,hdrs:[]});
     }
@@ -1419,6 +1420,8 @@ async function runFiles(files){
   renderBadges(results);
   if(debugMode)renderDebug();
   updateSummary();
+  // Yield before renderTab so summary bar repaints first
+  await new Promise(r=>setTimeout(r,0));
   renderTab(activeTab);
   runSheetsPush(results); // non-blocking — pushes to Google Sheets after UI is responsive
   return results;
@@ -2457,13 +2460,18 @@ function filterRawForSection(sec){
   return out;
 }
 
-/* SECTION EXCEL REPORT — raw row-level data */
+/* SECTION EXCEL REPORT — full row-level data
+   PRIMARY path  : rawData cache (populated during upload) → exact source columns
+   FALLBACK path  : master aggregates (always available) → Date + Location + all stored fields
+   Both paths produce date-wise rows, never just a count summary.             */
 function downloadSectionReport(idx){
   const sec=SECS[idx];
+
+  /* ── PRIMARY: in-memory raw rows captured during this session ── */
   const rawRows=filterRawForSection(sec);
 
   if(rawRows.length>0){
-    // Full raw report: Date + all original columns
+    // Build column list from all rows (preserves every source column)
     const colSet=new Set();
     rawRows.forEach(r=>Object.keys(r).forEach(k=>{if(k!=='_date')colSet.add(k);}));
     const cols=['Date',...colSet];
@@ -2479,6 +2487,11 @@ function downloadSectionReport(idx){
 
     const ws=XLSX.utils.aoa_to_sheet(wsData);
     ws['!cols']=cols.map(c=>({wch:Math.min(35,Math.max(10,c.length+4))}));
+    // Bold header row
+    cols.forEach((_,i)=>{
+      const cellRef=XLSX.utils.encode_cell({r:0,c:i});
+      if(ws[cellRef])ws[cellRef].s={font:{bold:true}};
+    });
 
     const wb=XLSX.utils.book_new();
     const safeTitle=sec.title.replace(/[^\w\s]/g,'_').trim().slice(0,31);
@@ -2486,32 +2499,55 @@ function downloadSectionReport(idx){
     const fname=`${safeTitle}_${new Date().toISOString().slice(0,10)}.xlsx`;
     XLSX.writeFile(wb,fname);
     toast(`⬇ ${fn(rawRows.length)} rows · ${cols.length} cols downloaded`,'tok');
-
-  }else{
-    // Fallback when page was reloaded (raw cache cleared) — show aggregated summary
-    const piv=buildPivot(sec);
-    if(!piv.locs.length){toast('No data — upload the matching file first','tw');return;}
-
-    const wsData=[
-      ['Section:',sec.title],['Filter:',sec.badge],
-      ['Note:','Raw row data unavailable (page reloaded). Showing aggregated summary.'],
-      ['Generated:',new Date().toLocaleString('en-IN')],[],
-      ['Date','Location','Count']
-    ];
-    piv.dates.forEach(date=>{
-      piv.locs.forEach(loc=>{
-        const c=(piv.grid[loc]&&piv.grid[loc][date])||0;
-        if(c>0)wsData.push([date,loc,c]);
-      });
-    });
-    const ws=XLSX.utils.aoa_to_sheet(wsData);
-    ws['!cols']=[{wch:14},{wch:34},{wch:10}];
-    const wb=XLSX.utils.book_new();
-    const safeTitle=sec.title.replace(/[^\w\s]/g,'_').trim().slice(0,31);
-    XLSX.utils.book_append_sheet(wb,ws,safeTitle);
-    XLSX.writeFile(wb,`${safeTitle}_summary_${new Date().toISOString().slice(0,10)}.xlsx`);
-    toast('⬇ Aggregated summary downloaded (re-upload file for full raw report)','tw');
+    return;
   }
+
+  /* ── FALLBACK: master aggregate data (available even after page reload) ──
+     Produces: Date | Location | Age | Count | [extra fields per type]
+     This is structured row-level data, not a pivot/summary.                  */
+  const all=(master[sec.src]||[]).filter(r=>{
+    if(r.age!==sec.age)return false;
+    if(sec.bin!==undefined&&r.bin!==sec.bin)return false;
+    if(sec.msg!==undefined&&r.msg!==sec.msg)return false;
+    if(sec.bin!==undefined&&r.os==='IN_MANIFEST')return false;
+    return true;
+  });
+
+  if(!all.length){toast('No data — upload the matching file first','tw');return;}
+
+  // Sort by date then location
+  all.sort((a,b)=>a.date.localeCompare(b.date)||(a.location||a.destination||'').localeCompare(b.location||b.destination||''));
+
+  // Determine columns dynamically from data shape
+  const fieldSet=new Set();
+  all.forEach(r=>Object.keys(r).forEach(k=>fieldSet.add(k)));
+  // Ensure Date is first, then common fields, then rest
+  const priority=['date','location','destination','age','bin','msg','os','client','count'];
+  const orderedFields=['Date',...priority.filter(f=>fieldSet.has(f)),...[...fieldSet].filter(f=>!priority.includes(f))];
+
+  const wsData=[orderedFields];
+  all.forEach(r=>{
+    wsData.push(orderedFields.map(col=>{
+      if(col==='Date')return r.date||'';
+      const v=r[col];
+      return(v!==undefined&&v!==null)?String(v):'';
+    }));
+  });
+
+  const ws=XLSX.utils.aoa_to_sheet(wsData);
+  ws['!cols']=orderedFields.map(c=>({wch:Math.min(35,Math.max(10,c.length+4))}));
+  // Bold header row
+  orderedFields.forEach((_,i)=>{
+    const cellRef=XLSX.utils.encode_cell({r:0,c:i});
+    if(ws[cellRef])ws[cellRef].s={font:{bold:true}};
+  });
+
+  const wb=XLSX.utils.book_new();
+  const safeTitle=sec.title.replace(/[^\w\s]/g,'_').trim().slice(0,31);
+  XLSX.utils.book_append_sheet(wb,ws,safeTitle);
+  const fname=`${safeTitle}_${new Date().toISOString().slice(0,10)}.xlsx`;
+  XLSX.writeFile(wb,fname);
+  toast(`⬇ ${fn(all.length)} records · ${orderedFields.length} columns (re-upload for full source columns)`,'tok');
 }
 
 /* ═══════════════════════════════════════════════
