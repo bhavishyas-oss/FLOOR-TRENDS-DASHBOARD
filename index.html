@@ -396,12 +396,12 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
   <div style="padding:18px;display:flex;flex-direction:column;gap:18px">
 
     <!-- ROW 1: Donut – AWB by Site + Donut – PC filtered -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
 
       <!-- 1. Donut: AWB Count by Site -->
       <div class="card">
         <div class="chead"><span class="ct">AWB Count by Site</span><span class="cbg">ALL CATEGORIES</span></div>
-        <div style="padding:16px;height:420px;display:flex;align-items:center;justify-content:center">
+        <div style="padding:12px;height:300px;position:relative">
           <canvas id="hovDonut1"></canvas>
         </div>
       </div>
@@ -410,35 +410,35 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
       <div class="card">
         <div class="chead" style="flex-wrap:wrap;gap:8px">
           <span class="ct">AWB by Site — PC Filter</span>
-          <!-- Multi-select PC dropdown (used by both donut2 and the main D2-D15 table) -->
+          <!-- Multi-select PC dropdown -->
           <div id="hovPCwrap" style="position:relative;display:inline-block">
             <div id="hovPCtrigger" onclick="toggleHovPCDrop()"
               style="font-size:11px;padding:5px 28px 5px 9px;border-radius:5px;border:1px solid var(--bdr2);
-                background:var(--sur);color:var(--tx);font-family:var(--sans);min-width:220px;
+                background:var(--sur);color:var(--tx);font-family:var(--sans);min-width:180px;
                 cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-                max-width:300px;position:relative">
+                max-width:260px;position:relative">
               <span id="hovPCtriggerLabel">All Categories</span>
               <span style="position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:11px;color:#94a3b8">▾</span>
             </div>
-            <div id="hovPCdrop" style="display:none;position:absolute;top:100%;left:0;min-width:100%;width:280px;
-              max-height:260px;background:#fff;border:1px solid var(--bdr2);
+            <div id="hovPCdrop" style="display:none;position:absolute;top:100%;left:0;min-width:100%;width:260px;
+              max-height:240px;background:#fff;border:1px solid var(--bdr2);
               border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.18);z-index:300;margin-top:2px;
-              display:none;flex-direction:column">
-              <div style="padding:6px 8px;border-bottom:1px solid var(--bdr)">
+              flex-direction:column">
+              <div style="padding:5px 8px;border-bottom:1px solid var(--bdr)">
                 <input id="hovPCsearch" type="text" placeholder="Search…"
                   style="width:100%;font-size:11px;padding:4px 8px;border-radius:4px;
                     border:1px solid var(--bdr2);font-family:var(--sans);outline:none"
                   oninput="filterHovPCList(this.value)">
               </div>
-              <div style="padding:4px 8px;border-bottom:1px solid var(--bdr);display:flex;gap:8px">
+              <div style="padding:3px 8px;border-bottom:1px solid var(--bdr);display:flex;gap:8px">
                 <button onclick="hovSelectAll()" style="font-size:10px;cursor:pointer;border:none;background:none;color:var(--brand);font-weight:700">Select All</button>
                 <button onclick="hovClearAll()" style="font-size:10px;cursor:pointer;border:none;background:none;color:#ef4444;font-weight:700">Clear</button>
               </div>
-              <div id="hovPClist" style="overflow-y:auto;max-height:190px;padding:4px 0"></div>
+              <div id="hovPClist" style="overflow-y:auto;max-height:170px;padding:3px 0"></div>
             </div>
           </div>
         </div>
-        <div style="padding:16px;height:420px;display:flex;align-items:center;justify-content:center">
+        <div style="padding:12px;height:300px;position:relative">
           <canvas id="hovDonut2"></canvas>
         </div>
       </div>
@@ -450,7 +450,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
         <span class="ct">HOV Tracking — D2 to D15</span>
         <div class="cm" style="gap:8px;flex-wrap:wrap">
           <span class="cc" id="hovGrandTotal">–</span>
-          <button class="btn bg" onclick="downloadHovTableImage()" style="font-size:11px;padding:5px 11px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download table as HD PNG">🖼 Image</button>
+          <button class="btn bg" onclick="downloadHovTableImage()" style="font-size:11px;padding:5px 11px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download full table as HD PNG">🖼 Image</button>
         </div>
       </div>
       <div id="hovTableWrap"></div>
@@ -459,13 +459,13 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
     <!-- 4. Product Value Table -->
     <div class="card">
       <div class="chead"><span class="ct">Product Value — AWB List</span><span class="cbg">SORTED: HIGHEST VALUE FIRST</span></div>
-      <div id="hovPVWrap" style="max-height:420px;overflow-y:auto"></div>
+      <div id="hovPVWrap" style="max-height:320px;overflow-y:auto"></div>
     </div>
 
     <!-- 5. Age-wise Trends Table -->
     <div class="card">
       <div class="chead"><span class="ct">Age-wise Trends</span><span class="cbg">D2 → D15 TOTALS</span></div>
-      <div id="hovAgeTrendsWrap" style="overflow-x:auto"></div>
+      <div id="hovAgeTrendsWrap" style="overflow-x:auto;max-height:320px;overflow-y:auto"></div>
     </div>
 
   </div>
@@ -2334,49 +2334,86 @@ function downloadHovTableImage(){
   if(!wrap||!wrap.querySelector('table')){toast('No HOV table to download','tw');return;}
   if(typeof html2canvas==='undefined'){toast('⚠ html2canvas not loaded — refresh and try','tw');return;}
 
-  // Clone the wrap and strip ALL scroll/overflow constraints recursively
-  // so html2canvas captures the complete table, not just the visible scroll area
-  const clone=wrap.cloneNode(true);
-  clone.style.cssText=[
-    'position:fixed','top:-99999px','left:0',
-    'overflow:visible','max-height:none','height:auto',
-    'width:'+Math.max(wrap.scrollWidth,wrap.offsetWidth)+'px',
-    'background:#fff','z-index:-1','pointer-events:none'
-  ].join(';');
-  // Remove overflow from every descendant that could clip content
-  clone.querySelectorAll('*').forEach(el=>{
-    el.style.overflow='visible';
-    el.style.overflowX='visible';
-    el.style.overflowY='visible';
-    el.style.maxHeight='none';
-    el.style.maxWidth='none';
-  });
-  document.body.appendChild(clone);
+  toast('⏳ Preparing full table image…','ti');
 
+  // Build a standalone HTML page containing just the table with all styles inlined
+  // This avoids any viewport / scroll-clip constraints from the parent page
+  const table=wrap.querySelector('table');
+  if(!table){toast('No table found','tw');return;}
+
+  // Clone the full table (including hidden rows due to scroll)
+  const tableClone=table.cloneNode(true);
+
+  // Create an off-screen container with no constraints
+  const container=document.createElement('div');
+  container.style.cssText=[
+    'position:fixed','left:-200vw','top:0',
+    'width:max-content','height:auto',
+    'overflow:visible','max-height:none','max-width:none',
+    'background:#fff','padding:12px','font-family:Inter,sans-serif',
+    'z-index:-9999'
+  ].join(';');
+
+  // Apply dashboard table styles inline so html2canvas picks them up
+  tableClone.style.cssText='border-collapse:collapse;font-size:12.5px;width:auto';
+  tableClone.querySelectorAll('th').forEach(th=>{
+    th.style.cssText='background:#0f2b25;color:#fff;padding:11px 16px;text-align:center;'+
+      'font-weight:900;white-space:nowrap;font-size:12px;border-right:1px solid #1a5045;';
+  });
+  tableClone.querySelectorAll('td').forEach(td=>{
+    const cl=td.classList;
+    let bg='#fff',color='#0a2520',fw='700';
+    if(cl.contains('cup')){bg='#ef4444';color='#fff';fw='900';}
+    else if(cl.contains('cdn')){bg='#dff0ea';color='#0a4a35';}
+    else if(cl.contains('czr')){color='#94a3b8';fw='500';}
+    td.style.cssText=`background:${bg};color:${color};font-weight:${fw};`+
+      'padding:9px 16px;text-align:center;border-bottom:1.5px solid #c8dfd9;'+
+      'border-right:1px solid #daeee9;font-size:12px;white-space:nowrap;';
+  });
+  // Sticky first column style
+  tableClone.querySelectorAll('tbody td:first-child,tfoot td:first-child').forEach(td=>{
+    td.style.textAlign='left';td.style.fontWeight='800';
+  });
+  tableClone.querySelectorAll('tfoot td').forEach(td=>{
+    td.style.background='#0f2b25';td.style.color='#fff';
+    td.style.fontWeight='900';td.style.padding='10px 16px';
+  });
+
+  container.appendChild(tableClone);
+  document.body.appendChild(container);
+
+  // Measure true full dimensions after layout
   requestAnimationFrame(()=>{
-    const W=clone.scrollWidth;
-    const H=clone.scrollHeight;
-    html2canvas(clone,{
+    const W=container.scrollWidth+24;
+    const H=container.scrollHeight+24;
+    html2canvas(container,{
       scale:2,
       backgroundColor:'#ffffff',
       useCORS:true,
       allowTaint:true,
       width:W,
       height:H,
-      windowWidth:W,
-      windowHeight:H,
+      windowWidth:W+200,
+      windowHeight:H+200,
       x:0,y:0,
       scrollX:0,scrollY:0,
-      logging:false
+      logging:false,
+      onclone(doc){
+        // Remove any residual overflow in the cloned doc
+        doc.querySelectorAll('*').forEach(el=>{
+          el.style.overflow='visible';
+          el.style.maxHeight='none';
+        });
+      }
     }).then(canvas=>{
-      document.body.removeChild(clone);
+      document.body.removeChild(container);
       const a=document.createElement('a');
       a.href=canvas.toDataURL('image/png',1.0);
       a.download=`HOV_Table_${new Date().toISOString().slice(0,10)}.png`;
       document.body.appendChild(a);a.click();document.body.removeChild(a);
       toast('🖼 Full HOV table downloaded as PNG','tok');
     }).catch(err=>{
-      document.body.removeChild(clone);
+      if(document.body.contains(container))document.body.removeChild(container);
       console.warn('html2canvas:',err);
       toast('Table image failed — try again','te');
     });
@@ -2389,29 +2426,34 @@ function renderHovDonut(key,canvasId,labels,values,title){
   if(_hovCharts[key]){_hovCharts[key].destroy();_hovCharts[key]=null;}
   if(!labels.length){
     const ctx=cv.getContext('2d');ctx.clearRect(0,0,cv.width,cv.height);
-    ctx.font='14px Inter';ctx.fillStyle='#94a3b8';ctx.textAlign='center';
+    ctx.font='13px Inter';ctx.fillStyle='#94a3b8';ctx.textAlign='center';
     ctx.fillText('No data — upload HOV files',cv.width/2,cv.height/2);return;
   }
   const total=values.reduce((a,b)=>a+b,0);
   _hovCharts[key]=new Chart(cv,{
     type:'doughnut',
-    data:{labels,datasets:[{data:values,
+    data:{labels,datasets:[{
+      data:values,
       backgroundColor:HOV_PALETTE.slice(0,labels.length),
-      borderWidth:3,borderColor:'#fff',hoverOffset:12}]},
+      borderWidth:2,borderColor:'#fff',hoverOffset:6
+    }]},
     options:{
       responsive:true,
-      maintainAspectRatio:false, // allow chart to fill container height
-      cutout:'55%',
-      layout:{padding:{top:16,bottom:16,left:8,right:8}},
+      maintainAspectRatio:false,
+      cutout:'45%',
+      layout:{padding:{top:2,bottom:2,left:0,right:0}},
       plugins:{
-        title:{display:true,text:title,
-          font:{size:14,weight:'800',family:'Inter'},
-          color:'#0a2520',padding:{top:4,bottom:14}},
-        legend:{display:true,position:'right',
+        // Title lives in card header — keep it OFF inside chart to prevent overlap
+        title:{display:false},
+        legend:{
+          display:true,
+          position:'right',
+          align:'center',
           labels:{
-            font:{size:11,family:'Inter',weight:'600'},
-            padding:10,
-            boxWidth:14,
+            font:{size:9,family:'Inter',weight:'600'},
+            padding:5,
+            boxWidth:9,
+            boxHeight:9,
             generateLabels(chart){
               return chart.data.labels.map((l,i)=>({
                 text:`${l}: ${fn(chart.data.datasets[0].data[i])} (${total?Math.round(chart.data.datasets[0].data[i]/total*100):0}%)`,
@@ -2422,13 +2464,21 @@ function renderHovDonut(key,canvasId,labels,values,title){
           }
         },
         tooltip:{
-          bodyFont:{size:12,family:'Inter'},
+          bodyFont:{size:11,family:'Inter'},
           callbacks:{label(c){return` ${c.label}: ${fn(c.parsed)} AWBs (${total?Math.round(c.parsed/total*100):0}%)`;}}
         },
+        // Fix 3: data labels INSIDE each segment — show count, white bold text
         datalabels:{
-          display:ctx=>ctx.dataset.data[ctx.dataIndex]/total>0.04, // show if slice >4%
-          color:'#fff',
-          font:{size:11,weight:'800',family:'Inter'},
+          display(ctx){
+            const pct=ctx.dataset.data[ctx.dataIndex]/total;
+            return pct>=0.05; // only slices ≥5% — avoids clutter on tiny slices
+          },
+          anchor:'center',
+          align:'center',
+          color:'#ffffff',
+          font:{size:9,weight:'800',family:'Inter'},
+          textStrokeColor:'rgba(0,0,0,0.5)',
+          textStrokeWidth:2,
           formatter(v){return fn(v);}
         }
       }
