@@ -422,6 +422,11 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
           <option value="ALL">All Sites</option>
         </select>
 
+        <!-- PD (Product Description) dropdown -->
+        <select id="hovPDselect" class="dc-select" onchange="renderHovTab()" style="min-width:170px;font-size:11px">
+          <option value="ALL">All Descriptions</option>
+        </select>
+
         <!-- AWB search -->
         <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
           <input id="hovAWBsearch" type="text" placeholder="🔍 Search AWB number…"
@@ -452,8 +457,12 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
       <div class="chead">
         <span class="ct">AWB Count by Site</span>
         <span class="cbg" id="hovDonutBadge">ALL CATEGORIES · ALL SITES</span>
-        <button class="btn bg" onclick="downloadHovChart('hovDonut1','HOV_Donut.png')"
-          style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4);margin-left:auto">🖼 PNG</button>
+        <div style="display:flex;gap:6px;margin-left:auto;align-items:center">
+          <button id="hovChartToggle" class="btn bg" onclick="toggleHovChartType()"
+            style="font-size:10px;padding:3px 9px;color:var(--brand);border-color:var(--bdr2)" title="Toggle chart type">🥧 Donut</button>
+          <button class="btn bg" onclick="downloadHovChart('hovDonut1','HOV_Chart.png')"
+            style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG</button>
+        </div>
       </div>
       <div style="padding:12px;height:320px;position:relative">
         <canvas id="hovDonut1"></canvas>
@@ -569,7 +578,7 @@ const CPALS=['#2563eb','#dc2626','#16a34a','#d97706','#7c3aed','#0891b2','#be185
 ═══════════════════════════════════════════════ */
 let master=loadM(),activeTab=0,charts={},debugMode=false,dlog=[],pending={};
 
-function emptyM(){return{forward:[],reverse:[],lmodc:[],forwardShort:[],hov:[],hovPV:[]}}
+function emptyM(){return{forward:[],reverse:[],lmodc:[],forwardShort:[],hov:[],hovPV:[],hovAllRaw:[]}}
 function loadM(){
   try{const r=localStorage.getItem(SKEY);return r?Object.assign(emptyM(),JSON.parse(r)):emptyM()}
   catch{return emptyM()}
@@ -2273,17 +2282,23 @@ function pHovFwd(row,date,agg){
   const age=Math.round(gn(row,
     'ageing_from_bag_rec','Ageing_from_Bag_Rec','Ageing_From_Bag_Rec',
     'ageing from bag rec','ageing_from_bag_recc','ageing','Ageing','age','Age'));
-  if(age<2||age>15)return;
   const loc=(gv(row,'current_location','Current_location','Current_Location','location','Location')||'UNKNOWN').toUpperCase();
   const pc=gv(row,'pc','PC','product category','Product Category','product_category','Product_Category')||'UNKNOWN';
   const awb=gv(row,'awb_number','Awb_number','AWB_NUMBER','awb number','awb','AWB')||'';
   const pvRaw=gv(row,'product value','PRODUCT VALUE','product_value','Product_Value','Product Value','productvalue')||'';
   const pv=parseFloat(String(pvRaw).replace(/[₹,\s]/g,''))||0;
-  // PD = Product Description column
-  const pd=gv(row,'pd','PD','product description','Product Description','product_description','Product_Description','productdescription')||'';
+  const pd=gv(row,'pd','PD','product description','Product Description','product_description','Product_Description','productdescription','product_desc','Product_Desc','prd_description')||'';
+
+  // Store full raw record for AWB search (ALL ages, no restriction)
+  if(awb){
+    if(!agg.__allRaw)agg.__allRaw=[];
+    agg.__allRaw.push({awb,pv,pd,loc,pc,date,age,fileType:'forward'});
+  }
+
+  if(age<2||age>15)return; // age gate for D2-D15 tracking only
   if(awb){
     if(!agg.__pv)agg.__pv=[];
-    agg.__pv.push({awb,pv,pd,loc,pc,date,fileType:'forward'});
+    agg.__pv.push({awb,pv,pd,loc,pc,date,age,fileType:'forward'}); // age stored for criticality
   }
   const k=`${age}|${loc}|${pc}`;
   if(!agg[k])agg[k]={date,age,location:loc,pc,fileType:'forward',count:0};
@@ -2298,8 +2313,6 @@ function pHovRev(row,date,agg){
   if(xray==='original')return;
   const ageRaw=gv(row,'ageing','Ageing');
   const age=Math.round(parseFloat(ageRaw)||0);
-  if(age<2||age>15)return;
-  // Reverse files may use different column names for location
   const loc=(gv(row,
     'current_location','Current_location','Current_Location','currentlocation',
     'current location','Current Location',
@@ -2311,10 +2324,24 @@ function pHovRev(row,date,agg){
   const awb=gv(row,'awb_number','Awb_number','AWB_NUMBER','DSP_Awb_number','dsp_awb_number','awb number','awb','AWB')||'';
   const pvRaw=gv(row,'product value','PRODUCT VALUE','product_value','Product_Value','Product Value','productvalue')||'';
   const pv=parseFloat(String(pvRaw).replace(/[₹,\s]/g,''))||0;
-  const pd=gv(row,'pd','PD','product description','Product Description','product_description','Product_Description','productdescription')||'';
+  // PD: multiple variants for Reverse file (col C in HOV PD PC sheet)
+  const pd=gv(row,
+    'pd','PD','product description','Product Description',
+    'product_description','Product_Description','productdescription',
+    'product_desc','Product_Desc','prd_description','Prd_Description',
+    'prod desc','Prod Desc','prod_desc','description','Description'
+  )||'';
+
+  // Store ALL rows for AWB search (no age restriction)
+  if(awb){
+    if(!agg.__allRaw)agg.__allRaw=[];
+    agg.__allRaw.push({awb,pv,pd,loc,pc,date,age,fileType:'reverse'});
+  }
+
+  if(age<2||age>15)return;
   if(awb){
     if(!agg.__pv)agg.__pv=[];
-    agg.__pv.push({awb,pv,pd,loc,pc,date,fileType:'reverse'});
+    agg.__pv.push({awb,pv,pd,loc,pc,date,age,fileType:'reverse'}); // age stored for criticality
   }
   const k=`${age}|${loc}|${pc}`;
   if(!agg[k])agg[k]={date,age,location:loc,pc,fileType:'reverse',count:0};
@@ -2355,20 +2382,32 @@ function applyHovRows(rows,proc,type,date){
     if(!Object.values(row).some(v=>String(v).trim()))continue;
     proc(row,date,agg);
   }
-  // Extract PV rows collected by pHovFwd/pHovRev
+  // Extract PV rows (age 2-15 only, for D2-D15 and criticality)
   const pvRows=agg.__pv||[];
   delete agg.__pv;
+
+  // Extract ALL raw rows (no age restriction) for AWB search
+  const allRawRows=agg.__allRaw||[];
+  delete agg.__allRaw;
 
   const recs=Object.values(agg);
   master.hov=(master.hov||[]).filter(r=>!(r.date===date&&r.fileType===type));
   master.hov.push(...recs);
 
-  // Merge product value rows — remove old same-date+type, add new
+  // Merge product value rows
   if(pvRows.length){
     if(!master.hovPV)master.hovPV=[];
     master.hovPV=master.hovPV.filter(r=>!(r.date===date&&r.fileType===type));
     pvRows.forEach(r=>r.fileType=type);
     master.hovPV.push(...pvRows);
+  }
+
+  // Merge all-age raw rows for AWB search (age-unrestricted)
+  if(allRawRows.length){
+    if(!master.hovAllRaw)master.hovAllRaw=[];
+    master.hovAllRaw=master.hovAllRaw.filter(r=>!(r.date===date&&r.fileType===type));
+    allRawRows.forEach(r=>r.fileType=type);
+    master.hovAllRaw.push(...allRawRows);
   }
 }
 
@@ -2840,73 +2879,124 @@ function populateHovDCDropdown(){
 }
 
 /* ── AWB Search (Fix 3): cross-file, age-independent ── */
+/* ── Populate PD dropdown (Fix 3) ── */
+function populateHovPDDropdown(){
+  const sel=document.getElementById('hovPDselect');if(!sel)return;
+  const cur=sel.value;
+  const allPDs=[...new Set((master.hovPV||[]).map(r=>r.pd||'').filter(p=>p&&p.trim()))].sort();
+  sel.innerHTML=`<option value="ALL">All Descriptions</option>`+allPDs.map(p=>`<option value="${p}">${p}</option>`).join('');
+  if(allPDs.includes(cur))sel.value=cur;
+}
+
+/* ── AWB Search (Fix 6): all ages, exact match, full fields ── */
 function renderHovAWBSearch(query){
   const card=document.getElementById('hovAWBresultCard');
   const inner=document.getElementById('hovAWBresultInner');
   if(!card||!inner)return;
   const q=(query||'').trim().toUpperCase();
   if(!q){card.style.display='none';inner.innerHTML='';return;}
-  const TYPE_LABELS={forward:'FORWARD',reverse:'REVERSE',lmodc:'LMODC',forwardShort:'SHORT SHIP'};
-  const pvHits=(master.hovPV||[]).filter(r=>(r.awb||'').toUpperCase()===q);
-  if(pvHits.length){
-    const rows=pvHits.map(r=>[
+  const TYPE_LABELS={forward:'\ud83d\udce6 FORWARD',reverse:'\ud83d\udd04 REVERSE',lmodc:'\ud83c\udff7 LMODC',forwardShort:'\u26a1 SHORT SHIP'};
+  // Search ALL-age raw records (no age restriction)
+  const allHits=(master.hovAllRaw||[]).filter(r=>(r.awb||'').toUpperCase()===q);
+  if(allHits.length){
+    const rows=allHits.map(r=>([
       TYPE_LABELS[r.fileType]||r.fileType||'?',
       r.awb||'\u2013',r.loc||'\u2013',
-      r.pv?`\u20b9${fn(Math.round(parseFloat(r.pv)||0))}`:'\u2013',
-      r.pd||'\u2013',r.date||'\u2013',r.pc||'\u2013'
-    ]);
-    inner.innerHTML=pivTbl(['FILE TYPE','AWB NUMBER','LOCATION','PRODUCT VALUE','PRODUCT DESC','DATE','PC'],rows,null,'320px');
-    card.style.display='block';
-    return;
+      r.pv&&parseFloat(r.pv)>0?`\u20b9${fn(Math.round(parseFloat(r.pv)||0))}`:(r.pv||'\u2013'),
+      r.pd||'\u2013',
+      r.age!==undefined?`D${r.age}`:'\u2013',
+      r.date||'\u2013',r.pc||'\u2013'
+    ]));
+    inner.innerHTML=pivTbl(['FILE TYPE','AWB NUMBER','LOCATION','PRODUCT VALUE','PRODUCT DESC','AGE','DATE','CATEGORY'],rows,null,'360px');
+    card.style.display='block';return;
+  }
+  // Fallback: search D2-D15 PV records
+  const pvHits=(master.hovPV||[]).filter(r=>(r.awb||'').toUpperCase()===q);
+  if(pvHits.length){
+    const rows=pvHits.map(r=>([
+      TYPE_LABELS[r.fileType]||r.fileType||'?',
+      r.awb||'\u2013',r.loc||'\u2013',
+      r.pv?`\u20b9${fn(Math.round(parseFloat(r.pv)||0))}`:'–',
+      r.pd||'\u2013',r.age!==undefined?`D${r.age}`:'\u2013',r.date||'\u2013',r.pc||'\u2013'
+    ]));
+    inner.innerHTML=pivTbl(['FILE TYPE','AWB NUMBER','LOCATION','PRODUCT VALUE','PRODUCT DESC','AGE','DATE','CATEGORY'],rows,null,'360px');
+    card.style.display='block';return;
   }
   inner.innerHTML=`<div class="empty" style="padding:20px"><div class="et">AWB not found</div>
-    <div class="em">AWB <strong>${q}</strong> was not found in any uploaded file.<br>
-    Note: AWB search requires files uploaded in the current session (not after page reload).</div></div>`;
+    <div class="em">AWB <strong>${q}</strong> not found. Upload files and search in the same session.</div></div>`;
   card.style.display='block';
 }
 
-/* ── Main HOV render (single donut with PC+DC filter) ── */
+/* ── Chart type toggle (Fix 4) ── */
+let _hovChartType='donut'; // 'donut' or 'bar'
+function toggleHovChartType(){
+  _hovChartType=_hovChartType==='donut'?'bar':'donut';
+  const btn=document.getElementById('hovChartToggle');
+  if(btn)btn.textContent=_hovChartType==='donut'?'\ud83e\udde7 Donut':'\ud83d\udcca Bar';
+  renderHovTab();
+}
+
+/* ── Main HOV render ── */
 function renderHovTab(){
   populateHovPC();
   populateHovDCDropdown();
+  populateHovPDDropdown();
   const pcs=getHovPCs();
   const dc=(document.getElementById('hovDCselect')?.value)||'ALL';
+  const pd=(document.getElementById('hovPDselect')?.value)||'ALL';
 
   // Badge
   const pcLbl=_hovPCselected.has('ALL')?'All Categories':_hovPCselected.size===1?[..._hovPCselected][0]:`${_hovPCselected.size} Categories`;
   const badge=document.getElementById('hovDonutBadge');
-  if(badge)badge.textContent=`${pcLbl} \u00b7 ${dc==='ALL'?'All Sites':dc}`;
+  if(badge)badge.textContent=`${pcLbl} \u00b7 ${dc==='ALL'?'All Sites':dc}${pd!=='ALL'?' \u00b7 '+pd.slice(0,20):''}`;
 
-  // Single donut with combined filters
-  const dFilt=buildHovDataFiltered(pcs,dc);
-  renderHovDonut('d1','hovDonut1',dFilt.locs,dFilt.locs.map(l=>dFilt.rowTotals[l]||0),'AWB by Site');
+  // Build filtered data (PC + DC + PD)
+  const allHov=master.hov||[];
+  const filtHov=allHov.filter(r=>{
+    if(r.age<2||r.age>15)return false;
+    if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
+    if(dc&&dc!=='ALL'&&r.location!==dc)return false;
+    return true;
+  });
+  // Note: PD filter applies to PV table, criticality, AWB search — not to D2-D15 hov counts
 
-  // Grand total
-  const grand=dFilt.locs.reduce((s,l)=>s+(dFilt.rowTotals[l]||0),0);
+  // Build D2-D15 grid from filtHov
+  const dLocs=[...new Set(filtHov.map(r=>r.location))].sort();
+  const dGrid={};dLocs.forEach(l=>{dGrid[l]={};HOV_AGES.forEach(a=>{dGrid[l][a]=0;});});
+  filtHov.forEach(r=>{if(!dGrid[r.location])dGrid[r.location]={};dGrid[r.location][r.age]=(dGrid[r.location][r.age]||0)+r.count;});
+  const dRowTotals={},dColTotals={};HOV_AGES.forEach(a=>{dColTotals[a]=0;});
+  dLocs.forEach(l=>{dRowTotals[l]=0;HOV_AGES.forEach(a=>{dRowTotals[l]+=(dGrid[l][a]||0);dColTotals[a]+=(dGrid[l][a]||0);});});
+  const grand=dLocs.reduce((s,l)=>s+(dRowTotals[l]||0),0);
+
   const tot=document.getElementById('hovGrandTotal');
   if(tot)tot.textContent=grand?fn(grand)+' AWBs':'\u2013';
 
-  // D2-D15 Table (pivot style)
+  // Chart (donut or bar — Fix 4)
+  if(_hovChartType==='donut'){
+    renderHovDonut('d1','hovDonut1',dLocs,dLocs.map(l=>dRowTotals[l]||0),'AWB by Site');
+  }else{
+    renderHovBar('hovDonut1',dLocs,dLocs.map(l=>dRowTotals[l]||0));
+  }
+
+  // D2-D15 Table
   const el=document.getElementById('hovTableWrap');
   if(el){
-    if(!dFilt.locs.length){
+    if(!dLocs.length){
       el.innerHTML=`<div class="empty"><div class="ei">\ud83d\ude81</div><div class="et">No HOV data yet</div>
         <div class="em">Upload Forward/Reverse/LMODC/Short Ship files</div></div>`;
     }else{
-      const hdrs=['LOCATION',...dFilt.ages.map(a=>`D${a}`),'TOTAL'];
-      const tblRows=dFilt.locs.map(loc=>{
-        const rt=dFilt.rowTotals[loc]||0;
-        const cells=[loc];
-        dFilt.ages.forEach((a,ai)=>{
-          const v=dFilt.grid[loc]?dFilt.grid[loc][a]||0:0;
-          const prev=ai>0?dFilt.grid[loc][dFilt.ages[ai-1]]||0:null;
+      const hdrs=['LOCATION',...HOV_AGES.map(a=>`D${a}`),'TOTAL'];
+      const tblRows=dLocs.map(loc=>{
+        const rt=dRowTotals[loc]||0;const cells=[loc];
+        HOV_AGES.forEach((a,ai)=>{
+          const v=dGrid[loc]?dGrid[loc][a]||0:0;
+          const prev=ai>0?dGrid[loc][HOV_AGES[ai-1]]||0:null;
           const cls=v===0?'czr':prev!==null&&v>prev?'cup':prev!==null&&v<prev?'cdn':'';
           cells.push({__val:v===0?'\u2013':fn(v),__cls:cls});
         });
-        cells.push(fn(rt));
-        return cells;
+        cells.push(fn(rt));return cells;
       });
-      const foot=['TOTAL',...dFilt.ages.map(a=>fn(dFilt.colTotals[a]||0)),fn(grand)];
+      const foot=['TOTAL',...HOV_AGES.map(a=>fn(dColTotals[a]||0)),fn(grand)];
       el.innerHTML=pivTbl(hdrs,tblRows,foot,'460px')+
         `<div class="leg" style="padding:8px 14px">
           <span class="lc"><span class="lb lu"></span>\u25b2 Higher than prev bucket</span>
@@ -2915,64 +3005,119 @@ function renderHovTab(){
     }
   }
 
-  renderHovCriticality(pcs,dc);
-  renderHovPVTable(pcs,dc);
+  renderHovCriticality(pcs,dc,pd);
+  renderHovPVTable(pcs,dc,pd);
   renderHovPerFile(pcs,dc);
 }
 
-/* ── CRITICALITY Table: Age D10-D30, PV >= 10000 ── */
-function renderHovCriticality(pcs,dc){
+/* ── Bar chart render (Fix 4) ── */
+function renderHovBar(canvasId,labels,values){
+  const cv=document.getElementById(canvasId);if(!cv)return;
+  if(_hovCharts['d1']){_hovCharts['d1'].destroy();_hovCharts['d1']=null;}
+  if(!labels.length){
+    const ctx=cv.getContext('2d');ctx.clearRect(0,0,cv.width,cv.height);
+    ctx.font='13px Inter';ctx.fillStyle='#94a3b8';ctx.textAlign='center';
+    ctx.fillText('No data',cv.width/2,cv.height/2);return;
+  }
+  _hovCharts['d1']=new Chart(cv,{
+    type:'bar',
+    plugins:[ChartDataLabels],
+    data:{labels,datasets:[{data:values,backgroundColor:'rgba(28,133,111,0.82)',
+      borderColor:'#1C856F',borderWidth:1.5,borderRadius:4,hoverBackgroundColor:'rgba(233,223,67,0.85)'}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      layout:{padding:{top:28}},
+      plugins:{legend:{display:false},
+        tooltip:{callbacks:{label(c){return` ${c.label}: ${fn(c.parsed.y)} AWBs`;}}},
+        datalabels:{anchor:'end',align:'end',offset:2,color:'#0a2520',
+          font:{size:9,weight:'800',family:'Inter'},formatter(v){return fn(v);}}
+      },
+      scales:{
+        x:{ticks:{font:{size:9,weight:'700'},color:'#1e293b',maxRotation:45}},
+        y:{beginAtZero:true,ticks:{font:{size:10,weight:'700'},color:'#1e293b',
+          callback(v){return v>=1000?(v/1000).toFixed(1)+'K':v;}}}
+      }
+    }
+  });
+}
+
+/* ── CRITICALITY Table (Fix 5): Age D10-D30, PV >= 10000 ── */
+function renderHovCriticality(pcs,dc,pd){
   const wrap=document.getElementById('hovCriticalityWrap');if(!wrap)return;
   const TYPE_LABELS={forward:'FORWARD',reverse:'REVERSE',lmodc:'LMODC',forwardShort:'SHORT SHIP'};
-  const rows=(master.hovPV||[]).filter(r=>{
+  // Use hovAllRaw for criticality (includes ages > 15 which is needed for D10-D30)
+  const source=(master.hovAllRaw&&master.hovAllRaw.length)?master.hovAllRaw:master.hovPV||[];
+  const rows=source.filter(r=>{
     const pv=parseFloat(r.pv)||0;
     const age=parseInt(r.age)||0;
     if(pv<10000)return false;
     if(age<10||age>30)return false;
     if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
     if(dc&&dc!=='ALL'&&(r.loc||'').toUpperCase()!==(dc||'').toUpperCase())return false;
+    if(pd&&pd!=='ALL'&&(r.pd||'')!==pd)return false;
     return true;
   }).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
 
   if(!rows.length){
     wrap.innerHTML=`<div class="empty" style="padding:20px"><div class="et">No criticality entries</div>
-      <div class="em">No AWBs with Age D10\u2013D30 AND PV \u2265 \u20b910,000 found.<br>
-      Ensure HOV files with product value data are uploaded.</div></div>`;
+      <div class="em">Requires: Age D10\u2013D30 AND Product Value \u2265 \u20b910,000<br>
+      Upload HOV files with product value data. Ages >D15 require re-upload.</div></div>`;
     return;
   }
-  const tblRows=rows.slice(0,500).map(r=>([
+  // Deduplicate by AWB (keep highest PV)
+  const seen=new Map();
+  rows.forEach(r=>{
+    const existing=seen.get(r.awb);
+    if(!existing||(parseFloat(r.pv)||0)>(parseFloat(existing.pv)||0))seen.set(r.awb,r);
+  });
+  const dedupRows=[...seen.values()].sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
+  const tblRows=dedupRows.slice(0,500).map(r=>([
     TYPE_LABELS[r.fileType]||r.fileType||'?',
     r.loc||'\u2013',r.awb||'\u2013',
     `\u20b9${fn(Math.round(parseFloat(r.pv)||0))}`,
     r.pd||'\u2013',`D${r.age||'?'}`
   ]));
-  const sumPV=rows.reduce((s,r)=>s+(parseFloat(r.pv)||0),0);
-  const foot=[`${fn(rows.length)} AWBs`,'','',`\u20b9${fn(Math.round(sumPV))}`,'',''];
+  const sumPV=dedupRows.reduce((s,r)=>s+(parseFloat(r.pv)||0),0);
+  const foot=[`${fn(dedupRows.length)} AWBs`,'','',`\u20b9${fn(Math.round(sumPV))}`,'',''];
   wrap.innerHTML=pivTbl(['SOURCE FILE','CURRENT LOCATION','AWB NUMBER','PRODUCT VALUE','PRODUCT DESC','AGE'],tblRows,foot,'350px');
 }
 
-/* ── Product Value Table (pivot style) ── */
-function renderHovPVTable(pcs,dc){
+/* ── Product Value Table (Fix 1A: wrap text, Fix 1B: PD for all files) ── */
+function renderHovPVTable(pcs,dc,pd){
   const wrap=document.getElementById('hovPVWrap');if(!wrap)return;
   const TYPE_LABELS={forward:'FWD',reverse:'REV',lmodc:'LM',forwardShort:'SHORT'};
   const pvRows=(master.hovPV||[]).filter(r=>{
     if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
     if(dc&&dc!=='ALL'&&(r.loc||'').toUpperCase()!==(dc||'').toUpperCase())return false;
+    if(pd&&pd!=='ALL'&&(r.pd||'')!==pd)return false;
     return(parseFloat(r.pv)||0)>=5000;
   }).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
 
   if(!pvRows.length){
     wrap.innerHTML=`<div class="empty" style="padding:20px"><div class="et">No product value data \u2265 \u20b95,000</div>
-      <div class="em">Extracted from HOV PD PC sheet (PRODUCT VALUE + PD columns)</div></div>`;return;
+      <div class="em">Extracted from HOV PD PC sheet</div></div>`;return;
   }
-  const rows=pvRows.slice(0,500).map(r=>([
-    TYPE_LABELS[r.fileType]||r.fileType||'?',
-    r.loc||'\u2013',r.awb||'\u2013',
-    `\u20b9${fn(Math.round(parseFloat(r.pv)||0))}`,
-    r.pd||'\u2013'
-  ]));
-  if(pvRows.length>500)rows.push([`Showing 500 of ${fn(pvRows.length)}`,'','','','']);
-  wrap.innerHTML=pivTbl(['FILE','CURRENT LOCATION','AWB NUMBER','PRODUCT VALUE','PRODUCT DESCRIPTION'],rows,null,'300px');
+  // Fix 1A: wrap text via inline style on td; Fix 1B: PD shown for all file types
+  const mh='300px';
+  let h=`<div style="max-height:${mh};overflow-y:auto;overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-size:12px;font-family:Inter,sans-serif"><thead><tr>`;
+  ['FILE','CURRENT LOCATION','AWB NUMBER','PRODUCT VALUE','PRODUCT DESCRIPTION'].forEach((hd,i)=>{
+    const al=i===0||i===1||i===2||i===4?'text-align:left':'text-align:center';
+    h+=`<th style="background:#0f2b25;color:#fff;padding:9px 13px;${al};font-weight:900;font-size:12px;white-space:nowrap;border-right:1px solid #1a5045;text-transform:uppercase">${hd}</th>`;
+  });
+  h+=`</tr></thead><tbody>`;
+  pvRows.slice(0,500).forEach((r,ri)=>{
+    const pv=parseFloat(r.pv)||0;
+    const bg=ri%2===0?'#fff':'#f3faf7';
+    h+=`<tr>
+      <td style="padding:8px 13px;text-align:left;border-bottom:1.5px solid #c8dfd9;border-right:1px solid #daeee9;background:${bg};font-weight:700;white-space:nowrap">${xe(TYPE_LABELS[r.fileType]||r.fileType||'?')}</td>
+      <td style="padding:8px 13px;text-align:left;border-bottom:1.5px solid #c8dfd9;border-right:1px solid #daeee9;background:${bg};font-weight:700;white-space:normal;word-break:break-word;min-width:120px">${xe(r.loc||'\u2013')}</td>
+      <td style="padding:8px 13px;text-align:left;border-bottom:1.5px solid #c8dfd9;border-right:1px solid #daeee9;background:${bg};font-family:var(--mono);font-size:11px;white-space:normal;word-break:break-all;min-width:130px">${xe(r.awb||'\u2013')}</td>
+      <td style="padding:8px 13px;text-align:center;border-bottom:1.5px solid #c8dfd9;border-right:1px solid #daeee9;background:${bg};font-weight:900">\u20b9${fn(Math.round(pv))}</td>
+      <td style="padding:8px 13px;text-align:left;border-bottom:1.5px solid #c8dfd9;border-right:1px solid #daeee9;background:${bg};white-space:normal;word-break:break-word;min-width:180px">${xe(r.pd||'\u2013')}</td>
+    </tr>`;
+  });
+  if(pvRows.length>500)h+=`<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:8px;font-style:italic">Showing 500 of ${fn(pvRows.length)}</td></tr>`;
+  h+=`</tbody></table></div>`;
+  wrap.innerHTML=h;
 }
 
 /* ── Per-file breakdown (separate per file, with donut + tables) ── */
