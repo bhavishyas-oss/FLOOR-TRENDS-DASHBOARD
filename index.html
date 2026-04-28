@@ -2082,7 +2082,14 @@ function pHovRev(row,date,agg){
   const ageRaw=gv(row,'ageing','Ageing');
   const age=Math.round(parseFloat(ageRaw)||0);
   if(age<2||age>15)return;
-  const loc=(gv(row,'current_location','Current_location','Current_Location','location','Location')||'UNKNOWN').toUpperCase();
+  // Reverse files may use different column names for location
+  const loc=(gv(row,
+    'current_location','Current_location','Current_Location','currentlocation',
+    'current location','Current Location',
+    'location','Location','loc','LOC',
+    'current_dc','Current_DC','dc_name','DC_Name',
+    'hub_name','Hub_Name','hub','Hub'
+  )||'UNKNOWN').toUpperCase();
   const pc=gv(row,'pc','PC','product category','Product Category','product_category','Product_Category')||'UNKNOWN';
   const awb=gv(row,'awb_number','Awb_number','AWB_NUMBER','DSP_Awb_number','dsp_awb_number','awb number','awb','AWB')||'';
   const pvRaw=gv(row,'product value','PRODUCT VALUE','product_value','Product_Value','Product Value','productvalue')||'';
@@ -2477,20 +2484,35 @@ function renderHovDonut(key,canvasId,labels,values,title){
           bodyFont:{size:11,family:'Inter'},
           callbacks:{label(c){return` ${c.label}: ${fn(c.parsed)} AWBs (${total?Math.round(c.parsed/total*100):0}%)`;}}
         },
-        // Data labels INSIDE each slice — centered, white bold, visible
+        // Data labels: inside for large slices (≥5%), outside for medium (2-5%), hidden below 2%
         datalabels:{
           display(ctx){
-            return ctx.dataset.data[ctx.dataIndex]/total>=0.04;
+            const pct=ctx.dataset.data[ctx.dataIndex]/total;
+            return pct>=0.02; // hide only <2% slices
           },
-          anchor:'center',
-          align:'center',
-          offset:0,
-          color:'#ffffff',
-          font:{size:10,weight:'800',family:'Inter'},
-          textStrokeColor:'rgba(0,0,0,0.55)',
-          textStrokeWidth:3,
-          formatter(v){
-            return v>=1000?(v/1000).toFixed(1)+'K':fn(v);
+          anchor(ctx){
+            return ctx.dataset.data[ctx.dataIndex]/total>=0.05?'center':'end';
+          },
+          align(ctx){
+            return ctx.dataset.data[ctx.dataIndex]/total>=0.05?'center':'end';
+          },
+          offset(ctx){
+            return ctx.dataset.data[ctx.dataIndex]/total>=0.05?0:8;
+          },
+          color(ctx){
+            return ctx.dataset.data[ctx.dataIndex]/total>=0.05?'#ffffff':'#0a2520';
+          },
+          font:{size:9,weight:'800',family:'Inter'},
+          textStrokeColor(ctx){
+            return ctx.dataset.data[ctx.dataIndex]/total>=0.05?'rgba(0,0,0,0.6)':'rgba(255,255,255,0.7)';
+          },
+          textStrokeWidth:2,
+          // Format: "LOCATION – count"
+          formatter(v,ctx){
+            const label=ctx.chart.data.labels[ctx.dataIndex];
+            // Abbreviate long location names
+            const short=label.replace(' DC','').replace('_LARGE','_L').slice(0,10);
+            return `${short} – ${v>=1000?(v/1000).toFixed(1)+'K':fn(v)}`;
           },
           clamp:true
         }
@@ -2572,19 +2594,20 @@ function renderHovPVTable(pcs){
       <div class="em">Only items with Product Value ≥ ₹5,000 are shown.<br>
         Extracted from HOV PD PC sheet (PRODUCT VALUE + PD columns)</div></div>`;return;
   }
-  let html=`<table class="tbl"><thead><tr>
-    <th style="text-align:left">AWB Number</th>
-    <th>Product Value</th>
-    <th style="text-align:left">Product Description</th>
-    <th style="text-align:left">Current Location</th>
+  // Column order: Current Location | AWB Number | Product Value | Product Description
+  let html=`<table class="tbl" style="table-layout:fixed;width:100%"><thead><tr>
+    <th style="text-align:left;width:18%;white-space:normal">Current Location</th>
+    <th style="text-align:left;width:22%;white-space:normal">AWB Number</th>
+    <th style="width:14%;white-space:normal">Product Value</th>
+    <th style="text-align:left;white-space:normal">Product Description</th>
   </tr></thead><tbody>`;
   pvRows.slice(0,500).forEach(r=>{
     const pv=parseFloat(r.pv)||0;
     html+=`<tr>
-      <td style="text-align:left;font-family:var(--mono)">${xe(r.awb||'–')}</td>
-      <td>₹${fn(Math.round(pv))}</td>
-      <td style="text-align:left">${xe(r.pd||'–')}</td>
-      <td style="text-align:left">${xe(r.loc||'–')}</td>
+      <td style="text-align:left;white-space:normal;word-break:break-word">${xe(r.loc||'–')}</td>
+      <td style="text-align:left;font-family:var(--mono);white-space:normal;word-break:break-all;font-size:11px">${xe(r.awb||'–')}</td>
+      <td style="white-space:normal">₹${fn(Math.round(pv))}</td>
+      <td style="text-align:left;white-space:normal;word-break:break-word">${xe(r.pd||'–')}</td>
     </tr>`;
   });
   if(pvRows.length>500)html+=`<tr><td colspan="4" style="text-align:center;color:#94a3b8;font-style:italic">Showing top 500 of ${fn(pvRows.length)}</td></tr>`;
@@ -2592,66 +2615,154 @@ function renderHovPVTable(pcs){
   wrap.innerHTML=html;
 }
 
-/* Per-file HOV Breakdown — Fix C: each uploaded file shown separately */
+/* Per-file HOV Breakdown — each uploaded file shown separately with donut + PV table */
 function renderHovPerFile(pcs){
   const wrap=document.getElementById('hovPerFileWrap');if(!wrap)return;
-  const all=(master.hov||[]).filter(r=>{
+  const allHov=(master.hov||[]).filter(r=>{
     if(r.age<2||r.age>15)return false;
     if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
     return true;
   });
-  if(!all.length){
+  if(!allHov.length){
     wrap.innerHTML=`<div class="empty" style="padding:16px"><div class="et">No HOV data</div></div>`;return;
   }
-  // Group by fileType+date (each combination = one uploaded file)
+
+  const TYPE_LABELS={forward:'📦 FORWARD FILE',reverse:'🔄 REVERSE FILE',lmodc:'🏪 LMODC FILE',forwardShort:'⚡ SHORT SHIP FILE'};
+  const TYPE_BADGE={forward:'#2563eb',reverse:'#dc2626',lmodc:'#059669',forwardShort:'#d97706'};
+
+  // Group hov records by fileType+date
   const fileGroups={};
-  all.forEach(r=>{
+  allHov.forEach(r=>{
     const key=`${r.fileType}|${r.date}`;
-    if(!fileGroups[key]){
-      fileGroups[key]={fileType:r.fileType,date:r.date,locs:{},total:0};
-    }
+    if(!fileGroups[key])fileGroups[key]={fileType:r.fileType,date:r.date,locs:{},total:0};
     const g=fileGroups[key];
     if(!g.locs[r.location])g.locs[r.location]={};
-    if(!g.locs[r.location][r.age])g.locs[r.location][r.age]=0;
-    g.locs[r.location][r.age]+=r.count;
+    g.locs[r.location][r.age]=(g.locs[r.location][r.age]||0)+r.count;
     g.total+=r.count;
   });
 
-  const TYPE_LABELS={forward:'Forward',reverse:'Reverse',lmodc:'LMODC',forwardShort:'Short Ship'};
-  const sortedKeys=Object.keys(fileGroups).sort();
+  // Group PV records by fileType+date
+  const pvByFile={};
+  (master.hovPV||[]).forEach(r=>{
+    const key=`${r.fileType}|${r.date}`;
+    if(!pvByFile[key])pvByFile[key]=[];
+    if((parseFloat(r.pv)||0)>=5000)pvByFile[key].push(r);
+  });
 
-  wrap.innerHTML=sortedKeys.map(key=>{
+  const sortedKeys=Object.keys(fileGroups).sort();
+  const canvasIds=[];
+
+  const sectionsHTML=sortedKeys.map((key,ki)=>{
     const g=fileGroups[key];
     const locs=Object.keys(g.locs).sort();
-    const label=`${TYPE_LABELS[g.fileType]||g.fileType} · ${g.date}`;
+    const label=`${TYPE_LABELS[g.fileType]||g.fileType.toUpperCase()} · ${g.date}`;
+    const color=TYPE_BADGE[g.fileType]||'#64748b';
+    const donutId=`hovPerDonut_${ki}`;
+    canvasIds.push({id:donutId,key,ki});
 
-    let html=`<div style="border:1px solid var(--bdr);border-radius:6px;overflow:hidden">
-      <div style="background:var(--navy2);color:#fff;padding:8px 14px;font-size:11px;font-weight:800;display:flex;justify-content:space-between">
-        <span>📁 ${xe(label)}</span>
-        <span style="color:var(--gold)">${fn(g.total)} AWBs</span>
-      </div>
-      <div style="overflow-x:auto;max-height:280px">
-      <table class="tbl"><thead><tr>
-        <th>Location</th>${HOV_AGES.map(a=>`<th>D${a}</th>`).join('')}<th>TOTAL</th>
-      </tr></thead><tbody>`;
+    // D2-D15 table
+    let tblHtml=`<div style="overflow-x:auto;max-height:240px">
+      <table class="tbl" style="table-layout:auto;white-space:normal">
+      <thead><tr><th style="white-space:normal">Location</th>${HOV_AGES.map(a=>`<th>D${a}</th>`).join('')}<th>TOTAL</th></tr></thead><tbody>`;
     locs.forEach(loc=>{
       const rowTotal=HOV_AGES.reduce((s,a)=>s+(g.locs[loc][a]||0),0);
-      html+=`<tr><td>${xe(loc)}</td>`;
+      tblHtml+=`<tr><td style="white-space:normal;word-break:break-word">${xe(loc)}</td>`;
       HOV_AGES.forEach((a,ai)=>{
         const v=g.locs[loc][a]||0;
         const prev=ai>0?g.locs[loc][HOV_AGES[ai-1]]||0:null;
         const cls=v===0?'czr':prev!==null&&v>prev?'cup':prev!==null&&v<prev?'cdn':'';
-        html+=`<td class="${cls}">${v===0?'–':fn(v)}</td>`;
+        tblHtml+=`<td class="${cls}">${v===0?'–':fn(v)}</td>`;
       });
-      html+=`<td style="font-weight:900">${fn(rowTotal)}</td></tr>`;
+      tblHtml+=`<td style="font-weight:900">${fn(rowTotal)}</td></tr>`;
     });
     const colTotals=HOV_AGES.map(a=>locs.reduce((s,l)=>s+(g.locs[l][a]||0),0));
-    html+=`</tbody><tfoot><tr><td>TOTAL</td>
-      ${colTotals.map(c=>`<td>${fn(c)}</td>`).join('')}
-      <td>${fn(g.total)}</td>
-    </tr></tfoot></table></div></div>`;
-    return html;
+    tblHtml+=`</tbody><tfoot><tr><td>TOTAL</td>${colTotals.map(c=>`<td>${fn(c)}</td>`).join('')}<td>${fn(g.total)}</td></tr></tfoot></table></div>`;
+
+    // PV table for this file
+    const pvRows=(pvByFile[key]||[]).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
+    let pvHtml=pvRows.length===0?`<div style="padding:10px;color:#94a3b8;font-size:12px">No items with PV ≥ ₹5,000 for this file</div>`:`
+      <div style="overflow-y:auto;max-height:220px">
+      <table class="tbl" style="table-layout:fixed;width:100%"><thead><tr>
+        <th style="text-align:left;width:18%;white-space:normal">Location</th>
+        <th style="text-align:left;width:22%;white-space:normal">AWB Number</th>
+        <th style="width:14%;white-space:normal">PV</th>
+        <th style="text-align:left;white-space:normal">Product Description</th>
+      </tr></thead><tbody>
+      ${pvRows.slice(0,200).map(r=>{
+        const pv=parseFloat(r.pv)||0;
+        return`<tr>
+          <td style="text-align:left;white-space:normal;word-break:break-word">${xe(r.loc||'–')}</td>
+          <td style="text-align:left;font-family:var(--mono);font-size:10px;white-space:normal;word-break:break-all">${xe(r.awb||'–')}</td>
+          <td style="white-space:normal">₹${fn(Math.round(pv))}</td>
+          <td style="text-align:left;white-space:normal;word-break:break-word">${xe(r.pd||'–')}</td>
+        </tr>`;
+      }).join('')}
+      </tbody></table></div>`;
+
+    return`<div style="border:2px solid ${color};border-radius:8px;overflow:hidden;margin-bottom:4px">
+      <div style="background:${color};color:#fff;padding:10px 16px;font-size:12px;font-weight:900;display:flex;justify-content:space-between;align-items:center">
+        <span>${xe(label)}</span>
+        <span style="background:rgba(255,255,255,.2);padding:2px 10px;border-radius:12px;font-size:11px">${fn(g.total)} AWBs</span>
+      </div>
+      <div style="display:grid;grid-template-columns:280px 1fr;gap:0;min-height:240px">
+        <div style="border-right:1px solid var(--bdr);padding:12px;background:#fafafa">
+          <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;margin-bottom:8px">AWB by Location</div>
+          <div style="height:200px;position:relative"><canvas id="${donutId}"></canvas></div>
+        </div>
+        <div style="padding:0">
+          <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;padding:10px 14px 6px">D2–D15 Tracking</div>
+          ${tblHtml}
+        </div>
+      </div>
+      <div style="border-top:1px solid var(--bdr)">
+        <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;padding:10px 14px 6px">Product Value (≥ ₹5,000)</div>
+        ${pvHtml}
+      </div>
+    </div>`;
   }).join('');
+
+  wrap.innerHTML=sectionsHTML;
+
+  // Render per-file donuts after DOM is ready
+  requestAnimationFrame(()=>{
+    canvasIds.forEach(({id,key,ki})=>{
+      const g=fileGroups[key];
+      const locs=Object.keys(g.locs).sort();
+      const vals=locs.map(l=>HOV_AGES.reduce((s,a)=>s+(g.locs[l][a]||0),0));
+      const total=vals.reduce((a,b)=>a+b,0);
+      if(!total)return;
+      const cv=document.getElementById(id);if(!cv)return;
+      if(_hovCharts[id])_hovCharts[id].destroy();
+      _hovCharts[id]=new Chart(cv,{
+        type:'doughnut',
+        data:{labels:locs,datasets:[{
+          data:vals,
+          backgroundColor:HOV_PALETTE.slice(0,locs.length),
+          borderWidth:2,borderColor:'#fff',hoverOffset:4
+        }]},
+        options:{
+          responsive:true,maintainAspectRatio:false,cutout:'40%',
+          layout:{padding:{top:4,bottom:4,left:4,right:4}},
+          plugins:{
+            title:{display:false},
+            legend:{display:false},
+            tooltip:{callbacks:{label(c){return` ${c.label}: ${fn(c.parsed)} (${total?Math.round(c.parsed/total*100):0}%)`;}}},
+            datalabels:{
+              display(ctx){return ctx.dataset.data[ctx.dataIndex]/total>=0.05;},
+              anchor:'center',align:'center',
+              color:'#fff',font:{size:8,weight:'800',family:'Inter'},
+              textStrokeColor:'rgba(0,0,0,0.5)',textStrokeWidth:2,
+              formatter(v,ctx){
+                const lbl=ctx.chart.data.labels[ctx.dataIndex];
+                const short=lbl.replace(' DC','').slice(0,8);
+                return`${short}\n${fn(v)}`;
+              }
+            }
+          }
+        }
+      });
+    });
+  });
 }
 
 /* ═══════════════════════════════════════════════
