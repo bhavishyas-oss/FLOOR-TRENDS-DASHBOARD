@@ -357,17 +357,10 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 </div>
 
 <div id="tabbar">
-  <button class="tab active" onclick="sw(0)"><span class="tn">1</span>D3 FWD R@DC</button>
-  <button class="tab" onclick="sw(1)"><span class="tn">2</span>D6 FWD R@DC</button>
-  <button class="tab" onclick="sw(2)"><span class="tn">3</span>BIN2 SUCCESS</button>
-  <button class="tab" onclick="sw(3)"><span class="tn">4</span>BIN1 SUCCESS</button>
-  <button class="tab" onclick="sw(4)"><span class="tn">5</span>D3 RVP R@DC</button>
-  <button class="tab" onclick="sw(5)"><span class="tn">6</span>D10 RVP R@DC</button>
-  <button class="tab" onclick="sw(6)"><span class="tn">7</span>D3 LMODC</button>
-  <button class="tab" onclick="sw(7)"><span class="tn">8</span>D6 LMODC</button>
-  <button class="tab" onclick="sw(8)"><span class="tn">9</span>D10 LMODC</button>
-  <button class="tab" onclick="sw(9)"><span class="tn">10</span>D3 DCH</button>
-  <button class="tab" onclick="sw(10)"><span class="tn">11</span>D6 DCH</button>
+  <button class="tab active" onclick="sw(0)"><span class="tn">1</span>FORWARD R@DC</button>
+  <button class="tab" onclick="sw(1)"><span class="tn">2</span>REVERSE R@DC</button>
+  <button class="tab" onclick="sw(2)"><span class="tn">3</span>LMODC</button>
+  <button class="tab" onclick="sw(3)"><span class="tn">4</span>DCH</button>
 </div>
 
 <div id="content"><div id="panels"></div></div>
@@ -478,25 +471,60 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 /* ═══════════════════════════════════════════════
    SECTION DEFINITIONS
 ═══════════════════════════════════════════════ */
+const SKEY='logistics_v37';
+
+/* ═══════════════════════════════════════════════
+   SECTION DEFINITIONS — 4 sections, filter state
+   drives age/bin/msg dynamically via dropdowns.
+═══════════════════════════════════════════════ */
 const SECS=[
-  {title:'D3 FWD R@DC TRENDS',    badge:'AGE=3 · PIVOT=R@DC',              src:'forward',      age:3               },
-  {title:'D6 FWD R@DC TRENDS',    badge:'AGE=6 · PIVOT=R@DC',              src:'forward',      age:6               },
-  {title:'D3 FWD R@DC BIN2 SUCCESS', badge:'AGE=3 · BIN=2 · MSG=SUCCESS · ORDER≠IN_MANIFEST',src:'forward',      age:3,bin:2,msg:'SUCCESS'},
-  {title:'D3 FWD R@DC BIN1 SUCCESS', badge:'AGE=3 · BIN=1 · MSG=SUCCESS · ORDER≠IN_MANIFEST',src:'forward',      age:3,bin:1,msg:'SUCCESS'},
-  {title:'D3 RVP R@DC',              badge:'AGE=3 · R@DC · CLIENT FILT.',     src:'reverse',      age:3               },
-  {title:'D10 RVP R@DC',             badge:'AGE=10 · R@DC · CLIENT FILT.',    src:'reverse',      age:10              },
-  {title:'D3 LMODC',              badge:'AGE=3 · DESTINATION PIVOT',        src:'lmodc',        age:3               },
-  {title:'D6 LMODC',              badge:'AGE=6 · DESTINATION PIVOT',        src:'lmodc',        age:6               },
-  {title:'D10 LMODC',             badge:'AGE=10 · DESTINATION PIVOT',       src:'lmodc',        age:10              },
-  {title:'D3 DCH',                badge:'AGE=3 · SHORT SHIPMENT',           src:'forwardShort', age:3               },
-  {title:'D6 DCH',                badge:'AGE=6 · SHORT SHIPMENT',           src:'forwardShort', age:6               },
+  {
+    title:'FORWARD R@DC',
+    badge:'PIVOT=R@DC',
+    src:'forward',
+    ageOpts:[3,6],
+    binOpts:[1,2],
+    msgOpts:['ALL','SUCCESS'],
+  },
+  {
+    title:'REVERSE R@DC',
+    badge:'R@DC · CLIENT FILTER',
+    src:'reverse',
+    ageOpts:[3,10],
+    binOpts:null,
+    msgOpts:null,
+  },
+  {
+    title:'LMODC',
+    badge:'DESTINATION PIVOT',
+    src:'lmodc',
+    ageOpts:[3,6,10],
+    binOpts:null,
+    msgOpts:null,
+  },
+  {
+    title:'DCH',
+    badge:'SHORT SHIPMENT',
+    src:'forwardShort',
+    ageOpts:[3,10],
+    binOpts:null,
+    msgOpts:null,
+  },
 ];
+
+/* Live filter state per section — updated when dropdowns change */
+const SEC_FILTERS=[
+  {age:3, bins:[], msgs:[]},   // FORWARD R@DC
+  {age:3, bins:[], msgs:[]},   // REVERSE R@DC
+  {age:3, bins:[], msgs:[]},   // LMODC
+  {age:3, bins:[], msgs:[]},   // DCH
+];
+
 const CPALS=['#2563eb','#dc2626','#16a34a','#d97706','#7c3aed','#0891b2','#be185d','#0e7490','#ca8a04'];
 
 /* ═══════════════════════════════════════════════
    STATE
 ═══════════════════════════════════════════════ */
-const SKEY='logistics_v36';
 let master=loadM(),activeTab=0,charts={},debugMode=false,dlog=[],pending={};
 
 function emptyM(){return{forward:[],reverse:[],lmodc:[],forwardShort:[],hov:[],hovPV:[]}}
@@ -1485,19 +1513,33 @@ async function runFiles(files){
    Age filter = strict equality (r.age === sec.age)
    fromPivot records skip bin/msg checks.
 ═══════════════════════════════════════════════ */
-function buildPivot(sec){
+function buildPivot(sec,idx){
   const all=master[sec.src]||[];
   const ck=sec.src==='lmodc'?'destination':'location';
+  const f=SEC_FILTERS[idx]||{age:sec.ageOpts?.[0]||3,bins:[],msgs:[]};
+
+  const age=f.age;
+  const bins=f.bins||[];      // empty = no bin filter (all bins)
+  const msgs=f.msgs||[];      // empty = no msg filter (all messages)
+
+  // Special rule (FORWARD R@DC):
+  // Age=6 AND (any BIN selected AND Message=SUCCESS) → return empty
+  const isForward=sec.src==='forward';
+  const hasBinFilter=bins.length>0;
+  const hasMsgSuccess=msgs.length>0&&msgs.every(m=>m==='SUCCESS');
+  if(isForward&&age===6&&hasBinFilter&&hasMsgSuccess){
+    return{locs:[],dates:[],grid:{},rowTotals:{},colTotals:{},empty:true,emptyReason:'Age 6 + Bin + Success filter returns no data per spec'};
+  }
 
   const filt=all.filter(r=>{
-    if(r.age!==sec.age)return false;
+    if(r.age!==age)return false;
     if(!r.fromPivot){
-      if(sec.bin!==undefined&&r.bin!==sec.bin)return false;
-      if(sec.msg!==undefined&&r.msg!==sec.msg)return false;
-      // BIN sections (sec.bin defined): exclude IN_MANIFEST order_status rows.
-      // r.os = normalized order_status stored by pFwd.
-      // D3/D6 FWD R@DC sections (sec.bin undefined) include ALL order statuses.
-      if(sec.bin!==undefined&&r.os==='IN_MANIFEST')return false;
+      // Bin filter (only for FORWARD)
+      if(isForward&&hasBinFilter&&!bins.includes(r.bin))return false;
+      // Message filter (only for FORWARD)
+      if(isForward&&msgs.length>0&&!msgs.includes(r.msg)&&!msgs.includes('ALL'))return false;
+      // When bin is filtered, exclude IN_MANIFEST
+      if(isForward&&hasBinFilter&&r.os==='IN_MANIFEST')return false;
     }
     return true;
   });
@@ -1507,7 +1549,6 @@ function buildPivot(sec){
   const dates=[...new Set(filt.map(r=>r.date))].sort();
   const locs=[...new Set(filt.map(r=>r[ck]))].sort();
 
-  // grid[loc][date] = count
   const grid={};
   locs.forEach(l=>{grid[l]={};});
   filt.forEach(r=>{
@@ -1552,20 +1593,27 @@ const valueLabelPlugin={
   }
 };
 
-function renderTrendChart(cid,sec){
+function renderTrendChart(cid,sec,idx){
   const cv=document.getElementById(cid);
   if(!cv)return;
   if(charts[cid]){charts[cid].destroy();delete charts[cid];}
 
-  // Build date-wise totals for this section's age bucket
+  // Use live filter state — idx may be undefined for backward-compat
+  const f=SEC_FILTERS[idx!==undefined?idx:0]||{age:sec.ageOpts?.[0]||3,bins:[],msgs:[]};
+  const liveAge=f.age;
+  const liveBins=f.bins||[];
+  const liveMsgs=f.msgs||[];
+  const isForward=sec.src==='forward';
+
+  // Build date-wise totals using live filters
   const all=master[sec.src]||[];
   const dateTotals={};
   all.forEach(r=>{
-    if(r.age!==sec.age)return;
-    if(!r.fromPivot){
-      if(sec.bin!==undefined&&r.bin!==sec.bin)return;
-      if(sec.msg!==undefined&&r.msg!==sec.msg)return;
-      if(sec.bin!==undefined&&r.msg==='IN_MANIFEST')return;
+    if(r.age!==liveAge)return;
+    if(!r.fromPivot&&isForward){
+      if(liveBins.length>0&&!liveBins.includes(r.bin))return;
+      if(liveMsgs.length>0&&!liveMsgs.includes(r.msg)&&!liveMsgs.includes('ALL'))return;
+      if(liveBins.length>0&&r.os==='IN_MANIFEST')return;
     }
     dateTotals[r.date]=(dateTotals[r.date]||0)+r.count;
   });
@@ -1577,13 +1625,13 @@ function renderTrendChart(cid,sec){
   const data=dates.map(d=>dateTotals[d]||0);
   const maxVal=Math.max(...data,0);
   const yMax=maxVal<=400?400:Math.ceil(maxVal*1.18/100)*100;
-  const titleText=`${sec.title} — Trends`;
+  const titleText=`${sec.title} — D${liveAge} Trends`;
 
   charts[cid]=new Chart(cv,{
     type:'bar',
     plugins:[ChartDataLabels],
     data:{labels,datasets:[{
-      label:`D${sec.age} Total Pendency`,
+      label:`D${liveAge} Total Pendency`,
       data,
       backgroundColor:'rgba(28,133,111,0.82)',
       borderColor:'#1C856F',
@@ -1788,13 +1836,71 @@ function populateDCDropdown(idx,piv){
 
 function onDCChange(idx,val){
   selDC[idx]=val;
-  const piv=buildPivot(SECS[idx]);
+  const piv=buildPivot(SECS[idx],idx);
   renderChart(`ch${idx}`,piv,idx);
 }
 
 /* ═══════════════════════════════════════════════
    PANELS
 ═══════════════════════════════════════════════ */
+/* Build the filter toolbar HTML for one section */
+function secFilterBar(s,i){
+  const f=SEC_FILTERS[i];
+  let html=`<div class="sec-filters" id="sf${i}" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 16px;background:var(--brand-xlt);border-bottom:1px solid var(--bdr)">`;
+
+  /* Age dropdown */
+  html+=`<label style="font-size:11px;font-weight:700;color:var(--tx2)">Age:</label>
+    <select class="dc-select" id="age${i}" onchange="onFilterChange(${i})" style="min-width:70px">
+      ${(s.ageOpts||[3]).map(a=>`<option value="${a}" ${f.age===a?'selected':''}>${a}</option>`).join('')}
+    </select>`;
+
+  /* Bin dropdown (FORWARD only) */
+  if(s.binOpts){
+    html+=`<label style="font-size:11px;font-weight:700;color:var(--tx2);margin-left:6px">Bin:</label>
+      <div style="position:relative;display:inline-block" id="binWrap${i}">
+        <div id="binTrig${i}" onclick="toggleMultiDrop('bin',${i})"
+          style="font-size:11px;padding:4px 22px 4px 8px;border-radius:5px;border:1px solid var(--bdr2);
+            background:var(--sur);color:var(--tx);min-width:90px;cursor:pointer;position:relative">
+          <span id="binLabel${i}">All</span>
+          <span style="position:absolute;right:5px;top:50%;transform:translateY(-50%);font-size:10px;color:#94a3b8">▾</span>
+        </div>
+        <div id="binDrop${i}" style="display:none;position:absolute;top:100%;left:0;background:#fff;
+          border:1px solid var(--bdr2);border-radius:5px;z-index:50;min-width:90px;box-shadow:0 4px 12px rgba(0,0,0,.12)">
+          ${[{v:'ALL',l:'All'},...s.binOpts.map(b=>({v:b,l:`Bin ${b}`}))].map(o=>`
+            <label style="display:flex;align-items:center;gap:6px;padding:5px 10px;cursor:pointer;font-size:11px">
+              <input type="checkbox" onchange="onMultiSelect('bin',${i})" value="${o.v}" ${o.v==='ALL'?'checked':''}
+                style="accent-color:var(--brand)"> ${o.l}
+            </label>`).join('')}
+        </div>
+      </div>`;
+  }
+
+  /* Message dropdown (FORWARD only) */
+  if(s.msgOpts){
+    html+=`<label style="font-size:11px;font-weight:700;color:var(--tx2);margin-left:6px">Message:</label>
+      <div style="position:relative;display:inline-block" id="msgWrap${i}">
+        <div id="msgTrig${i}" onclick="toggleMultiDrop('msg',${i})"
+          style="font-size:11px;padding:4px 22px 4px 8px;border-radius:5px;border:1px solid var(--bdr2);
+            background:var(--sur);color:var(--tx);min-width:100px;cursor:pointer;position:relative">
+          <span id="msgLabel${i}">All</span>
+          <span style="position:absolute;right:5px;top:50%;transform:translateY(-50%);font-size:10px;color:#94a3b8">▾</span>
+        </div>
+        <div id="msgDrop${i}" style="display:none;position:absolute;top:100%;left:0;background:#fff;
+          border:1px solid var(--bdr2);border-radius:5px;z-index:50;min-width:110px;box-shadow:0 4px 12px rgba(0,0,0,.12)">
+          ${[{v:'ALL',l:'All Messages'},...s.msgOpts.filter(m=>m!=='ALL').map(m=>({v:m,l:m}))].map(o=>`
+            <label style="display:flex;align-items:center;gap:6px;padding:5px 10px;cursor:pointer;font-size:11px">
+              <input type="checkbox" onchange="onMultiSelect('msg',${i})" value="${o.v}" ${o.v==='ALL'?'checked':''}
+                style="accent-color:var(--brand)"> ${o.l}
+            </label>`).join('')}
+        </div>
+      </div>`;
+  }
+
+  html+=`<span id="filterBadge${i}" style="font-size:10px;color:var(--brand);font-weight:700;margin-left:6px"></span>`;
+  html+=`</div>`;
+  return html;
+}
+
 function initPanels(){
   document.getElementById('panels').innerHTML=SECS.map((s,i)=>`
     <div class="panel ${i===0?'active':''}" id="pnl${i}">
@@ -1806,6 +1912,8 @@ function initPanels(){
             <button class="btn bg" onclick="downloadTableImage('tbl${i}','${s.title.replace(/[^\w]/g,'_')}_table.png')" style="font-size:10px;padding:4px 9px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download table as HD PNG">🖼 Table</button>
           </div>
         </div>
+
+        ${secFilterBar(s,i)}
 
         <!-- 1. Trend Bar Chart -->
         <div class="tarea">
@@ -1837,10 +1945,77 @@ function initPanels(){
     </div>`).join('');
 }
 
+/* Dropdown toggle for bin/msg multi-select */
+function toggleMultiDrop(type,i){
+  const el=document.getElementById(`${type}Drop${i}`);
+  if(!el)return;
+  const open=el.style.display==='block';
+  // Close all other dropdowns
+  document.querySelectorAll('[id^="binDrop"],[id^="msgDrop"]').forEach(d=>{d.style.display='none';});
+  el.style.display=open?'none':'block';
+}
+document.addEventListener('click',e=>{
+  if(!e.target.closest('[id^="binWrap"],[id^="msgWrap"],[id^="binTrig"],[id^="msgTrig"]')){
+    document.querySelectorAll('[id^="binDrop"],[id^="msgDrop"]').forEach(d=>{d.style.display='none';});
+  }
+});
+
+/* Handle multi-select checkbox changes */
+function onMultiSelect(type,i){
+  const drop=document.getElementById(`${type}Drop${i}`);if(!drop)return;
+  const boxes=[...drop.querySelectorAll('input[type=checkbox]')];
+  const allBox=boxes.find(b=>b.value==='ALL');
+  const valBoxes=boxes.filter(b=>b.value!=='ALL');
+
+  // If "All" was just ticked: uncheck all specific values
+  // If a specific value was ticked: uncheck "All"
+  if(allBox&&allBox.checked&&!valBoxes.every(b=>!b.checked)){
+    // Detect if All was just clicked by seeing if all valBoxes are unchecked
+  }
+  // Simpler: if any specific box is checked, uncheck ALL; if none specific, check ALL
+  const anySpecific=valBoxes.some(b=>b.checked);
+  if(allBox)allBox.checked=!anySpecific;
+
+  // Update filter state
+  const f=SEC_FILTERS[i];
+  if(type==='bin'){
+    f.bins=anySpecific?valBoxes.filter(b=>b.checked).map(b=>parseInt(b.value)):[];
+    const lbl=document.getElementById(`binLabel${i}`);
+    if(lbl)lbl.textContent=f.bins.length?f.bins.map(b=>`Bin ${b}`).join(', '):'All';
+  }else{
+    f.msgs=anySpecific?valBoxes.filter(b=>b.checked).map(b=>b.value):[];
+    const lbl=document.getElementById(`msgLabel${i}`);
+    if(lbl)lbl.textContent=f.msgs.length?f.msgs.join(', '):'All';
+  }
+  renderTab(i);
+}
+
+/* Handle age dropdown change */
+function onFilterChange(i){
+  const ageEl=document.getElementById(`age${i}`);
+  if(ageEl)SEC_FILTERS[i].age=parseInt(ageEl.value)||3;
+  renderTab(i);
+}
+
 function renderTab(idx){
-  const piv=buildPivot(SECS[idx]);
+  const piv=buildPivot(SECS[idx],idx);
+  const f=SEC_FILTERS[idx];
+  // Update badge
+  const parts=[`AGE=${f.age}`];
+  if(f.bins.length)parts.push(`BIN=${f.bins.join(',')}`);
+  if(f.msgs.length)parts.push(`MSG=${f.msgs.join(',')}`);
+  const badgeEl=document.getElementById(`filterBadge${idx}`);
+  if(badgeEl)badgeEl.textContent=parts.join(' · ');
+
+  if(piv.empty){
+    const tbl=document.getElementById(`tbl${idx}`);
+    if(tbl)tbl.innerHTML=`<div class="empty" style="padding:28px"><div class="ei">⚠️</div><div class="et">No data for this filter combination</div><div class="em">${piv.emptyReason||'Adjust Age / Bin / Message filters'}</div></div>`;
+    const cnt=document.getElementById(`cnt${idx}`);if(cnt)cnt.textContent='–';
+    return;
+  }
+
   const g=renderTable(document.getElementById(`tbl${idx}`),piv);
-  renderTrendChart(`tchrt${idx}`,SECS[idx]);
+  renderTrendChart(`tchrt${idx}`,SECS[idx],idx);
   populateDCDropdown(idx,piv);
   renderChart(`ch${idx}`,piv,idx);
   const el=document.getElementById(`cnt${idx}`);
@@ -2946,32 +3121,34 @@ function captureRaw(type,row,date){
 }
 
 /* Filter raw captured rows for one specific section */
-function filterRawForSection(sec){
+function filterRawForSection(sec,idx){
   const typeData=rawData[sec.src]||{};
+  const f=SEC_FILTERS[idx!==undefined?idx:0]||{age:sec.ageOpts?.[0]||3,bins:[],msgs:[]};
+  const liveAge=f.age;
+  const liveBins=f.bins||[];
+  const liveMsgs=f.msgs||[];
+  const isForward=sec.src==='forward';
   const out=[];
+
   for(const [date,rows] of Object.entries(typeData)){
     for(const row of rows){
-      // Age must match section exactly
       let age=0;
       if(sec.src==='lmodc'){age=Math.round(parseLMODCAge(gv(row,'ageing','Ageing')));}
       else if(sec.src==='reverse'){age=Math.round(parseFloat(gv(row,'ageing','Ageing'))||0);}
       else{age=Math.round(gn(row,
         'ageing_from_bag_rec','Ageing_from_Bag_Rec','Ageing_From_Bag_Rec',
         'ageing_from_bag_recc','Ageing_from_bag_recc','ageing','Ageing'));}
-      if(age!==sec.age)continue;
+      if(age!==liveAge)continue;
 
-      // Bin filter (BIN1/BIN2 sections)
-      if(sec.bin!==undefined){
-        const bin=parseInt(gv(row,'bin_level','bin level','Bin_Level','Bin_level')||'0',10)||0;
-        if(bin!==sec.bin)continue;
-      }
-      // Message filter (SUCCESS sections)
-      if(sec.msg!==undefined){
-        if(nv(gv(row,'message','Message'))!==sec.msg)continue;
-      }
-      // Order status: exclude IN_MANIFEST for BIN sections
-      if(sec.bin!==undefined){
-        if(nv(gv(row,'order_status','Order_status','order status'))==='IN_MANIFEST')continue;
+      if(isForward){
+        if(liveBins.length>0){
+          const bin=parseInt(gv(row,'bin_level','bin level','Bin_Level','Bin_level')||'0',10)||0;
+          if(!liveBins.includes(bin))continue;
+          if(nv(gv(row,'order_status','Order_status','order status'))==='IN_MANIFEST')continue;
+        }
+        if(liveMsgs.length>0&&!liveMsgs.includes('ALL')){
+          if(!liveMsgs.includes(nv(gv(row,'message','Message'))))continue;
+        }
       }
 
       out.push({_date:date,...row});
@@ -2981,12 +3158,10 @@ function filterRawForSection(sec){
   return out;
 }
 
-/* SECTION EXCEL REPORT
-   PRIMARY  : rawData in-memory cache → exact source columns (Date + all 100+ original cols)
-   FALLBACK : page was reloaded → rawData cleared → honest message, no misleading data    */
+/* SECTION EXCEL REPORT — uses live filter state */
 function downloadSectionReport(idx){
   const sec=SECS[idx];
-  const rawRows=filterRawForSection(sec);
+  const rawRows=filterRawForSection(sec,idx);
 
   /* ── PRIMARY: full source-column report ─────────────────────────────────────────
      rawRows come from captureRaw() which stores the full buildRows() row object.
@@ -3035,7 +3210,7 @@ function downloadSectionReport(idx){
      The master store only has aggregated fields (location, age, count…),
      NOT the original AWB-level source columns.
      Correct workflow: keep the page open after upload, then click ⬇ Report.     */
-  const piv=buildPivot(sec);
+  const piv=buildPivot(sec,idx);
   if(!piv.locs.length){
     toast('No data — upload the matching file and click ⬇ Report WITHOUT reloading the page','tw');
     return;
@@ -3404,7 +3579,7 @@ async function runSheetsPush(results){
     const sheetName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().slice(0,31);
 
     /* PRIMARY: full row-level data from rawData cache */
-    const rawRows=filterRawForSection(sec);
+    const rawRows=filterRawForSection(sec,i);
 
     if(rawRows.length>0){
       const colSet=new Set();
@@ -3431,7 +3606,7 @@ async function runSheetsPush(results){
       }
     }else{
       /* FALLBACK: rawData empty — send aggregated pivot counts */
-      const piv=buildPivot(sec);
+      const piv=buildPivot(sec,i);
       if(!piv.locs.length)continue;
       const headers=['Date','Location','Count'];
       for(const date of piv.dates){
