@@ -458,14 +458,14 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 
     <!-- 4. Product Value Table -->
     <div class="card">
-      <div class="chead"><span class="ct">Product Value — AWB List</span><span class="cbg">SORTED: HIGHEST VALUE FIRST</span></div>
+      <div class="chead"><span class="ct">Product Value — AWB List</span><span class="cbg">PV ≥ ₹5,000 · SORTED HIGHEST FIRST</span></div>
       <div id="hovPVWrap" style="max-height:320px;overflow-y:auto"></div>
     </div>
 
-    <!-- 5. Age-wise Trends Table -->
+    <!-- 5. Per-file D2-D15 Breakdown -->
     <div class="card">
-      <div class="chead"><span class="ct">Age-wise Trends</span><span class="cbg">D2 → D15 TOTALS</span></div>
-      <div id="hovAgeTrendsWrap" style="overflow-x:auto;max-height:320px;overflow-y:auto"></div>
+      <div class="chead"><span class="ct">Per-File HOV Breakdown</span><span class="cbg">EACH FILE SHOWN SEPARATELY</span></div>
+      <div id="hovPerFileWrap" style="padding:12px;display:flex;flex-direction:column;gap:14px"></div>
     </div>
 
   </div>
@@ -2059,14 +2059,14 @@ function pHovFwd(row,date,agg){
   if(age<2||age>15)return;
   const loc=(gv(row,'current_location','Current_location','Current_Location','location','Location')||'UNKNOWN').toUpperCase();
   const pc=gv(row,'pc','PC','product category','Product Category','product_category','Product_Category')||'UNKNOWN';
-  // Capture product value row (col F in Forward HOV PD PC = "PRODUCT VALUE")
   const awb=gv(row,'awb_number','Awb_number','AWB_NUMBER','awb number','awb','AWB')||'';
   const pvRaw=gv(row,'product value','PRODUCT VALUE','product_value','Product_Value','Product Value','productvalue')||'';
   const pv=parseFloat(String(pvRaw).replace(/[₹,\s]/g,''))||0;
+  // PD = Product Description column
+  const pd=gv(row,'pd','PD','product description','Product Description','product_description','Product_Description','productdescription')||'';
   if(awb){
-    // Store PV in a temp array on agg (we collect in applyHovRows)
     if(!agg.__pv)agg.__pv=[];
-    agg.__pv.push({awb,pv,loc,pc,date});
+    agg.__pv.push({awb,pv,pd,loc,pc,date,fileType:'forward'});
   }
   const k=`${age}|${loc}|${pc}`;
   if(!agg[k])agg[k]={date,age,location:loc,pc,fileType:'forward',count:0};
@@ -2074,25 +2074,23 @@ function pHovFwd(row,date,agg){
 }
 
 function pHovRev(row,date,agg){
-  // X-RAY REMARKS: exclude rows where value is "original" (case-insensitive)
   const xray=String(gv(row,
     'x-ray remarks','X-RAY REMARKS','X_RAY_REMARKS','xray remarks',
     'xray_remarks','XRAY_REMARKS','xray','XRAY','X Ray Remarks',
     'X-Ray Remarks','x ray remarks')||'').trim().toLowerCase();
   if(xray==='original')return;
-  // Age from Ageing column (numeric) — same as pRev
   const ageRaw=gv(row,'ageing','Ageing');
   const age=Math.round(parseFloat(ageRaw)||0);
   if(age<2||age>15)return;
   const loc=(gv(row,'current_location','Current_location','Current_Location','location','Location')||'UNKNOWN').toUpperCase();
   const pc=gv(row,'pc','PC','product category','Product Category','product_category','Product_Category')||'UNKNOWN';
-  // Capture product value row (col E in Reverse HOV PD PC = "PRODUCT VALUE")
   const awb=gv(row,'awb_number','Awb_number','AWB_NUMBER','DSP_Awb_number','dsp_awb_number','awb number','awb','AWB')||'';
   const pvRaw=gv(row,'product value','PRODUCT VALUE','product_value','Product_Value','Product Value','productvalue')||'';
   const pv=parseFloat(String(pvRaw).replace(/[₹,\s]/g,''))||0;
+  const pd=gv(row,'pd','PD','product description','Product Description','product_description','Product_Description','productdescription')||'';
   if(awb){
     if(!agg.__pv)agg.__pv=[];
-    agg.__pv.push({awb,pv,loc,pc,date});
+    agg.__pv.push({awb,pv,pd,loc,pc,date,fileType:'reverse'});
   }
   const k=`${age}|${loc}|${pc}`;
   if(!agg[k])agg[k]={date,age,location:loc,pc,fileType:'reverse',count:0};
@@ -2479,22 +2477,21 @@ function renderHovDonut(key,canvasId,labels,values,title){
           bodyFont:{size:11,family:'Inter'},
           callbacks:{label(c){return` ${c.label}: ${fn(c.parsed)} AWBs (${total?Math.round(c.parsed/total*100):0}%)`;}}
         },
-        // Outside arc labels — bold value above each slice, matching reference image
+        // Data labels INSIDE each slice — centered, white bold, visible
         datalabels:{
           display(ctx){
-            // Only label slices that are ≥3% so small ones stay clean
-            return ctx.dataset.data[ctx.dataIndex]/total>=0.03;
+            return ctx.dataset.data[ctx.dataIndex]/total>=0.04;
           },
-          anchor:'end',
-          align:'end',
-          offset:6,
-          color:'#0a2520',
-          font:{size:9,weight:'800',family:'Inter'},
-          // Show value in K format for large numbers
+          anchor:'center',
+          align:'center',
+          offset:0,
+          color:'#ffffff',
+          font:{size:10,weight:'800',family:'Inter'},
+          textStrokeColor:'rgba(0,0,0,0.55)',
+          textStrokeWidth:3,
           formatter(v){
             return v>=1000?(v/1000).toFixed(1)+'K':fn(v);
           },
-          // Clamp label inside canvas
           clamp:true
         }
       }
@@ -2553,31 +2550,32 @@ function renderHovTab(){
     }
   }
 
-  // 4. Product Value Table
+  // 4. Product Value Table (with PD column)
   renderHovPVTable(pcs);
-
-  // 5. Age-wise Trends
-  renderHovAgeTrends(pcs);
+  // 5. Per-file breakdown
+  renderHovPerFile(pcs);
+  // NOTE: Age-wise Trends table removed per requirements
 }
 
-/* Product Value Table */
+/* Product Value Table — AWB | Product Value | Product Description | Location */
 function renderHovPVTable(pcs){
   const wrap=document.getElementById('hovPVWrap');if(!wrap)return;
   const pvRows=(master.hovPV||[])
     .filter(r=>{
       if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
-      return(parseFloat(r.pv)||0)>=5000; // show only Product Value ≥ ₹5,000
+      return(parseFloat(r.pv)||0)>=5000;
     })
     .sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
   if(!pvRows.length){
     wrap.innerHTML=`<div class="empty" style="padding:24px">
       <div class="et">No product value data ≥ ₹5,000</div>
       <div class="em">Only items with Product Value ≥ ₹5,000 are shown.<br>
-        Extracted from HOV PD PC sheet (PRODUCT VALUE column)</div></div>`;return;
+        Extracted from HOV PD PC sheet (PRODUCT VALUE + PD columns)</div></div>`;return;
   }
   let html=`<table class="tbl"><thead><tr>
     <th style="text-align:left">AWB Number</th>
     <th>Product Value</th>
+    <th style="text-align:left">Product Description</th>
     <th style="text-align:left">Current Location</th>
   </tr></thead><tbody>`;
   pvRows.slice(0,500).forEach(r=>{
@@ -2585,47 +2583,75 @@ function renderHovPVTable(pcs){
     html+=`<tr>
       <td style="text-align:left;font-family:var(--mono)">${xe(r.awb||'–')}</td>
       <td>₹${fn(Math.round(pv))}</td>
+      <td style="text-align:left">${xe(r.pd||'–')}</td>
       <td style="text-align:left">${xe(r.loc||'–')}</td>
     </tr>`;
   });
-  if(pvRows.length>500)html+=`<tr><td colspan="3" style="text-align:center;color:#94a3b8;font-style:italic">Showing top 500 of ${fn(pvRows.length)}</td></tr>`;
+  if(pvRows.length>500)html+=`<tr><td colspan="4" style="text-align:center;color:#94a3b8;font-style:italic">Showing top 500 of ${fn(pvRows.length)}</td></tr>`;
   html+=`</tbody></table>`;
   wrap.innerHTML=html;
 }
 
-/* Age-wise Trends Table */
-function renderHovAgeTrends(pcs){
-  const wrap=document.getElementById('hovAgeTrendsWrap');if(!wrap)return;
+/* Per-file HOV Breakdown — Fix C: each uploaded file shown separately */
+function renderHovPerFile(pcs){
+  const wrap=document.getElementById('hovPerFileWrap');if(!wrap)return;
   const all=(master.hov||[]).filter(r=>{
     if(r.age<2||r.age>15)return false;
     if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
     return true;
   });
-  if(!all.length){wrap.innerHTML=`<div class="empty" style="padding:24px"><div class="et">No HOV data</div></div>`;return;}
-  const dates=[...new Set(all.map(r=>r.date))].sort();
-  const ageGrid={},ageTotals={},dateTotals={};
-  dates.forEach(d=>{ageGrid[d]={};HOV_AGES.forEach(a=>{ageGrid[d][a]=0;});dateTotals[d]=0;});
-  HOV_AGES.forEach(a=>{ageTotals[a]=0;});
+  if(!all.length){
+    wrap.innerHTML=`<div class="empty" style="padding:16px"><div class="et">No HOV data</div></div>`;return;
+  }
+  // Group by fileType+date (each combination = one uploaded file)
+  const fileGroups={};
   all.forEach(r=>{
-    if(!ageGrid[r.date])ageGrid[r.date]={};
-    ageGrid[r.date][r.age]=(ageGrid[r.date][r.age]||0)+r.count;
-    ageTotals[r.age]=(ageTotals[r.age]||0)+r.count;
-    dateTotals[r.date]=(dateTotals[r.date]||0)+r.count;
+    const key=`${r.fileType}|${r.date}`;
+    if(!fileGroups[key]){
+      fileGroups[key]={fileType:r.fileType,date:r.date,locs:{},total:0};
+    }
+    const g=fileGroups[key];
+    if(!g.locs[r.location])g.locs[r.location]={};
+    if(!g.locs[r.location][r.age])g.locs[r.location][r.age]=0;
+    g.locs[r.location][r.age]+=r.count;
+    g.total+=r.count;
   });
-  let html=`<table class="tbl"><thead><tr>
-    <th style="text-align:left;min-width:120px">Date</th>
-    ${HOV_AGES.map(a=>`<th>D${a}</th>`).join('')}<th>TOTAL</th>
-  </tr></thead><tbody>`;
-  dates.forEach(d=>{
-    html+=`<tr><td style="text-align:left;font-family:var(--mono)">${d}</td>`;
-    HOV_AGES.forEach(a=>{const v=ageGrid[d][a]||0;html+=`<td class="${v===0?'czr':''}">${v===0?'–':fn(v)}</td>`;});
-    html+=`<td style="font-weight:900">${fn(dateTotals[d]||0)}</td></tr>`;
-  });
-  html+=`</tbody><tfoot><tr><td style="text-align:left">TOTAL</td>
-    ${HOV_AGES.map(a=>`<td>${fn(ageTotals[a]||0)}</td>`).join('')}
-    <td>${fn(all.reduce((s,r)=>s+r.count,0))}</td>
-  </tr></tfoot></table>`;
-  wrap.innerHTML=html;
+
+  const TYPE_LABELS={forward:'Forward',reverse:'Reverse',lmodc:'LMODC',forwardShort:'Short Ship'};
+  const sortedKeys=Object.keys(fileGroups).sort();
+
+  wrap.innerHTML=sortedKeys.map(key=>{
+    const g=fileGroups[key];
+    const locs=Object.keys(g.locs).sort();
+    const label=`${TYPE_LABELS[g.fileType]||g.fileType} · ${g.date}`;
+
+    let html=`<div style="border:1px solid var(--bdr);border-radius:6px;overflow:hidden">
+      <div style="background:var(--navy2);color:#fff;padding:8px 14px;font-size:11px;font-weight:800;display:flex;justify-content:space-between">
+        <span>📁 ${xe(label)}</span>
+        <span style="color:var(--gold)">${fn(g.total)} AWBs</span>
+      </div>
+      <div style="overflow-x:auto;max-height:280px">
+      <table class="tbl"><thead><tr>
+        <th>Location</th>${HOV_AGES.map(a=>`<th>D${a}</th>`).join('')}<th>TOTAL</th>
+      </tr></thead><tbody>`;
+    locs.forEach(loc=>{
+      const rowTotal=HOV_AGES.reduce((s,a)=>s+(g.locs[loc][a]||0),0);
+      html+=`<tr><td>${xe(loc)}</td>`;
+      HOV_AGES.forEach((a,ai)=>{
+        const v=g.locs[loc][a]||0;
+        const prev=ai>0?g.locs[loc][HOV_AGES[ai-1]]||0:null;
+        const cls=v===0?'czr':prev!==null&&v>prev?'cup':prev!==null&&v<prev?'cdn':'';
+        html+=`<td class="${cls}">${v===0?'–':fn(v)}</td>`;
+      });
+      html+=`<td style="font-weight:900">${fn(rowTotal)}</td></tr>`;
+    });
+    const colTotals=HOV_AGES.map(a=>locs.reduce((s,l)=>s+(g.locs[l][a]||0),0));
+    html+=`</tbody><tfoot><tr><td>TOTAL</td>
+      ${colTotals.map(c=>`<td>${fn(c)}</td>`).join('')}
+      <td>${fn(g.total)}</td>
+    </tr></tfoot></table></div></div>`;
+    return html;
+  }).join('');
 }
 
 /* ═══════════════════════════════════════════════
@@ -3177,31 +3203,40 @@ function buildResponse(body) {
 }
 
 /* ── POST one section/date batch to the deployed web app ── */
-/* ── Push one batch (≤200 rows) to Sheets ─────────────────────────────
-   Large payloads silently fail: Apps Script POST limit ~6MB.
-   With 100+ source columns × many rows, a single push can easily exceed
-   this. Chunking guarantees every row actually reaches the sheet.         */
+/* ── Push one batch (≤200 rows, ≤50 cols) to Sheets ───────────────────
+   Apps Script setValues() silently fails when:
+   - The payload JSON exceeds ~6MB (100+ cols × many rows)
+   - Any cell value is null/undefined (causes a type error on the server)
+   - Column count exceeds sheet's allocated columns
+   Fix: cap at 50 cols max, stringify everything, chunk rows.              */
 async function pushSectionDate(sheetName,headers,rows,date){
   const url=getGsUrl();
   if(!url||!rows.length)return false;
-  const CHUNK=200; // safe chunk size: ~100 cols × 200 rows ≈ 200KB per request
+
+  // Cap to 50 columns — Apps Script setValues() becomes unreliable with many cols
+  const MAX_COLS=50;
+  const h=headers.slice(0,MAX_COLS);
+  const safeRows=rows.map(r=>r.slice(0,MAX_COLS).map(v=>
+    (v===null||v===undefined)?'':String(v)
+  ));
+
+  const CHUNK=200;
   let allOk=true;
-  for(let i=0;i<rows.length;i+=CHUNK){
-    const chunk=rows.slice(i,i+CHUNK);
+  for(let i=0;i<safeRows.length;i+=CHUNK){
+    const chunk=safeRows.slice(i,i+CHUNK);
     try{
       await fetch(url,{
         method:'POST',
         mode:'no-cors',
         headers:{'Content-Type':'application/json'},
-        // Only send date for the FIRST chunk — deduplication runs once per date
-        body:JSON.stringify({sheet:sheetName,headers,rows:chunk,date:i===0?date:''})
+        body:JSON.stringify({sheet:sheetName,headers:h,rows:chunk,date:i===0?date:''})
       });
     }catch(err){
       console.warn('Sheets push error:',sheetName,'chunk',i,err.message);
       allOk=false;
     }
-    if(rows.length>CHUNK&&i+CHUNK<rows.length){
-      await new Promise(r=>setTimeout(r,80)); // yield between chunks
+    if(safeRows.length>CHUNK&&i+CHUNK<safeRows.length){
+      await new Promise(r=>setTimeout(r,80));
     }
   }
   return allOk;
