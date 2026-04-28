@@ -2439,7 +2439,10 @@ function downloadHovTableImage(){
   toast('🖼 Full HOV table downloaded as PNG','tok');
 }
 
-/* Donut chart helper */
+/* Donut chart helper
+   Draws "Name – Count" labels INSIDE every slice ≥3% of total.
+   Uses a custom afterDatasetsDraw plugin so labels always render
+   regardless of whether chartjs-plugin-datalabels is loaded.           */
 function renderHovDonut(key,canvasId,labels,values,title){
   const cv=document.getElementById(canvasId);if(!cv)return;
   if(_hovCharts[key]){_hovCharts[key].destroy();_hovCharts[key]=null;}
@@ -2449,19 +2452,75 @@ function renderHovDonut(key,canvasId,labels,values,title){
     ctx.fillText('No data — upload HOV files',cv.width/2,cv.height/2);return;
   }
   const total=values.reduce((a,b)=>a+b,0);
+
+  /* Custom plugin: draws text at the centroid of each arc segment */
+  const insideLabelPlugin={
+    id:'hovInsideLabel_'+key,
+    afterDatasetsDraw(chart){
+      const {ctx,data}=chart;
+      const ds=chart.getDatasetMeta(0);
+      if(!ds||!ds.data)return;
+      ds.data.forEach((arc,i)=>{
+        const val=data.datasets[0].data[i];
+        const pct=val/total;
+        if(pct<0.03)return; // skip slices too small to label
+
+        // Midpoint angle and radius for centroid
+        const startAngle=arc.startAngle;
+        const endAngle=arc.endAngle;
+        const midAngle=(startAngle+endAngle)/2;
+        // Place text at 65% of the way between inner and outer radius
+        const outerR=arc.outerRadius;
+        const innerR=arc.innerRadius;
+        const r=innerR+(outerR-innerR)*0.62;
+        const x=arc.x+Math.cos(midAngle)*r;
+        const y=arc.y+Math.sin(midAngle)*r;
+
+        // Label text: abbreviated name + count
+        const rawLabel=data.labels[i]||'';
+        const short=rawLabel.replace(/ DC$/i,'').replace(/_LARGE$/i,'_L').slice(0,9);
+        const countStr=val>=1000?(val/1000).toFixed(1)+'K':String(val);
+        const line1=short;
+        const line2=countStr;
+        const fontSize=pct>=0.08?11:pct>=0.05?10:9;
+
+        ctx.save();
+        ctx.textAlign='center';
+        ctx.textBaseline='middle';
+
+        // Shadow/stroke for readability on any colour
+        ctx.shadowColor='rgba(0,0,0,0.55)';
+        ctx.shadowBlur=3;
+        ctx.fillStyle='#ffffff';
+        ctx.font=`800 ${fontSize}px Inter,sans-serif`;
+
+        if(pct>=0.07){
+          // Two lines: name on top, count below
+          ctx.fillText(line1,x,y-fontSize*0.6);
+          ctx.fillText(line2,x,y+fontSize*0.7);
+        }else{
+          // Single line: "Name – count"
+          ctx.font=`800 ${Math.max(7,fontSize-1)}px Inter,sans-serif`;
+          ctx.fillText(`${line1}–${line2}`,x,y);
+        }
+        ctx.restore();
+      });
+    }
+  };
+
   _hovCharts[key]=new Chart(cv,{
     type:'doughnut',
+    plugins:[insideLabelPlugin],
     data:{labels,datasets:[{
       data:values,
       backgroundColor:HOV_PALETTE.slice(0,labels.length),
-      borderWidth:2,borderColor:'#fff',hoverOffset:6
+      borderWidth:2,borderColor:'#fff',hoverOffset:8
     }]},
     options:{
       responsive:true,
       maintainAspectRatio:false,
-      cutout:'42%',
-      // Extra padding so outside labels don't clip at canvas edge
-      layout:{padding:{top:30,bottom:30,left:60,right:60}},
+      cutout:'35%',        // wider ring = more space for text inside each slice
+      layout:{padding:4},  // minimal padding — labels are inside the ring
       plugins:{
         title:{display:false},
         legend:{
@@ -2484,38 +2543,8 @@ function renderHovDonut(key,canvasId,labels,values,title){
           bodyFont:{size:11,family:'Inter'},
           callbacks:{label(c){return` ${c.label}: ${fn(c.parsed)} AWBs (${total?Math.round(c.parsed/total*100):0}%)`;}}
         },
-        // Data labels: inside for large slices (≥5%), outside for medium (2-5%), hidden below 2%
-        datalabels:{
-          display(ctx){
-            const pct=ctx.dataset.data[ctx.dataIndex]/total;
-            return pct>=0.02; // hide only <2% slices
-          },
-          anchor(ctx){
-            return ctx.dataset.data[ctx.dataIndex]/total>=0.05?'center':'end';
-          },
-          align(ctx){
-            return ctx.dataset.data[ctx.dataIndex]/total>=0.05?'center':'end';
-          },
-          offset(ctx){
-            return ctx.dataset.data[ctx.dataIndex]/total>=0.05?0:8;
-          },
-          color(ctx){
-            return ctx.dataset.data[ctx.dataIndex]/total>=0.05?'#ffffff':'#0a2520';
-          },
-          font:{size:9,weight:'800',family:'Inter'},
-          textStrokeColor(ctx){
-            return ctx.dataset.data[ctx.dataIndex]/total>=0.05?'rgba(0,0,0,0.6)':'rgba(255,255,255,0.7)';
-          },
-          textStrokeWidth:2,
-          // Format: "LOCATION – count"
-          formatter(v,ctx){
-            const label=ctx.chart.data.labels[ctx.dataIndex];
-            // Abbreviate long location names
-            const short=label.replace(' DC','').replace('_LARGE','_L').slice(0,10);
-            return `${short} – ${v>=1000?(v/1000).toFixed(1)+'K':fn(v)}`;
-          },
-          clamp:true
-        }
+        // Disable the external datalabels plugin so it doesn't interfere
+        datalabels:{display:false}
       }
     }
   });
