@@ -386,78 +386,120 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
     <div class="ptrk"><div class="pbar" id="hovPbar" style="width:0"></div></div>
   </div>
 
-  <div style="padding:18px;display:flex;flex-direction:column;gap:18px">
+  <div style="padding:14px;display:flex;flex-direction:column;gap:14px">
 
-    <!-- ROW 1: Donut – AWB by Site + Donut – PC filtered -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+    <!-- GLOBAL FILTER BAR -->
+    <div class="card">
+      <div style="padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border-radius:var(--r)">
+        <span style="font-size:11px;font-weight:800;color:var(--brand);text-transform:uppercase;letter-spacing:.5px">🔍 Filters</span>
 
-      <!-- 1. Donut: AWB Count by Site -->
-      <div class="card">
-        <div class="chead"><span class="ct">AWB Count by Site</span><span class="cbg">ALL CATEGORIES</span></div>
-        <div style="padding:12px;height:300px;position:relative">
-          <canvas id="hovDonut1"></canvas>
-        </div>
-      </div>
-
-      <!-- 2. Donut: AWB by Site + PC multi-select -->
-      <div class="card">
-        <div class="chead" style="flex-wrap:wrap;gap:8px">
-          <span class="ct">AWB by Site — PC Filter</span>
-          <!-- Multi-select PC dropdown -->
-          <div id="hovPCwrap" style="position:relative;display:inline-block">
-            <div id="hovPCtrigger" onclick="toggleHovPCDrop()"
-              style="font-size:11px;padding:5px 28px 5px 9px;border-radius:5px;border:1px solid var(--bdr2);
-                background:var(--sur);color:var(--tx);font-family:var(--sans);min-width:180px;
-                cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-                max-width:260px;position:relative">
-              <span id="hovPCtriggerLabel">All Categories</span>
-              <span style="position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:11px;color:#94a3b8">▾</span>
+        <!-- PC multi-select -->
+        <div style="position:relative;display:inline-block" id="hovPCwrap">
+          <div id="hovPCtrigger" onclick="toggleHovPCDrop()"
+            style="font-size:11px;padding:5px 24px 5px 9px;border-radius:5px;border:1px solid var(--bdr2);
+              background:#fff;color:var(--tx);min-width:180px;cursor:pointer;position:relative;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+            <span id="hovPCtriggerLabel">All Categories</span>
+            <span style="position:absolute;right:6px;top:50%;transform:translateY(-50%);color:#94a3b8">▾</span>
+          </div>
+          <div id="hovPCdrop" style="display:none;position:absolute;top:100%;left:0;width:260px;
+            max-height:240px;background:#fff;border:1px solid var(--bdr2);border-radius:6px;
+            box-shadow:0 4px 16px rgba(0,0,0,.18);z-index:300;margin-top:2px;flex-direction:column">
+            <div style="padding:5px 8px;border-bottom:1px solid var(--bdr)">
+              <input id="hovPCsearch" type="text" placeholder="Search category…"
+                style="width:100%;font-size:11px;padding:4px 8px;border-radius:4px;border:1px solid var(--bdr2);outline:none"
+                oninput="filterHovPCList(this.value)">
             </div>
-            <div id="hovPCdrop" style="display:none;position:absolute;top:100%;left:0;min-width:100%;width:260px;
-              max-height:240px;background:#fff;border:1px solid var(--bdr2);
-              border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.18);z-index:300;margin-top:2px;
-              flex-direction:column">
-              <div style="padding:5px 8px;border-bottom:1px solid var(--bdr)">
-                <input id="hovPCsearch" type="text" placeholder="Search…"
-                  style="width:100%;font-size:11px;padding:4px 8px;border-radius:4px;
-                    border:1px solid var(--bdr2);font-family:var(--sans);outline:none"
-                  oninput="filterHovPCList(this.value)">
-              </div>
-              <div style="padding:3px 8px;border-bottom:1px solid var(--bdr);display:flex;gap:8px">
-                <button onclick="hovSelectAll()" style="font-size:10px;cursor:pointer;border:none;background:none;color:var(--brand);font-weight:700">Select All</button>
-                <button onclick="hovClearAll()" style="font-size:10px;cursor:pointer;border:none;background:none;color:#ef4444;font-weight:700">Clear</button>
-              </div>
-              <div id="hovPClist" style="overflow-y:auto;max-height:170px;padding:3px 0"></div>
+            <div style="padding:3px 8px;border-bottom:1px solid var(--bdr);display:flex;gap:8px">
+              <button onclick="hovSelectAll()" style="font-size:10px;cursor:pointer;border:none;background:none;color:var(--brand);font-weight:700">Select All</button>
+              <button onclick="hovClearAll()" style="font-size:10px;cursor:pointer;border:none;background:none;color:#ef4444;font-weight:700">Clear</button>
             </div>
+            <div id="hovPClist" style="overflow-y:auto;max-height:170px;padding:3px 0"></div>
           </div>
         </div>
-        <div style="padding:12px;height:300px;position:relative">
-          <canvas id="hovDonut2"></canvas>
+
+        <!-- DC dropdown -->
+        <select id="hovDCselect" class="dc-select" onchange="renderHovTab()" style="min-width:170px;font-size:11px">
+          <option value="ALL">All Sites</option>
+        </select>
+
+        <!-- AWB search -->
+        <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+          <input id="hovAWBsearch" type="text" placeholder="🔍 Search AWB number…"
+            style="font-size:11px;padding:5px 10px;border-radius:5px;border:1px solid var(--bdr2);outline:none;min-width:210px"
+            oninput="renderHovAWBSearch(this.value)">
+          <button class="btn bg" onclick="document.getElementById('hovAWBsearch').value='';renderHovAWBSearch('')"
+            style="font-size:10px;padding:4px 8px;color:var(--tx3)">✕</button>
         </div>
+
+        <span class="cc" id="hovGrandTotal">–</span>
       </div>
     </div>
 
-    <!-- 3. D2-D15 Tracking Table -->
+    <!-- AWB Search Results -->
+    <div id="hovAWBresultCard" style="display:none">
+      <div class="card">
+        <div class="chead">
+          <span class="ct">🔎 AWB Search Result</span>
+          <button class="btn bg" onclick="downloadHovSectionImage('hovAWBresultCard','HOV_AWBSearch.png')"
+            style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4);margin-left:auto">🖼 PNG</button>
+        </div>
+        <div id="hovAWBresultInner" style="max-height:360px;overflow-y:auto"></div>
+      </div>
+    </div>
+
+    <!-- Single Donut (PC + DC filters applied) -->
+    <div class="card">
+      <div class="chead">
+        <span class="ct">AWB Count by Site</span>
+        <span class="cbg" id="hovDonutBadge">ALL CATEGORIES · ALL SITES</span>
+        <button class="btn bg" onclick="downloadHovChart('hovDonut1','HOV_Donut.png')"
+          style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4);margin-left:auto">🖼 PNG</button>
+      </div>
+      <div style="padding:12px;height:320px;position:relative">
+        <canvas id="hovDonut1"></canvas>
+      </div>
+    </div>
+
+    <!-- D2-D15 Tracking Table -->
     <div class="card">
       <div class="chead">
         <span class="ct">HOV Tracking — D2 to D15</span>
-        <div class="cm" style="gap:8px;flex-wrap:wrap">
-          <span class="cc" id="hovGrandTotal">–</span>
-          <button class="btn bg" onclick="downloadHovTableImage()" style="font-size:11px;padding:5px 11px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download full table as HD PNG">🖼 Image</button>
-        </div>
+        <button class="btn bg" onclick="downloadHovTableImage()"
+          style="font-size:11px;padding:5px 11px;color:var(--gold);border-color:rgba(233,223,67,.4);margin-left:auto">🖼 Image</button>
       </div>
       <div id="hovTableWrap"></div>
     </div>
 
-    <!-- 4. Product Value Table -->
-    <div class="card">
-      <div class="chead"><span class="ct">Product Value — AWB List</span><span class="cbg">PV ≥ ₹5,000 · SORTED HIGHEST FIRST</span></div>
+    <!-- CRITICALITY Table -->
+    <div class="card" id="hovCriticalityCard">
+      <div class="chead">
+        <span class="ct">⚠ CRITICALITY</span>
+        <span class="cbg">AGE D10–D30 · PV ≥ ₹10,000</span>
+        <button class="btn bg" onclick="downloadHovSectionImage('hovCriticalityCard','HOV_Criticality.png')"
+          style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4);margin-left:auto">🖼 PNG</button>
+      </div>
+      <div id="hovCriticalityWrap" style="max-height:380px;overflow-y:auto"></div>
+    </div>
+
+    <!-- Product Value Table -->
+    <div class="card" id="hovPVCard">
+      <div class="chead">
+        <span class="ct">Product Value — AWB List</span>
+        <span class="cbg">PV ≥ ₹5,000 · HIGHEST FIRST</span>
+        <button class="btn bg" onclick="downloadHovSectionImage('hovPVCard','HOV_ProductValue.png')"
+          style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4);margin-left:auto">🖼 PNG</button>
+      </div>
       <div id="hovPVWrap" style="max-height:320px;overflow-y:auto"></div>
     </div>
 
-    <!-- 5. Per-file D2-D15 Breakdown -->
-    <div class="card">
-      <div class="chead"><span class="ct">Per-File HOV Breakdown</span><span class="cbg">EACH FILE SHOWN SEPARATELY</span></div>
+    <!-- Per-File HOV Breakdown -->
+    <div class="card" id="hovPerFileCard">
+      <div class="chead">
+        <span class="ct">Per-File HOV Breakdown</span>
+        <span class="cbg">EACH FILE SHOWN SEPARATELY</span>
+        <button class="btn bg" onclick="downloadHovSectionImage('hovPerFileCard','HOV_PerFile.png')"
+          style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4);margin-left:auto">🖼 PNG</button>
+      </div>
       <div id="hovPerFileWrap" style="padding:12px;display:flex;flex-direction:column;gap:14px"></div>
     </div>
 
@@ -2726,115 +2768,228 @@ function renderHovDonut(key,canvasId,labels,values,title){
 }
 
 /* Main render function */
+/* ── Pivot-table HTML helper (Fix 1: Excel pivot style) ── */
+function pivTbl(headers,rows,footerRow,maxH){
+  const mh=maxH?`max-height:${maxH};overflow-y:auto;overflow-x:auto`:'overflow-x:auto';
+  let h=`<div style="${mh}"><table style="border-collapse:collapse;width:100%;font-size:12px;font-family:Inter,sans-serif"><thead><tr>`;
+  headers.forEach((hd,i)=>{
+    const al=i===0?'text-align:left':'text-align:center';
+    h+=`<th style="background:#0f2b25;color:#fff;padding:9px 13px;${al};font-weight:900;font-size:12px;white-space:nowrap;border-right:1px solid #1a5045;text-transform:uppercase;letter-spacing:.4px">${xe(String(hd))}</th>`;
+  });
+  h+=`</tr></thead><tbody>`;
+  rows.forEach((row,ri)=>{
+    const bg=ri%2===0?'#fff':'#f3faf7';
+    h+=`<tr>`;
+    row.forEach((cell,ci)=>{
+      const al=ci===0?'text-align:left':'text-align:center';
+      const cls=cell&&cell.__cls?cell.__cls:'';
+      const val=cell&&cell.__val!==undefined?cell.__val:cell;
+      const extra=cls==='cup'?'background:#ef4444;color:#fff;font-weight:900':
+        cls==='cdn'?'background:#dff0ea;color:#0a4a35':
+        cls==='czr'?'color:#94a3b8':'background:'+bg;
+      h+=`<td style="padding:8px 13px;${al};border-bottom:1.5px solid #c8dfd9;border-right:1px solid #daeee9;font-weight:700;white-space:nowrap;${extra}">${xe(String(val===null||val===undefined?'\u2013':val))}</td>`;
+    });
+    h+=`</tr>`;
+  });
+  h+=`</tbody>`;
+  if(footerRow){
+    h+=`<tfoot><tr>`;
+    footerRow.forEach((cell,ci)=>{
+      const al=ci===0?'text-align:left':'text-align:center';
+      h+=`<th style="background:#0a2520;color:#fff;padding:9px 13px;${al};font-weight:900;font-size:12px;white-space:nowrap;border-right:1px solid #1a5045;position:sticky;bottom:0">${xe(String(cell))}</th>`;
+    });
+    h+=`</tr></tfoot>`;
+  }
+  h+=`</table></div>`;
+  return h;
+}
+
+/* ── Build filtered HOV data (PC + DC) ── */
+function buildHovDataFiltered(pcs,dc){
+  const all=master.hov||[];
+  const filt=all.filter(r=>{
+    if(r.age<2||r.age>15)return false;
+    if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
+    if(dc&&dc!=='ALL'&&r.location!==dc)return false;
+    return true;
+  });
+  if(!filt.length)return{locs:[],ages:HOV_AGES,grid:{},rowTotals:{},colTotals:{}};
+  const locs=[...new Set(filt.map(r=>r.location))].sort();
+  const grid={};
+  locs.forEach(l=>{grid[l]={};HOV_AGES.forEach(a=>{grid[l][a]=0;});});
+  filt.forEach(r=>{
+    if(!grid[r.location])grid[r.location]={};
+    grid[r.location][r.age]=(grid[r.location][r.age]||0)+r.count;
+  });
+  const rowTotals={},colTotals={};
+  HOV_AGES.forEach(a=>{colTotals[a]=0;});
+  locs.forEach(l=>{
+    rowTotals[l]=0;
+    HOV_AGES.forEach(a=>{rowTotals[l]+=(grid[l][a]||0);colTotals[a]+=(grid[l][a]||0);});
+  });
+  return{locs,ages:HOV_AGES,grid,rowTotals,colTotals};
+}
+
+/* ── Populate DC dropdown ── */
+function populateHovDCDropdown(){
+  const sel=document.getElementById('hovDCselect');if(!sel)return;
+  const cur=sel.value;
+  const allLocs=[...new Set((master.hov||[]).map(r=>r.location))].sort();
+  sel.innerHTML=`<option value="ALL">All Sites</option>`+allLocs.map(l=>`<option value="${l}">${l}</option>`).join('');
+  if(allLocs.includes(cur))sel.value=cur;
+}
+
+/* ── AWB Search (Fix 3): cross-file, age-independent ── */
+function renderHovAWBSearch(query){
+  const card=document.getElementById('hovAWBresultCard');
+  const inner=document.getElementById('hovAWBresultInner');
+  if(!card||!inner)return;
+  const q=(query||'').trim().toUpperCase();
+  if(!q){card.style.display='none';inner.innerHTML='';return;}
+  const TYPE_LABELS={forward:'FORWARD',reverse:'REVERSE',lmodc:'LMODC',forwardShort:'SHORT SHIP'};
+  const pvHits=(master.hovPV||[]).filter(r=>(r.awb||'').toUpperCase()===q);
+  if(pvHits.length){
+    const rows=pvHits.map(r=>[
+      TYPE_LABELS[r.fileType]||r.fileType||'?',
+      r.awb||'\u2013',r.loc||'\u2013',
+      r.pv?`\u20b9${fn(Math.round(parseFloat(r.pv)||0))}`:'\u2013',
+      r.pd||'\u2013',r.date||'\u2013',r.pc||'\u2013'
+    ]);
+    inner.innerHTML=pivTbl(['FILE TYPE','AWB NUMBER','LOCATION','PRODUCT VALUE','PRODUCT DESC','DATE','PC'],rows,null,'320px');
+    card.style.display='block';
+    return;
+  }
+  inner.innerHTML=`<div class="empty" style="padding:20px"><div class="et">AWB not found</div>
+    <div class="em">AWB <strong>${q}</strong> was not found in any uploaded file.<br>
+    Note: AWB search requires files uploaded in the current session (not after page reload).</div></div>`;
+  card.style.display='block';
+}
+
+/* ── Main HOV render (single donut with PC+DC filter) ── */
 function renderHovTab(){
   populateHovPC();
+  populateHovDCDropdown();
   const pcs=getHovPCs();
+  const dc=(document.getElementById('hovDCselect')?.value)||'ALL';
 
-  // 1. Donut – all categories
-  const dAll=buildHovData(null);
-  renderHovDonut('d1','hovDonut1',dAll.locs,dAll.locs.map(l=>dAll.rowTotals[l]||0),'AWB Count by Site (All Categories)');
-
-  // 2. Donut – PC filtered
-  const dFilt=buildHovData(pcs);
+  // Badge
   const pcLbl=_hovPCselected.has('ALL')?'All Categories':_hovPCselected.size===1?[..._hovPCselected][0]:`${_hovPCselected.size} Categories`;
-  renderHovDonut('d2','hovDonut2',dFilt.locs,dFilt.locs.map(l=>dFilt.rowTotals[l]||0),`AWB by Site — ${pcLbl}`);
+  const badge=document.getElementById('hovDonutBadge');
+  if(badge)badge.textContent=`${pcLbl} \u00b7 ${dc==='ALL'?'All Sites':dc}`;
 
-  // 3. D2-D15 Table
-  const el=document.getElementById('hovTableWrap');
+  // Single donut with combined filters
+  const dFilt=buildHovDataFiltered(pcs,dc);
+  renderHovDonut('d1','hovDonut1',dFilt.locs,dFilt.locs.map(l=>dFilt.rowTotals[l]||0),'AWB by Site');
+
+  // Grand total
+  const grand=dFilt.locs.reduce((s,l)=>s+(dFilt.rowTotals[l]||0),0);
   const tot=document.getElementById('hovGrandTotal');
+  if(tot)tot.textContent=grand?fn(grand)+' AWBs':'\u2013';
+
+  // D2-D15 Table (pivot style)
+  const el=document.getElementById('hovTableWrap');
   if(el){
     if(!dFilt.locs.length){
-      el.innerHTML=`<div class="empty"><div class="ei">🚁</div><div class="et">No HOV data yet</div>
+      el.innerHTML=`<div class="empty"><div class="ei">\ud83d\ude81</div><div class="et">No HOV data yet</div>
         <div class="em">Upload Forward/Reverse/LMODC/Short Ship files</div></div>`;
-      if(tot)tot.textContent='–';
     }else{
-      const grand=dFilt.locs.reduce((s,l)=>s+(dFilt.rowTotals[l]||0),0);
-      if(tot)tot.textContent=fn(grand)+' AWBs';
-      let html=`<div class="tsc" style="max-height:480px"><table class="tbl"><thead><tr>
-        <th>Location</th>${dFilt.ages.map(a=>`<th>D${a}</th>`).join('')}<th>TOTAL</th>
-        </tr></thead><tbody>`;
-      dFilt.locs.forEach(loc=>{
+      const hdrs=['LOCATION',...dFilt.ages.map(a=>`D${a}`),'TOTAL'];
+      const tblRows=dFilt.locs.map(loc=>{
         const rt=dFilt.rowTotals[loc]||0;
-        html+=`<tr><td>${xe(loc)}</td>`;
+        const cells=[loc];
         dFilt.ages.forEach((a,ai)=>{
           const v=dFilt.grid[loc]?dFilt.grid[loc][a]||0:0;
           const prev=ai>0?dFilt.grid[loc][dFilt.ages[ai-1]]||0:null;
           const cls=v===0?'czr':prev!==null&&v>prev?'cup':prev!==null&&v<prev?'cdn':'';
-          html+=`<td class="${cls}">${v===0?'–':fn(v)}</td>`;
+          cells.push({__val:v===0?'\u2013':fn(v),__cls:cls});
         });
-        html+=`<td style="font-weight:900">${fn(rt)}</td></tr>`;
+        cells.push(fn(rt));
+        return cells;
       });
-      const total=dFilt.locs.reduce((s,l)=>s+(dFilt.rowTotals[l]||0),0);
-      html+=`</tbody><tfoot><tr><td>TOTAL</td>
-        ${dFilt.ages.map(a=>`<td>${fn(dFilt.colTotals[a]||0)}</td>`).join('')}
-        <td>${fn(total)}</td></tr></tfoot></table></div>
-        <div class="leg">
-          <span class="lc"><span class="lb lu"></span>▲ Higher than prev bucket</span>
-          <span class="lc"><span class="lb ld"></span>▼ Lower than prev bucket</span>
+      const foot=['TOTAL',...dFilt.ages.map(a=>fn(dFilt.colTotals[a]||0)),fn(grand)];
+      el.innerHTML=pivTbl(hdrs,tblRows,foot,'460px')+
+        `<div class="leg" style="padding:8px 14px">
+          <span class="lc"><span class="lb lu"></span>\u25b2 Higher than prev bucket</span>
+          <span class="lc"><span class="lb ld"></span>\u25bc Lower than prev bucket</span>
         </div>`;
-      el.innerHTML=html;
     }
   }
 
-  // 4. Product Value Table (with PD column)
-  renderHovPVTable(pcs);
-  // 5. Per-file breakdown
-  renderHovPerFile(pcs);
-  // NOTE: Age-wise Trends table removed per requirements
+  renderHovCriticality(pcs,dc);
+  renderHovPVTable(pcs,dc);
+  renderHovPerFile(pcs,dc);
 }
 
-/* Product Value Table — AWB | Product Value | Product Description | Location */
-function renderHovPVTable(pcs){
-  const wrap=document.getElementById('hovPVWrap');if(!wrap)return;
-  const pvRows=(master.hovPV||[])
-    .filter(r=>{
-      if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
-      return(parseFloat(r.pv)||0)>=5000;
-    })
-    .sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
-  if(!pvRows.length){
-    wrap.innerHTML=`<div class="empty" style="padding:24px">
-      <div class="et">No product value data ≥ ₹5,000</div>
-      <div class="em">Only items with Product Value ≥ ₹5,000 are shown.<br>
-        Extracted from HOV PD PC sheet (PRODUCT VALUE + PD columns)</div></div>`;return;
-  }
-  // Column order: Current Location | AWB Number | Product Value | Product Description
-  let html=`<table class="tbl" style="table-layout:fixed;width:100%"><thead><tr>
-    <th style="text-align:left;width:18%;white-space:normal">Current Location</th>
-    <th style="text-align:left;width:22%;white-space:normal">AWB Number</th>
-    <th style="width:14%;white-space:normal">Product Value</th>
-    <th style="text-align:left;white-space:normal">Product Description</th>
-  </tr></thead><tbody>`;
-  pvRows.slice(0,500).forEach(r=>{
+/* ── CRITICALITY Table: Age D10-D30, PV >= 10000 ── */
+function renderHovCriticality(pcs,dc){
+  const wrap=document.getElementById('hovCriticalityWrap');if(!wrap)return;
+  const TYPE_LABELS={forward:'FORWARD',reverse:'REVERSE',lmodc:'LMODC',forwardShort:'SHORT SHIP'};
+  const rows=(master.hovPV||[]).filter(r=>{
     const pv=parseFloat(r.pv)||0;
-    html+=`<tr>
-      <td style="text-align:left;white-space:normal;word-break:break-word">${xe(r.loc||'–')}</td>
-      <td style="text-align:left;font-family:var(--mono);white-space:normal;word-break:break-all;font-size:11px">${xe(r.awb||'–')}</td>
-      <td style="white-space:normal">₹${fn(Math.round(pv))}</td>
-      <td style="text-align:left;white-space:normal;word-break:break-word">${xe(r.pd||'–')}</td>
-    </tr>`;
-  });
-  if(pvRows.length>500)html+=`<tr><td colspan="4" style="text-align:center;color:#94a3b8;font-style:italic">Showing top 500 of ${fn(pvRows.length)}</td></tr>`;
-  html+=`</tbody></table>`;
-  wrap.innerHTML=html;
+    const age=parseInt(r.age)||0;
+    if(pv<10000)return false;
+    if(age<10||age>30)return false;
+    if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
+    if(dc&&dc!=='ALL'&&(r.loc||'').toUpperCase()!==(dc||'').toUpperCase())return false;
+    return true;
+  }).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
+
+  if(!rows.length){
+    wrap.innerHTML=`<div class="empty" style="padding:20px"><div class="et">No criticality entries</div>
+      <div class="em">No AWBs with Age D10\u2013D30 AND PV \u2265 \u20b910,000 found.<br>
+      Ensure HOV files with product value data are uploaded.</div></div>`;
+    return;
+  }
+  const tblRows=rows.slice(0,500).map(r=>([
+    TYPE_LABELS[r.fileType]||r.fileType||'?',
+    r.loc||'\u2013',r.awb||'\u2013',
+    `\u20b9${fn(Math.round(parseFloat(r.pv)||0))}`,
+    r.pd||'\u2013',`D${r.age||'?'}`
+  ]));
+  const sumPV=rows.reduce((s,r)=>s+(parseFloat(r.pv)||0),0);
+  const foot=[`${fn(rows.length)} AWBs`,'','',`\u20b9${fn(Math.round(sumPV))}`,'',''];
+  wrap.innerHTML=pivTbl(['SOURCE FILE','CURRENT LOCATION','AWB NUMBER','PRODUCT VALUE','PRODUCT DESC','AGE'],tblRows,foot,'350px');
 }
 
-/* Per-file HOV Breakdown — each uploaded file shown separately with donut + PV table */
-function renderHovPerFile(pcs){
+/* ── Product Value Table (pivot style) ── */
+function renderHovPVTable(pcs,dc){
+  const wrap=document.getElementById('hovPVWrap');if(!wrap)return;
+  const TYPE_LABELS={forward:'FWD',reverse:'REV',lmodc:'LM',forwardShort:'SHORT'};
+  const pvRows=(master.hovPV||[]).filter(r=>{
+    if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
+    if(dc&&dc!=='ALL'&&(r.loc||'').toUpperCase()!==(dc||'').toUpperCase())return false;
+    return(parseFloat(r.pv)||0)>=5000;
+  }).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
+
+  if(!pvRows.length){
+    wrap.innerHTML=`<div class="empty" style="padding:20px"><div class="et">No product value data \u2265 \u20b95,000</div>
+      <div class="em">Extracted from HOV PD PC sheet (PRODUCT VALUE + PD columns)</div></div>`;return;
+  }
+  const rows=pvRows.slice(0,500).map(r=>([
+    TYPE_LABELS[r.fileType]||r.fileType||'?',
+    r.loc||'\u2013',r.awb||'\u2013',
+    `\u20b9${fn(Math.round(parseFloat(r.pv)||0))}`,
+    r.pd||'\u2013'
+  ]));
+  if(pvRows.length>500)rows.push([`Showing 500 of ${fn(pvRows.length)}`,'','','','']);
+  wrap.innerHTML=pivTbl(['FILE','CURRENT LOCATION','AWB NUMBER','PRODUCT VALUE','PRODUCT DESCRIPTION'],rows,null,'300px');
+}
+
+/* ── Per-file breakdown (separate per file, with donut + tables) ── */
+function renderHovPerFile(pcs,dc){
   const wrap=document.getElementById('hovPerFileWrap');if(!wrap)return;
   const allHov=(master.hov||[]).filter(r=>{
     if(r.age<2||r.age>15)return false;
     if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
+    if(dc&&dc!=='ALL'&&r.location!==dc)return false;
     return true;
   });
-  if(!allHov.length){
-    wrap.innerHTML=`<div class="empty" style="padding:16px"><div class="et">No HOV data</div></div>`;return;
-  }
+  if(!allHov.length){wrap.innerHTML=`<div class="empty" style="padding:16px"><div class="et">No HOV data</div></div>`;return;}
 
-  const TYPE_LABELS={forward:'📦 FORWARD FILE',reverse:'🔄 REVERSE FILE',lmodc:'🏪 LMODC FILE',forwardShort:'⚡ SHORT SHIP FILE'};
+  const TYPE_LABELS={forward:'FORWARD FILE',reverse:'REVERSE FILE',lmodc:'LMODC FILE',forwardShort:'SHORT SHIP FILE'};
   const TYPE_BADGE={forward:'#2563eb',reverse:'#dc2626',lmodc:'#059669',forwardShort:'#d97706'};
+  const TYPE_ICON={forward:'\ud83d\udce6',reverse:'\ud83d\udd04',lmodc:'\ud83c\udff7',forwardShort:'\u26a1'};
 
-  // Group hov records by fileType+date
   const fileGroups={};
   allHov.forEach(r=>{
     const key=`${r.fileType}|${r.date}`;
@@ -2845,12 +3000,14 @@ function renderHovPerFile(pcs){
     g.total+=r.count;
   });
 
-  // Group PV records by fileType+date
   const pvByFile={};
   (master.hovPV||[]).forEach(r=>{
     const key=`${r.fileType}|${r.date}`;
     if(!pvByFile[key])pvByFile[key]=[];
-    if((parseFloat(r.pv)||0)>=5000)pvByFile[key].push(r);
+    if((parseFloat(r.pv)||0)>=5000){
+      if(!dc||dc==='ALL'||(r.loc||'').toUpperCase()===(dc||'').toUpperCase())
+        pvByFile[key].push(r);
+    }
   });
 
   const sortedKeys=Object.keys(fileGroups).sort();
@@ -2859,67 +3016,55 @@ function renderHovPerFile(pcs){
   const sectionsHTML=sortedKeys.map((key,ki)=>{
     const g=fileGroups[key];
     const locs=Object.keys(g.locs).sort();
-    const label=`${TYPE_LABELS[g.fileType]||g.fileType.toUpperCase()} · ${g.date}`;
     const color=TYPE_BADGE[g.fileType]||'#64748b';
+    const icon=TYPE_ICON[g.fileType]||'\ud83d\udcc4';
     const donutId=`hovPerDonut_${ki}`;
-    canvasIds.push({id:donutId,key,ki});
+    canvasIds.push({id:donutId,key});
 
-    // D2-D15 table
-    let tblHtml=`<div style="overflow-x:auto;max-height:240px">
-      <table class="tbl" style="table-layout:auto;white-space:normal">
-      <thead><tr><th style="white-space:normal">Location</th>${HOV_AGES.map(a=>`<th>D${a}</th>`).join('')}<th>TOTAL</th></tr></thead><tbody>`;
-    locs.forEach(loc=>{
-      const rowTotal=HOV_AGES.reduce((s,a)=>s+(g.locs[loc][a]||0),0);
-      tblHtml+=`<tr><td style="white-space:normal;word-break:break-word">${xe(loc)}</td>`;
+    const hdrs=['LOCATION',...HOV_AGES.map(a=>`D${a}`),'TOTAL'];
+    const tblRows=locs.map(loc=>{
+      const rt=HOV_AGES.reduce((s,a)=>s+(g.locs[loc][a]||0),0);
+      const cells=[loc];
       HOV_AGES.forEach((a,ai)=>{
         const v=g.locs[loc][a]||0;
         const prev=ai>0?g.locs[loc][HOV_AGES[ai-1]]||0:null;
         const cls=v===0?'czr':prev!==null&&v>prev?'cup':prev!==null&&v<prev?'cdn':'';
-        tblHtml+=`<td class="${cls}">${v===0?'–':fn(v)}</td>`;
+        cells.push({__val:v===0?'\u2013':fn(v),__cls:cls});
       });
-      tblHtml+=`<td style="font-weight:900">${fn(rowTotal)}</td></tr>`;
+      cells.push(fn(rt));
+      return cells;
     });
-    const colTotals=HOV_AGES.map(a=>locs.reduce((s,l)=>s+(g.locs[l][a]||0),0));
-    tblHtml+=`</tbody><tfoot><tr><td>TOTAL</td>${colTotals.map(c=>`<td>${fn(c)}</td>`).join('')}<td>${fn(g.total)}</td></tr></tfoot></table></div>`;
+    const cTotals=HOV_AGES.map(a=>locs.reduce((s,l)=>s+(g.locs[l][a]||0),0));
+    const foot=['TOTAL',...cTotals.map(c=>fn(c)),fn(g.total)];
+    const tblHtml=pivTbl(hdrs,tblRows,foot,'200px');
 
-    // PV table for this file
     const pvRows=(pvByFile[key]||[]).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
-    let pvHtml=pvRows.length===0?`<div style="padding:10px;color:#94a3b8;font-size:12px">No items with PV ≥ ₹5,000 for this file</div>`:`
-      <div style="overflow-y:auto;max-height:220px">
-      <table class="tbl" style="table-layout:fixed;width:100%"><thead><tr>
-        <th style="text-align:left;width:18%;white-space:normal">Location</th>
-        <th style="text-align:left;width:22%;white-space:normal">AWB Number</th>
-        <th style="width:14%;white-space:normal">PV</th>
-        <th style="text-align:left;white-space:normal">Product Description</th>
-      </tr></thead><tbody>
-      ${pvRows.slice(0,200).map(r=>{
-        const pv=parseFloat(r.pv)||0;
-        return`<tr>
-          <td style="text-align:left;white-space:normal;word-break:break-word">${xe(r.loc||'–')}</td>
-          <td style="text-align:left;font-family:var(--mono);font-size:10px;white-space:normal;word-break:break-all">${xe(r.awb||'–')}</td>
-          <td style="white-space:normal">₹${fn(Math.round(pv))}</td>
-          <td style="text-align:left;white-space:normal;word-break:break-word">${xe(r.pd||'–')}</td>
-        </tr>`;
-      }).join('')}
-      </tbody></table></div>`;
+    const pvHtml=pvRows.length===0
+      ?`<div style="padding:8px 14px;color:#94a3b8;font-size:11px">No PV \u2265 \u20b95,000 for this file</div>`
+      :pivTbl(
+        ['LOCATION','AWB NUMBER','PRODUCT VALUE','PRODUCT DESC'],
+        pvRows.slice(0,200).map(r=>([r.loc||'\u2013',r.awb||'\u2013',`\u20b9${fn(Math.round(parseFloat(r.pv)||0))}`,r.pd||'\u2013'])),
+        null,'160px'
+      );
 
-    return`<div style="border:2px solid ${color};border-radius:8px;overflow:hidden;margin-bottom:4px">
-      <div style="background:${color};color:#fff;padding:10px 16px;font-size:12px;font-weight:900;display:flex;justify-content:space-between;align-items:center">
-        <span>${xe(label)}</span>
-        <span style="background:rgba(255,255,255,.2);padding:2px 10px;border-radius:12px;font-size:11px">${fn(g.total)} AWBs</span>
+    return`<div style="border:2px solid ${color};border-radius:8px;overflow:hidden">
+      <div style="background:${color};color:#fff;padding:9px 14px;font-size:12px;font-weight:900;
+        display:flex;justify-content:space-between;align-items:center">
+        <span>${icon} ${xe(TYPE_LABELS[g.fileType]||g.fileType.toUpperCase())} \u00b7 ${xe(g.date)}</span>
+        <span style="background:rgba(255,255,255,.22);padding:2px 10px;border-radius:12px;font-size:11px">${fn(g.total)} AWBs</span>
       </div>
-      <div style="display:grid;grid-template-columns:280px 1fr;gap:0;min-height:240px">
-        <div style="border-right:1px solid var(--bdr);padding:12px;background:#fafafa">
-          <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;margin-bottom:8px">AWB by Location</div>
-          <div style="height:200px;position:relative"><canvas id="${donutId}"></canvas></div>
+      <div style="display:grid;grid-template-columns:250px 1fr">
+        <div style="border-right:1px solid var(--bdr);padding:10px;background:#fafafa">
+          <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;margin-bottom:6px">AWB by Location</div>
+          <div style="height:185px;position:relative"><canvas id="${donutId}"></canvas></div>
         </div>
-        <div style="padding:0">
-          <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;padding:10px 14px 6px">D2–D15 Tracking</div>
+        <div>
+          <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;padding:8px 13px 4px">D2\u2013D15 Tracking</div>
           ${tblHtml}
         </div>
       </div>
       <div style="border-top:1px solid var(--bdr)">
-        <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;padding:10px 14px 6px">Product Value (≥ ₹5,000)</div>
+        <div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;padding:8px 13px 4px">Product Value (\u2265 \u20b95,000)</div>
         ${pvHtml}
       </div>
     </div>`;
@@ -2927,9 +3072,8 @@ function renderHovPerFile(pcs){
 
   wrap.innerHTML=sectionsHTML;
 
-  // Render per-file donuts after DOM is ready
   requestAnimationFrame(()=>{
-    canvasIds.forEach(({id,key,ki})=>{
+    canvasIds.forEach(({id,key})=>{
       const g=fileGroups[key];
       const locs=Object.keys(g.locs).sort();
       const vals=locs.map(l=>HOV_AGES.reduce((s,a)=>s+(g.locs[l][a]||0),0));
@@ -2939,34 +3083,58 @@ function renderHovPerFile(pcs){
       if(_hovCharts[id])_hovCharts[id].destroy();
       _hovCharts[id]=new Chart(cv,{
         type:'doughnut',
-        data:{labels:locs,datasets:[{
-          data:vals,
-          backgroundColor:HOV_PALETTE.slice(0,locs.length),
-          borderWidth:2,borderColor:'#fff',hoverOffset:4
-        }]},
-        options:{
-          responsive:true,maintainAspectRatio:false,cutout:'40%',
-          layout:{padding:{top:4,bottom:4,left:4,right:4}},
-          plugins:{
-            title:{display:false},
-            legend:{display:false},
-            tooltip:{callbacks:{label(c){return` ${c.label}: ${fn(c.parsed)} (${total?Math.round(c.parsed/total*100):0}%)`;}}},
-            datalabels:{
-              display(ctx){return ctx.dataset.data[ctx.dataIndex]/total>=0.05;},
-              anchor:'center',align:'center',
-              color:'#fff',font:{size:8,weight:'800',family:'Inter'},
-              textStrokeColor:'rgba(0,0,0,0.5)',textStrokeWidth:2,
-              formatter(v,ctx){
-                const lbl=ctx.chart.data.labels[ctx.dataIndex];
-                const short=lbl.replace(' DC','').slice(0,8);
-                return`${short}\n${fn(v)}`;
-              }
-            }
-          }
+        plugins:[{id:'pfLabel_'+id,afterDatasetsDraw(chart){
+          const{ctx,data}=chart;const ds=chart.getDatasetMeta(0);if(!ds?.data)return;
+          ds.data.forEach((arc,i)=>{
+            const v=data.datasets[0].data[i];if(!v||v/total<0.04)return;
+            const mid=(arc.startAngle+arc.endAngle)/2;
+            const r2=arc.innerRadius+(arc.outerRadius-arc.innerRadius)*0.6;
+            const x=arc.x+Math.cos(mid)*r2,y=arc.y+Math.sin(mid)*r2;
+            const short=(data.labels[i]||'').replace(' DC','').slice(0,7);
+            ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';
+            ctx.shadowColor='rgba(0,0,0,0.55)';ctx.shadowBlur=3;
+            ctx.fillStyle='#fff';ctx.font='800 8px Inter,sans-serif';
+            ctx.fillText(short,x,y-5);ctx.fillText(fn(v),x,y+5);ctx.restore();
+          });
+        }}],
+        data:{labels:locs,datasets:[{data:vals,backgroundColor:HOV_PALETTE.slice(0,locs.length),borderWidth:2,borderColor:'#fff',hoverOffset:4}]},
+        options:{responsive:true,maintainAspectRatio:false,cutout:'38%',layout:{padding:4},
+          plugins:{title:{display:false},legend:{display:false},datalabels:{display:false},
+            tooltip:{callbacks:{label(c){return` ${c.label}: ${fn(c.parsed)} (${total?Math.round(c.parsed/total*100):0}%)`;}}}}
         }
       });
     });
   });
+}
+
+/* ── Download HOV chart as PNG ── */
+function downloadHovChart(canvasId,filename){
+  const cv=document.getElementById(canvasId);
+  if(!cv){toast('Chart not found','tw');return;}
+  const a=document.createElement('a');
+  a.href=cv.toDataURL('image/png',1.0);
+  a.download=filename||`HOV_chart_${new Date().toISOString().slice(0,10)}.png`;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  toast('\ud83d\uddbc Chart downloaded','tok');
+}
+
+/* ── Download any HOV card/section as full PNG ── */
+function downloadHovSectionImage(cardId,filename){
+  const card=document.getElementById(cardId);
+  if(!card){toast('Section not found','tw');return;}
+  if(typeof html2canvas==='undefined'){toast('\u26a0 html2canvas not loaded','tw');return;}
+  toast('\u23f3 Preparing image\u2026','ti');
+  html2canvas(card,{scale:2,backgroundColor:'#fff',useCORS:true,allowTaint:true,
+    width:card.scrollWidth,height:card.scrollHeight,
+    windowWidth:card.scrollWidth+200,windowHeight:card.scrollHeight+200,logging:false,
+    onclone(doc){doc.querySelectorAll('*').forEach(e=>{e.style.overflow='visible';e.style.maxHeight='none';});}
+  }).then(canvas=>{
+    const a=document.createElement('a');
+    a.href=canvas.toDataURL('image/png',1.0);
+    a.download=filename||`HOV_${new Date().toISOString().slice(0,10)}.png`;
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    toast(`\ud83d\uddbc Downloaded: ${filename}`,'tok');
+  }).catch(e=>{console.warn(e);toast('Image download failed','te');});
 }
 
 /* ═══════════════════════════════════════════════
