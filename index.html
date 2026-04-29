@@ -423,7 +423,6 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
           </div>
         </div>
         <select id="hovDCselect" class="dc-select" onchange="renderHovTab()" style="min-width:160px;font-size:11px"><option value="ALL">All Sites</option></select>
-        <select id="hovPDselect" class="dc-select" onchange="renderHovTab()" style="min-width:160px;font-size:11px"><option value="ALL">All Descriptions</option></select>
         <span class="cc" id="hovGrandTotal" style="margin-left:auto">–</span>
         <button class="btn bg" onclick="generateHovPDF(0)" style="font-size:10px;padding:4px 9px;color:var(--brand);border-color:var(--bdr2)">📄 PDF</button>
       </div>
@@ -609,6 +608,15 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
           <span class="cbg">LOCATION × AGE</span>
         </div>
         <div id="hovD15Wrap" style="max-height:500px;overflow-y:auto;overflow-x:auto"></div>
+      </div>
+      <!-- AWB detail table (shown when DC selected) -->
+      <div class="card" id="hovD15AWBCard" style="display:none">
+        <div class="chead">
+          <span class="ct" id="hovD15AWBTitle">AWB Detail</span>
+          <span class="cbg">D16–D90 · FULL AWB LIST</span>
+          <button class="btn bg" onclick="downloadHovSectionImage('hovD15AWBCard','HOV_D15_AWBDetail.png')" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4);margin-left:auto">🖼 PNG</button>
+        </div>
+        <div id="hovD15AWBWrap" style="max-height:480px;overflow-y:auto;overflow-x:auto"></div>
       </div>
       <!-- Per-file sections injected here -->
       <div id="hovD15PerFileWrap" style="display:flex;flex-direction:column;gap:14px"></div>
@@ -3090,15 +3098,14 @@ function toggleHovChartType(){
 function renderHovTab(){
   populateHovPC();
   populateHovDCDropdown();
-  populateHovPDDropdown();
   const pcs=getHovPCs();
   const dc=(document.getElementById('hovDCselect')?.value)||'ALL';
-  const pd=(document.getElementById('hovPDselect')?.value)||'ALL';
+  const pd='ALL'; // PD filter removed per spec — keep internally as ALL
 
   // Badge
   const pcLbl=_hovPCselected.has('ALL')?'All Categories':_hovPCselected.size===1?[..._hovPCselected][0]:`${_hovPCselected.size} Categories`;
   const badge=document.getElementById('hovDonutBadge');
-  if(badge)badge.textContent=`${pcLbl} \u00b7 ${dc==='ALL'?'All Sites':dc}${pd!=='ALL'?' \u00b7 '+pd.slice(0,20):''}`;
+  if(badge)badge.textContent=`${pcLbl} · ${dc==='ALL'?'All Sites':dc}`;
 
   // Build filtered data (PC + DC + PD)
   const allHov=master.hov||[];
@@ -3218,11 +3225,12 @@ function renderHovCriticality(pcs,dc,pd){
   rows.forEach(r=>{if(!(seen.has(r.awb))||(parseFloat(r.pv)||0)>(parseFloat(seen.get(r.awb).pv)||0))seen.set(r.awb,r);});
   const dedupRows=[...seen.values()].sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
 
-  // All 8 required columns
+  // All required columns with AGE added (per spec: LOC | AWB | PV | AGE | BIN | MSG | DSP_BIN | DSP_MSG | PD)
   const tblRows=dedupRows.slice(0,500).map(r=>([
     r.loc||'–',
     r.awb||'–',
     r.pv&&parseFloat(r.pv)>0?`₹${fn(Math.round(parseFloat(r.pv)||0))}`:'–',
+    r.age!==undefined?`D${r.age}`:'–',
     r.binLevel||'–',
     r.msg||'–',
     r.dspBin||'–',
@@ -3230,9 +3238,9 @@ function renderHovCriticality(pcs,dc,pd){
     r.pd||'–'
   ]));
   const sumPV=dedupRows.reduce((s,r)=>s+(parseFloat(r.pv)||0),0);
-  const foot=[`${fn(dedupRows.length)} AWBs`,'',`₹${fn(Math.round(sumPV))}`,'','','','',''];
+  const foot=[`${fn(dedupRows.length)} AWBs`,'',`₹${fn(Math.round(sumPV))}`,'','','','','',''];
   wrap.innerHTML=pivTbl(
-    ['CURRENT LOCATION','AWB NUMBER','PRODUCT VALUE','BIN LEVEL','MESSAGE','DSP BIN LEVEL','DSP MESSAGE','PRODUCT DESC'],
+    ['CURRENT LOCATION','AWB NUMBER','PRODUCT VALUE','AGE','BIN LEVEL','MESSAGE','DSP BIN LEVEL','DSP MESSAGE','PRODUCT DESC'],
     tblRows,foot,'350px'
   );
 }
@@ -3335,6 +3343,35 @@ function renderHovD15Tab(){
       const grand=locs.reduce((s,l)=>s+(rowTots[l]||0),0);
       const foot=['TOTAL',...agesUsed.map(a=>fn(colTots[a]||0)),fn(grand)];
       wrap.innerHTML=pivTbl(hdrs,tblRows,foot,'480px');
+    }
+  }
+
+  // AWB Detail Table (shown when specific DC selected)
+  const awbCard=document.getElementById('hovD15AWBCard');
+  const awbTitle=document.getElementById('hovD15AWBTitle');
+  const awbWrap=document.getElementById('hovD15AWBWrap');
+  if(awbCard&&awbWrap){
+    if(dc==='ALL'){
+      awbCard.style.display='none';awbWrap.innerHTML='';
+    }else{
+      awbCard.style.display='block';
+      if(awbTitle)awbTitle.textContent=`AWB Detail — ${dc} (D16–D90)`;
+      const dcRows=filtRaw.filter(r=>(r.loc||'').toUpperCase()===dc)
+        .sort((a,b)=>(parseInt(a.age)||0)-(parseInt(b.age)||0));
+      if(!dcRows.length){
+        awbWrap.innerHTML=`<div class="empty" style="padding:16px"><div class="et">No D16+ AWBs for ${xe(dc)}</div></div>`;
+      }else{
+        const tblRows=dcRows.slice(0,500).map(r=>([
+          r.loc||'–',r.awb||'–',
+          r.pv&&parseFloat(r.pv)>0?`₹${fn(Math.round(parseFloat(r.pv)||0))}`:'–',
+          r.age!==undefined?`D${r.age}`:'–',
+          r.binLevel||'–',r.msg||'–',r.dspBin||'–',r.dspMsg||'–',r.pd||'–'
+        ]));
+        awbWrap.innerHTML=pivTbl(
+          ['CURRENT LOCATION','AWB NUMBER','PRODUCT VALUE','AGE','BIN LEVEL','MESSAGE','DSP BIN LEVEL','DSP MESSAGE','PRODUCT DESC'],
+          tblRows,null,'460px'
+        );
+      }
     }
   }
 
@@ -3716,7 +3753,7 @@ function renderHovFwdPivot(dc){
     const hdrs=['AGE',...msgs,'TOTAL'];
     const tblRows=ages.map(a=>{
       const tot=ageTotals[a]||0;
-      return [`D${a}`,...msgs.map(m=>({__val:grid[a][m]||0===0?'–':fn(grid[a][m]),__cls:grid[a][m]>0?'':'czr'})),fn(tot)];
+      return [`D${a}`,...msgs.map(m=>({__val:(grid[a][m]||0)===0?'–':fn(grid[a][m]),__cls:(grid[a][m]||0)>0?'':'czr'})),fn(tot)];
     });
     const grandTotal=ages.reduce((s,a)=>s+(ageTotals[a]||0),0);
     const foot=['TOTAL',...msgs.map(m=>fn(msgTotals[m]||0)),fn(grandTotal)];
@@ -3830,19 +3867,36 @@ function renderHovPVTable(pcs,dc,pd){
   const pvRows=(master.hovPV||[]).filter(r=>{
     if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
     if(dc&&dc!=='ALL'&&(r.loc||'').toUpperCase()!==(dc||'').toUpperCase())return false;
-    if(pd&&pd!=='ALL'&&(r.pd||'')!==pd)return false;
+    // PD filter removed — pd is always 'ALL' now
     return(parseFloat(r.pv)||0)>=5000;
   }).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
+
   if(!pvRows.length){
-    wrap.innerHTML=`<div class="empty" style="padding:20px"><div class="et">No PV ≥ ₹5,000</div></div>`;return;
+    wrap.innerHTML=`<div class="empty" style="padding:20px"><div class="et">No PV ≥ ₹5,000</div>
+      <div class="em">Extracted from HOV PD PC sheet (PRODUCT VALUE + PD columns)</div></div>`;return;
   }
-  const rows=pvRows.slice(0,500).map(r=>([
-    TYPE_LABELS[r.fileType]||'?',r.loc||'–',r.awb||'–',
-    r.pv&&parseFloat(r.pv)>0?`₹${fn(Math.round(parseFloat(r.pv)||0))}`:'–',
-    r.pd||'–'
-  ]));
-  if(pvRows.length>500)rows.push([`Showing 500 of ${fn(pvRows.length)}`,'','','','']);
-  wrap.innerHTML=pivTbl(['FILE','CURRENT LOCATION','AWB NUMBER','PRODUCT VALUE','PRODUCT DESCRIPTION'],rows,null,'300px');
+  // Build rows with wrap text — includes PD for all file types including Reverse
+  const mh='300px';
+  let h=`<div style="max-height:${mh};overflow-y:auto;overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-size:12px;font-family:Inter,sans-serif"><thead><tr>`;
+  ['FILE','CURRENT LOCATION','AWB NUMBER','PRODUCT VALUE','PRODUCT DESCRIPTION'].forEach((hd,i)=>{
+    const al=(i===0||i===1||i===2||i===4)?'text-align:left':'text-align:center';
+    h+=`<th style="background:#0f2b25;color:#fff;padding:9px 13px;${al};font-weight:900;font-size:12px;white-space:nowrap;border-right:1px solid #1a5045;text-transform:uppercase">${hd}</th>`;
+  });
+  h+=`</tr></thead><tbody>`;
+  pvRows.slice(0,500).forEach((r,ri)=>{
+    const pv=parseFloat(r.pv)||0;
+    const bg=ri%2===0?'#fff':'#f3faf7';
+    h+=`<tr>
+      <td style="padding:8px 13px;text-align:left;border-bottom:1.5px solid #c8dfd9;border-right:1px solid #daeee9;background:${bg};font-weight:700;white-space:nowrap">${xe(TYPE_LABELS[r.fileType]||r.fileType||'?')}</td>
+      <td style="padding:8px 13px;text-align:left;border-bottom:1.5px solid #c8dfd9;border-right:1px solid #daeee9;background:${bg};font-weight:700;white-space:normal;word-break:break-word;min-width:120px">${xe(r.loc||'–')}</td>
+      <td style="padding:8px 13px;text-align:left;border-bottom:1.5px solid #c8dfd9;border-right:1px solid #daeee9;background:${bg};font-family:var(--mono);font-size:11px;white-space:normal;word-break:break-all;min-width:130px">${xe(r.awb||'–')}</td>
+      <td style="padding:8px 13px;text-align:center;border-bottom:1.5px solid #c8dfd9;border-right:1px solid #daeee9;background:${bg};font-weight:900">₹${fn(Math.round(pv))}</td>
+      <td style="padding:8px 13px;text-align:left;border-bottom:1.5px solid #c8dfd9;background:${bg};white-space:normal;word-break:break-word;min-width:180px">${xe(r.pd||'–')}</td>
+    </tr>`;
+  });
+  if(pvRows.length>500)h+=`<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:8px;font-style:italic">Showing 500 of ${fn(pvRows.length)}</td></tr>`;
+  h+=`</tbody></table></div>`;
+  wrap.innerHTML=h;
 }
 
 function downloadHovChart(canvasId,filename){
@@ -3988,6 +4042,7 @@ document.getElementById('hovFi').addEventListener('change',async e=>{
    Only ages relevant to sections are kept.
    Used exclusively by downloadSectionReport().
 ═══════════════════════════════════════════════ */
+const _VALID_AGES={forward:[3,6],reverse:[3,10],lmodc:[3,6,10],forwardShort:[3,6]};
 
 function captureRaw(type,row,date){
   // 1. Apply base filter (mirrors each type's processor)
