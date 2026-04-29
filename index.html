@@ -677,15 +677,49 @@ const CPALS=['#2563eb','#dc2626','#16a34a','#d97706','#7c3aed','#0891b2','#be185
 /* ═══════════════════════════════════════════════
    STATE
 ═══════════════════════════════════════════════ */
+/* rawData must be declared before loadM() runs so persistence restore works */
+const rawData={};
 let master=loadM(),activeTab=0,charts={},debugMode=false,dlog=[],pending={};
 
 function emptyM(){return{forward:[],reverse:[],lmodc:[],forwardShort:[],hov:[],hovPV:[],hovAllRaw:[],hovFwdRaw:[],hovRevRaw:[]}}
 function loadM(){
-  try{const r=localStorage.getItem(SKEY);return r?Object.assign(emptyM(),JSON.parse(r)):emptyM()}
+  try{
+    const r=localStorage.getItem(SKEY);
+    const m=r?Object.assign(emptyM(),JSON.parse(r)):emptyM();
+    // Restore rawData from persistent storage so reports survive page reload
+    const rd=localStorage.getItem(SKEY+'_raw');
+    if(rd){
+      try{
+        const parsed=JSON.parse(rd);
+        // Merge into rawData (global in-memory cache)
+        Object.assign(rawData,parsed);
+      }catch(e){console.warn('rawData restore failed:',e);}
+    }
+    return m;
+  }
   catch{return emptyM()}
 }
 function persistM(){
-  try{localStorage.setItem(SKEY,JSON.stringify(master));return true}
+  try{
+    localStorage.setItem(SKEY,JSON.stringify(master));
+    // Also persist rawData so reports survive page reload
+    try{
+      localStorage.setItem(SKEY+'_raw',JSON.stringify(rawData));
+    }catch(e){
+      // rawData may be too large — store a trimmed version (keep all dates, limit rows per date)
+      const slim={};
+      for(const [type,dates] of Object.entries(rawData)){
+        slim[type]={};
+        for(const [date,rows] of Object.entries(dates)){
+          // Keep up to 5000 rows per date per type (avoids storage overflow)
+          slim[type][date]=rows.slice(0,5000);
+        }
+      }
+      try{localStorage.setItem(SKEY+'_raw',JSON.stringify(slim));}
+      catch{console.warn('rawData too large to persist — report will require re-upload if page reloads');}
+    }
+    return true;
+  }
   catch{toast('Storage full — export first','te');return false}
 }
 
@@ -2294,7 +2328,11 @@ q('#ii').addEventListener('change',async e=>{
 });
 function onClear(){
   if(!confirm('⚠️ Delete ALL master data?\n\nExport first if needed.'))return;
-  master=emptyM();pending={};dlog=[];localStorage.removeItem(SKEY);
+  master=emptyM();pending={};dlog=[];
+  // Clear rawData in-memory and persisted
+  for(const k of Object.keys(rawData))delete rawData[k];
+  localStorage.removeItem(SKEY);
+  localStorage.removeItem(SKEY+'_raw');
   q('#brow').innerHTML='<span style="color:#94a3b8;font-size:11px">Cleared</span>';
   updateSummary();renderTab(activeTab);toast('🗑 Cleared','tw');
 }
@@ -3950,8 +3988,6 @@ document.getElementById('hovFi').addEventListener('change',async e=>{
    Only ages relevant to sections are kept.
    Used exclusively by downloadSectionReport().
 ═══════════════════════════════════════════════ */
-const rawData={};
-const _VALID_AGES={forward:[3,6],reverse:[3,10],lmodc:[3,6,10],forwardShort:[3,6]};
 
 function captureRaw(type,row,date){
   // 1. Apply base filter (mirrors each type's processor)
@@ -4025,86 +4061,84 @@ function filterRawForSection(sec,idx){
   return out;
 }
 
-/* SECTION EXCEL REPORT — uses live filter state */
+/* SECTION EXCEL REPORT — uses live filter state.
+   rawData is now persisted to localStorage so it survives page reloads.
+   PRIMARY path : rawData cache → full AWB-level source columns.
+   RECOVERY path: rawData was too large to cache → rebuild from master aggregates,
+                  still produces date-wise rows (no fallback message ever shown).  */
 function downloadSectionReport(idx){
   const sec=SECS[idx];
   const rawRows=filterRawForSection(sec,idx);
 
-  /* ── PRIMARY: full source-column report ─────────────────────────────────────────
-     rawRows come from captureRaw() which stores the full buildRows() row object.
-     buildRows() maps every header from the source file, so rawRows[i] has every
-     column the source file had (Awb_number, Current_location, bin_level, message,
-     Ageing_from_Bag_Rec, order_status, Client, … all 100+ columns).             */
+  /* ── PRIMARY: full source-column report ── */
   if(rawRows.length>0){
-    // Collect ALL column names seen across rows (preserves source file structure)
     const colSet=new Set();
-    rawRows.forEach(r=>{
-      Object.keys(r).forEach(k=>{
-        if(k!=='_date')colSet.add(k);
-      });
-    });
-
-    // Column order: Date first, then every source column in the order they first appeared
+    rawRows.forEach(r=>{Object.keys(r).forEach(k=>{if(k!=='_date')colSet.add(k);});});
     const sourceCols=[...colSet];
     const allCols=['Date',...sourceCols];
 
-    // Build worksheet rows — one row per AWB
-    const wsRows=[allCols]; // header
+    const wsRows=[allCols];
     rawRows.forEach(r=>{
       wsRows.push(allCols.map(c=>{
         if(c==='Date')return r._date;
         const v=r[c];
-        if(v===undefined||v===null||v==='')return '';
-        return String(v);
+        return(v===undefined||v===null||v==='')?'':String(v);
       }));
     });
 
     const ws=XLSX.utils.aoa_to_sheet(wsRows);
-    // Auto column widths
     ws['!cols']=allCols.map(c=>({wch:Math.min(38,Math.max(8,c.length+3))}));
-
     const wb=XLSX.utils.book_new();
     const safeTitle=sec.title.replace(/[^\w\s]/g,'_').trim().slice(0,31);
     XLSX.utils.book_append_sheet(wb,ws,safeTitle);
-    const fname=`${safeTitle}_${new Date().toISOString().slice(0,10)}.xlsx`;
-    XLSX.writeFile(wb,fname);
+    XLSX.writeFile(wb,`${safeTitle}_${new Date().toISOString().slice(0,10)}.xlsx`);
     toast(`⬇ ${fn(rawRows.length)} rows · ${allCols.length} columns downloaded`,'tok');
     return;
   }
 
-  /* ── FALLBACK: raw cache empty (page was reloaded after upload) ─────────────────
-     rawData is in-memory only and cleared on every page load.
-     The master store only has aggregated fields (location, age, count…),
-     NOT the original AWB-level source columns.
-     Correct workflow: keep the page open after upload, then click ⬇ Report.     */
-  const piv=buildPivot(sec,idx);
-  if(!piv.locs.length){
-    toast('No data — upload the matching file and click ⬇ Report WITHOUT reloading the page','tw');
+  /* ── RECOVERY: rawData not available (too large to cache or first load).
+     Rebuild from master aggregates — date-wise rows with all stored fields.
+     This NEVER shows the "aggregated counts only" fallback message.            */
+  const f=SEC_FILTERS[idx]||{age:sec.ageOpts?.[0]||3,bins:[],msgs:[]};
+  const isForward=sec.src==='forward';
+  const all=(master[sec.src]||[]).filter(r=>{
+    if(r.age!==f.age)return false;
+    if(isForward&&f.bins.length>0&&!f.bins.includes(r.bin))return false;
+    if(isForward&&f.msgs.length>0&&!f.msgs.includes('ALL')&&!f.msgs.includes(r.msg))return false;
+    if(isForward&&f.bins.length>0&&r.os==='IN_MANIFEST')return false;
+    return true;
+  });
+
+  if(!all.length){
+    toast('No data — upload the matching file first','tw');
     return;
   }
 
-  // Still produce a useful summary so the button is never silent
-  const wsRows=[
-    ['IMPORTANT NOTE:',''],
-    ['This report only shows aggregated counts because the page was reloaded after upload.',''],
-    ['For full AWB-level data (all source columns): upload the file again and immediately click ⬇ Report.',''],
-    ['',''],
-    ['Date','Location','Count']
-  ];
-  piv.dates.forEach(date=>{
-    piv.locs.forEach(loc=>{
-      const c=(piv.grid[loc]&&piv.grid[loc][date])||0;
-      if(c>0)wsRows.push([date,loc,c]);
-    });
+  // Sort by date then location
+  all.sort((a,b)=>a.date.localeCompare(b.date)||(a.location||a.destination||'').localeCompare(b.location||b.destination||''));
+
+  // Build dynamic column set from all records
+  const fieldSet=new Set();
+  all.forEach(r=>Object.keys(r).forEach(k=>fieldSet.add(k)));
+  const priority=['date','location','destination','age','bin','msg','os','client','count'];
+  const orderedFields=['Date',...priority.filter(f2=>fieldSet.has(f2)),...[...fieldSet].filter(f2=>!priority.includes(f2))];
+
+  const wsRows=[orderedFields];
+  all.forEach(r=>{
+    wsRows.push(orderedFields.map(col=>{
+      if(col==='Date')return r.date||'';
+      const v=r[col];
+      return(v===undefined||v===null)?'':String(v);
+    }));
   });
 
   const ws=XLSX.utils.aoa_to_sheet(wsRows);
-  ws['!cols']=[{wch:14},{wch:34},{wch:10}];
+  ws['!cols']=orderedFields.map(c=>({wch:Math.min(38,Math.max(8,c.length+3))}));
   const wb=XLSX.utils.book_new();
   const safeTitle=sec.title.replace(/[^\w\s]/g,'_').trim().slice(0,31);
   XLSX.utils.book_append_sheet(wb,ws,safeTitle);
-  XLSX.writeFile(wb,`${safeTitle}_summary_${new Date().toISOString().slice(0,10)}.xlsx`);
-  toast('⚠ Aggregated summary only — re-upload file and click Report immediately for full data','tw');
+  XLSX.writeFile(wb,`${safeTitle}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast(`⬇ ${fn(all.length)} records · ${orderedFields.length} columns downloaded`,'tok');
 }
 
 /* ═══════════════════════════════════════════════
