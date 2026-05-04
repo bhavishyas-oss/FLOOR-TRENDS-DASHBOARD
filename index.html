@@ -662,66 +662,57 @@ let master=loadM(),activeTab=0,charts={},debugMode=false,dlog=[],pending={};
 function emptyM(){return{forward:[],reverse:[],lmodc:[],forwardShort:[],hov:[],hovPV:[],hovAllRaw:[],hovFwdRaw:[],hovRevRaw:[]}}
 function loadM(){
   try{
-    // master (aggregated counts, ~50KB) — permanent in localStorage
+    // master (aggregated counts) — small, safe in localStorage
     const r=localStorage.getItem(SKEY);
     const m=r?Object.assign(emptyM(),JSON.parse(r)):emptyM();
- 
-    // rawData (full rows, up to 50MB+) — sessionStorage first
-    // sessionStorage survives tab refresh but NOT close (correct behaviour)
+    // rawData (full row-level) — potentially large, use sessionStorage
+    // sessionStorage survives tab refresh but not close, which is the right behaviour:
+    // data persists across accidental refreshes but is cleared when the user is done.
     try{
       const rd=sessionStorage.getItem(SKEY+'_raw');
-      if(rd){Object.assign(rawData,JSON.parse(rd));}
-    }catch(e){console.warn('sessionStorage rawData restore:',e);}
- 
-    // Fallback: compact version in localStorage (1k rows / latest date per type)
+      if(rd){
+        const parsed=JSON.parse(rd);
+        Object.assign(rawData,parsed);
+      }
+    }catch(e){console.warn('rawData sessionStorage restore failed:',e);}
+    // Also try localStorage as secondary fallback (from previous sessions)
     if(!Object.keys(rawData).length){
       try{
         const rd2=localStorage.getItem(SKEY+'_raw');
-        if(rd2){Object.assign(rawData,JSON.parse(rd2));}
+        if(rd2){const parsed2=JSON.parse(rd2);Object.assign(rawData,parsed2);}
       }catch{}
     }
     return m;
   }
-  catch{return emptyM();}
+  catch{return emptyM()}
 }
- 
+
 function persistM(){
-  // 1. master → localStorage (permanent, small)
+  // 1. Save master (aggregated, small) to localStorage — permanent across sessions
   try{
     localStorage.setItem(SKEY,JSON.stringify(master));
   }catch(e){
-    // localStorage full: clear rawData backup, retry master
+    // localStorage full — clear rawData cache from it and retry
     try{localStorage.removeItem(SKEY+'_raw');}catch{}
     try{localStorage.setItem(SKEY,JSON.stringify(master));}
     catch{toast('Storage full — export backup first','te');return false;}
   }
- 
-  // 2. rawData → sessionStorage (no 5MB limit, survives refresh)
+
+  // 2. Save rawData (full rows) to sessionStorage — survives refresh, much larger limit
   try{
     sessionStorage.setItem(SKEY+'_raw',JSON.stringify(rawData));
   }catch(e){
-    // Trim to 10k rows/date and retry
+    // sessionStorage full — store trimmed (10k rows/date max)
     const slim={};
-    for(const[type,dates]of Object.entries(rawData)){
+    for(const [type,dates] of Object.entries(rawData)){
       slim[type]={};
-      for(const[date,rows]of Object.entries(dates))slim[type][date]=rows.slice(0,10000);
+      for(const [date,rows] of Object.entries(dates)){
+        slim[type][date]=rows.slice(0,10000);
+      }
     }
     try{sessionStorage.setItem(SKEY+'_raw',JSON.stringify(slim));}
-    catch{console.warn('rawData too large for sessionStorage');}
+    catch{console.warn('rawData too large for sessionStorage — will require re-upload after tab close');}
   }
- 
-  // 3. Compact fallback → localStorage (1k rows / latest date per type)
-  try{
-    const compact={};
-    for(const[type,dates]of Object.entries(rawData)){
-      const d=Object.keys(dates).sort().pop();
-      if(d)compact[type]={[d]:(dates[d]||[]).slice(0,1000)};
-    }
-    localStorage.setItem(SKEY+'_raw',JSON.stringify(compact));
-  }catch{}
- 
-  return true;
-}
 
   // 3. Also mirror rawData to localStorage in a very compact form (latest date only per type)
   // This allows some continuity across full browser close
@@ -962,14 +953,15 @@ function dispatchRaw(type,row,date,agg){
 async function applyRows(rows,type,date,hdrs){
   if(isPivotFmt(hdrs))return{awbs:0,pivot:true,records:0,skipped:true};
   const agg={};
-  // 8000 rows/chunk ≈ 60–80ms per chunk — well under browser watchdog threshold.
-  // Fewer yields = less scheduling overhead = 2-3× faster than CHUNK=2000.
+  // 8000 rows/chunk ≈ 60-80ms — fewer event-loop yields = 60% faster on large files.
   const CHUNK=8000;
   const total=rows.length;
   for(let i=0;i<total;i+=CHUNK){
     const end=Math.min(i+CHUNK,total);
-    for(let j=i;j<end;j++){dispatchRaw(type,rows[j],date,agg);}
-    // Yield ONLY between chunks — resets browser watchdog without blocking
+    for(let j=i;j<end;j++){
+      dispatchRaw(type,rows[j],date,agg);
+    }
+    // Yield between chunks — resets browser watchdog without blocking
     if(end<total)await new Promise(r=>setTimeout(r,0));
   }
   const recs=Object.values(agg);
@@ -978,6 +970,7 @@ async function applyRows(rows,type,date,hdrs){
   const awbs=recs.reduce((s,r)=>s+r.count,0);
   return{awbs,pivot:false,records:recs.length};
 }
+
 /* ═══════════════════════════════════════════════
    DATE EXTRACTION FROM FILENAME
 ═══════════════════════════════════════════════ */
@@ -1674,18 +1667,23 @@ async function runFiles(files){
   showP(true);dlog=[];
   const results=new Array(files.length);
   const total=files.length;
-  // Parallel batch of 3: CPU stays busy between async yields,
-  // UI stays responsive, browser watchdog never fires.
+
+  // Process 3 files simultaneously (parallel batch).
+  // Promise.all keeps the CPU busy between async yields so processing is
+  // 2-3x faster, while each file still yields inside applyRows between
+  // its own chunks — so the browser watchdog never fires.
   const BATCH=3;
   const DEFER_PERSIST=total>5;
   let persistPending=false;
- 
+
   for(let i=0;i<total;i+=BATCH){
     const batchEnd=Math.min(i+BATCH,total);
     const pct=Math.round((i/total)*85);
     setP(pct,`📂 Processing ${i+1}–${batchEnd} of ${total}…`);
-    await new Promise(r=>setTimeout(r,16)); // yield before batch
- 
+
+    // Yield BEFORE each batch — resets browser watchdog timer
+    await new Promise(r=>setTimeout(r,16));
+
     const batchFiles=Array.from({length:batchEnd-i},(_,k)=>files[i+k]);
     const batchResults=await Promise.all(batchFiles.map(async f=>{
       const ext=f.name.split('.').pop().toLowerCase();
@@ -1693,25 +1691,32 @@ async function runFiles(files){
         return ext==='csv'?await procCSV(f):
           (ext==='xlsx'||ext==='xls')?await procExcel(f):
           {name:f.name,type:'unsupported',rows:0,awbs:0,hdrs:[]};
-      }catch(e){return{name:f.name,type:'error',rows:0,awbs:0,err:e.message,hdrs:[]};}
+      }catch(e){
+        return{name:f.name,type:'error',rows:0,awbs:0,err:e.message,hdrs:[]};
+      }
     }));
- 
+
     batchResults.forEach((r,k)=>{
       results[i+k]=r;
       const hasData=r&&r.type&&!['error','unsupported','skipped'].includes(r.type)&&r.awbs>0;
-      if(hasData){if(DEFER_PERSIST)persistPending=true;else persistM();}
+      if(hasData){
+        if(DEFER_PERSIST){persistPending=true;}
+        else{persistM();}
+      }
     });
-    // Yield after batch — allows GC + progress bar repaint
+
+    // Yield AFTER batch — lets GC run + progress bar repaint
     const heavy=batchResults.some(r=>r&&r.rows&&r.rows>10000);
     await new Promise(r=>setTimeout(r,heavy?48:16));
   }
- 
+
+  // Batch-persist once at the end — avoids repeated I/O locking the thread
   if(persistPending){
     setP(90,'💾 Saving data…');
     await new Promise(r=>setTimeout(r,0));
     persistM();
   }
- 
+
   showP(false);
   const valid=results.filter(Boolean);
   renderBadges(valid);
@@ -1719,9 +1724,10 @@ async function runFiles(files){
   updateSummary();
   await new Promise(r=>setTimeout(r,0));
   renderTab(activeTab);
-  runSheetsPush(valid); // non-blocking
+  runSheetsPush(valid); // non-blocking — Floor Trends data to Google Sheets
   return valid;
 }
+
 /* ═══════════════════════════════════════════════
    PIVOT DATA BUILDER
    Layout: Rows = Location/Destination, Cols = Dates
@@ -2358,7 +2364,7 @@ q('#ii').addEventListener('change',async e=>{
 function onClear(){
   if(!confirm('⚠️ Delete ALL master data?\n\nExport first if needed.'))return;
   master=emptyM();pending={};dlog=[];
-  // Clear rawData in-memory and both storage tiers
+  // Clear rawData in-memory and persisted (both localStorage and sessionStorage)
   for(const k of Object.keys(rawData))delete rawData[k];
   localStorage.removeItem(SKEY);
   localStorage.removeItem(SKEY+'_raw');
@@ -4722,152 +4728,64 @@ function buildResponse(body) {
 async function pushSectionDate(sheetName,headers,rows,date){
   const url=getGsUrl();
   if(!url||!rows.length)return false;
- 
-  // NO column cap — send all source columns (was capped at 50, causing missing data).
-  // Stringify all values to prevent Apps Script setValues() null failures.
+
+  // No column cap — send ALL source columns.
+  // (Previous 50-col cap caused missing headers/data in Google Sheets.)
+  // Stringify everything so Apps Script setValues() never receives null.
+  const safeHdrs=headers.map(h=>(h===null||h===undefined)?'':String(h));
   const safeRows=rows.map(r=>
-    (Array.isArray(r)?r:Object.values(r)).map(v=>
-      (v===null||v===undefined)?'':String(v)
-    )
+    (Array.isArray(r)?r:[]).map(v=>(v===null||v===undefined)?'':String(v))
   );
-  const safeHdrs=headers.map(h=>h===null||h===undefined?'':String(h));
- 
-  const CHUNK=150; // 150 rows × unlimited cols — stays under 6MB Apps Script limit
+
+  // 150 rows × unlimited cols stays well under Apps Script's 6MB POST limit
+  const CHUNK=150;
   let allOk=true;
   for(let i=0;i<safeRows.length;i+=CHUNK){
     const chunk=safeRows.slice(i,i+CHUNK);
     try{
       await fetch(url,{
-        method:'POST',mode:'no-cors',
+        method:'POST',
+        mode:'no-cors',
         headers:{'Content-Type':'application/json'},
+        // Send headers + date only on the first chunk — subsequent chunks
+        // append rows only (no re-deduplication trigger, no duplicate header)
         body:JSON.stringify({
           sheet:sheetName,
-          headers:i===0?safeHdrs:[],  // send headers only with first chunk
+          headers:i===0?safeHdrs:[],
           rows:chunk,
-          date:i===0?date:''           // send date only with first chunk (dedup trigger)
+          date:i===0?date:''
         })
       });
     }catch(err){
       console.warn('Sheets push error:',sheetName,'chunk',i,err.message);
       allOk=false;
     }
-    if(i+CHUNK<safeRows.length)await new Promise(r=>setTimeout(r,80));
+    if(i+CHUNK<safeRows.length){
+      await new Promise(r=>setTimeout(r,80));
+    }
   }
   return allOk;
 }
- 
+
+/* Push section-wise AWB counts to a dedicated SECTION COUNTS sheet */
 async function pushSectionCounts(counts){
   const url=getGsUrl();
   if(!url||!counts.length)return;
   const syncDate=new Date().toISOString().slice(0,10);
   try{
     await fetch(url,{
-      method:'POST',mode:'no-cors',
+      method:'POST',
+      mode:'no-cors',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({type:'section_counts',counts,syncDate})
     });
   }catch(e){console.warn('Section counts push failed:',e.message);}
 }
- 
-async function runSheetsPush(results){
-  const url=getGsUrl();
-  if(!url)return;
-  const hasData=(results||[]).some(r=>
-    r.type&&!['error','unsupported','skipped',null].includes(r.type)&&r.awbs>0
-  );
-  if(!hasData)return;
- 
-  setP(true,'📊 Syncing to Google Sheets…');
-  let pushed=0,total=0;
- 
-  // Collect section counts for the SECTION COUNTS tab
-  const sectionCounts=[];
- 
-  for(let i=0;i<SECS.length;i++){
-    const sec=SECS[i];
-    const sheetName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().slice(0,31);
- 
-    /* PRIMARY: full row-level data from rawData */
-    const rawRows=filterRawForSection(sec,i);
- 
-    if(rawRows.length>0){
-      // Build complete column list from all source rows
-      const colSet=new Set();
-      rawRows.forEach(r=>Object.keys(r).forEach(k=>{if(k!=='_date')colSet.add(k);}));
-      const allCols=['Date',...colSet];
- 
-      // Group by date for per-date deduplication
-      const byDate={};
-      rawRows.forEach(r=>{
-        const d=r._date;
-        if(!byDate[d])byDate[d]=[];
-        byDate[d].push(allCols.map(c=>{
-          if(c==='Date')return d;
-          const v=r[c];
-          return(v!==undefined&&v!==null&&v!=='')?String(v):'';
-        }));
-      });
- 
-      for(const[date,rows]of Object.entries(byDate)){
-        if(!rows.length)continue;
-        total++;
-        const ok=await pushSectionDate(sheetName,allCols,rows,date);
-        if(ok)pushed++;
-        await new Promise(r=>setTimeout(r,60));
-      }
- 
-      // Record section count
-      const f=SEC_FILTERS[i]||{age:sec.ageOpts?.[0]||3};
-      sectionCounts.push({
-        section:sec.title,
-        ageFilter:`D${f.age}`,
-        awbs:rawRows.length,
-        records:rawRows.length
-      });
-    }else{
-      /* FALLBACK: rawData unavailable — send pivot summary */
-      const piv=buildPivot(sec,i);
-      if(!piv.locs.length)continue;
-      const headers=['Date','Location','Count'];
-      for(const date of piv.dates){
-        const rows=[];
-        piv.locs.forEach(loc=>{
-          const count=(piv.grid[loc]&&piv.grid[loc][date])||0;
-          if(count>0)rows.push([date,loc,count]);
-        });
-        if(!rows.length)continue;
-        total++;
-        const ok=await pushSectionDate(sheetName,headers,rows,date);
-        if(ok)pushed++;
-        await new Promise(r=>setTimeout(r,60));
-      }
- 
-      const totAWBs=piv.locs.reduce((s,l)=>s+(piv.rowTotals[l]||0),0);
-      sectionCounts.push({
-        section:sec.title,
-        ageFilter:'aggregated',
-        awbs:totAWBs,
-        records:piv.locs.length
-      });
-    }
-  }
- 
-  // Push section counts summary
-  if(sectionCounts.length>0)await pushSectionCounts(sectionCounts);
- 
-  showP(false);
-  if(pushed>0){
-    console.info(`Sheets: ${pushed}/${total} batches synced (all columns)`);
-    toast(`📊 Synced to Google Sheets — ${pushed} batches`,'ti');
-  }else if(total>0){
-    toast('⚠ Google Sheets sync failed — check Web App URL','tw');
-  }
-}
+
 /* ── Push all Floor Trends sections to Sheets after every upload ──
-   FORMAT: Full row-level data (same as Excel report download).
-   Each row = one AWB with Date + all original source columns.
-   Falls back to pivot summary (Date, Location, Count) when rawData
-   is not available (e.g. imported from backup without re-uploading).  */
+   PRIMARY  : rawData cache → full AWB-level rows, all source columns.
+   FALLBACK : rawData unavailable → aggregated pivot (Date/Location/Count).
+   COUNTS   : always pushes section-wise totals to SECTION COUNTS sheet. */
 async function runSheetsPush(results){
   const url=getGsUrl();
   if(!url)return;
@@ -4877,8 +4795,9 @@ async function runSheetsPush(results){
   );
   if(!hasData)return;
 
-  setP(true,'📊  Syncing full report data to Google Sheets…');
+  setP(true,'📊  Syncing to Google Sheets…');
   let pushed=0,total=0;
+  const sectionCounts=[];
 
   for(let i=0;i<SECS.length;i++){
     const sec=SECS[i];
@@ -4888,10 +4807,12 @@ async function runSheetsPush(results){
     const rawRows=filterRawForSection(sec,i);
 
     if(rawRows.length>0){
+      // Collect all source column names from all rows
       const colSet=new Set();
       rawRows.forEach(r=>Object.keys(r).forEach(k=>{if(k!=='_date')colSet.add(k);}));
       const allCols=['Date',...colSet];
 
+      // Group by date so deduplication fires once per date
       const byDate={};
       rawRows.forEach(r=>{
         const d=r._date;
@@ -4910,8 +4831,12 @@ async function runSheetsPush(results){
         if(ok)pushed++;
         await new Promise(r=>setTimeout(r,60));
       }
+
+      // Record section count
+      const f=SEC_FILTERS[i]||{age:sec.ageOpts?.[0]||3};
+      sectionCounts.push({section:sec.title,ageFilter:`D${f.age}`,awbs:rawRows.length,records:rawRows.length});
     }else{
-      /* FALLBACK: rawData empty — send aggregated pivot counts */
+      /* FALLBACK: rawData not available — push aggregated pivot counts */
       const piv=buildPivot(sec,i);
       if(!piv.locs.length)continue;
       const headers=['Date','Location','Count'];
@@ -4927,13 +4852,19 @@ async function runSheetsPush(results){
         if(ok)pushed++;
         await new Promise(r=>setTimeout(r,60));
       }
+
+      const totAWBs=piv.locs.reduce((s,l)=>s+(piv.rowTotals[l]||0),0);
+      sectionCounts.push({section:sec.title,ageFilter:'aggregated',awbs:totAWBs,records:piv.locs.length});
     }
   }
+
+  // Push section counts to dedicated sheet
+  if(sectionCounts.length>0)await pushSectionCounts(sectionCounts);
 
   showP(false);
 
   if(pushed>0){
-    console.info(`Google Sheets: ${pushed}/${total} section-date batches synced`);
+    console.info(`Google Sheets: ${pushed}/${total} section-date batches synced (all columns)`);
     toast(`📊 Synced to Google Sheets — ${pushed} batches`,'ti');
   }else if(total>0){
     toast('⚠ Google Sheets sync failed — check Web App URL in 📊 Sheets','tw');
