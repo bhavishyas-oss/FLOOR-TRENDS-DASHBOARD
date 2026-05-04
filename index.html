@@ -389,6 +389,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
     <button id="hovSubTab0" class="tab active" onclick="switchHovSubTab(0)" style="font-size:12px;font-weight:800;padding:11px 18px;margin-bottom:-2px">📊 HOV OVERVIEW</button>
     <button id="hovSubTab1" class="tab" onclick="switchHovSubTab(1)" style="font-size:12px;font-weight:800;padding:11px 18px;margin-bottom:-2px">🔍 HOV DETAILED</button>
     <button id="hovSubTab2" class="tab" onclick="switchHovSubTab(2)" style="font-size:12px;font-weight:800;padding:11px 18px;margin-bottom:-2px">⏳ D15+ TRACKING</button>
+    <button id="hovSubTab3" class="tab" onclick="switchHovSubTab(3)" style="font-size:12px;font-weight:800;padding:11px 18px;margin-bottom:-2px">👤 ACTION USER TRENDS</button>
   </div>
 
   <!-- ════════════════════════════════════
@@ -599,17 +600,11 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
         <button class="btn bg" onclick="downloadHovSectionImage('hovD15TabContent','HOV_D15plus.png')" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG</button>
       </div>
     </div>
-    <!-- Per-file D15+ breakdown + combined table -->
     <div id="hovD15TabContent" style="display:flex;flex-direction:column;gap:14px">
-      <!-- Combined pivot -->
       <div class="card" id="hovD15Card">
-        <div class="chead">
-          <span class="ct">D16 → D90 — All Files Combined</span>
-          <span class="cbg">LOCATION × AGE</span>
-        </div>
+        <div class="chead"><span class="ct">D16 → D90 — All Files Combined</span><span class="cbg">LOCATION × AGE</span></div>
         <div id="hovD15Wrap" style="max-height:500px;overflow-y:auto;overflow-x:auto"></div>
       </div>
-      <!-- AWB detail table (shown when DC selected) -->
       <div class="card" id="hovD15AWBCard" style="display:none">
         <div class="chead">
           <span class="ct" id="hovD15AWBTitle">AWB Detail</span>
@@ -618,9 +613,34 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
         </div>
         <div id="hovD15AWBWrap" style="max-height:480px;overflow-y:auto;overflow-x:auto"></div>
       </div>
-      <!-- Per-file sections injected here -->
       <div id="hovD15PerFileWrap" style="display:flex;flex-direction:column;gap:14px"></div>
     </div>
+  </div>
+
+  <!-- ════════════════════════════════════
+       TAB 3: ACTION USER TRENDS
+  ════════════════════════════════════ -->
+  <div id="hovSubPanel3" style="display:none;padding:14px;flex-direction:column;gap:14px">
+    <div class="card">
+      <div style="padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <span style="font-size:11px;font-weight:800;color:var(--brand);text-transform:uppercase">👤 Action User Trends</span>
+        <select id="hovAUFileType" class="dc-select" onchange="renderHovActionUser()" style="min-width:160px;font-size:11px">
+          <option value="ALL">All File Types</option>
+          <option value="forward">📦 Forward</option>
+          <option value="reverse_fwd">🔄 Reverse — FWD Leg Miss</option>
+          <option value="reverse_rev">🔄 Reverse — REV Leg Miss</option>
+        </select>
+        <select id="hovAUMinAWB" class="dc-select" onchange="renderHovActionUser()" style="min-width:180px;font-size:11px">
+          <option value="2">Min AWBs per User: 2+</option>
+          <option value="3">Min AWBs per User: 3+</option>
+          <option value="5">Min AWBs per User: 5+</option>
+          <option value="10">Min AWBs per User: 10+</option>
+        </select>
+        <button class="btn bg" onclick="generateHovPDF(3)" style="font-size:10px;padding:4px 9px;color:var(--brand);border-color:var(--bdr2);margin-left:auto">📄 PDF</button>
+        <button class="btn bg" onclick="downloadHovSectionImage('hovAUContent','HOV_ActionUser.png')" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG</button>
+      </div>
+    </div>
+    <div id="hovAUContent" style="display:flex;flex-direction:column;gap:14px"></div>
   </div>
 </div>
 <div id="toast"></div>
@@ -2502,7 +2522,9 @@ function pHovFwd(row,date,agg){
     const msg=String(gv(row,'message','Message','msg','MSG')||'');
     const dspBin=String(gv(row,'dsp bin_level','DSP bin_level','dsp_bin_level','DSP_bin_level','DSP_Bin_Level')||'');
     const dspMsg=String(gv(row,'dsp message','DSP message','dsp_message','DSP_message','DSP_Message')||'');
-    agg.__allRaw.push({awb,pv,pd,loc,pc,date,age,fileType:'forward',binLevel,msg,dspBin,dspMsg});
+    const actionUser=String(gv(row,'action_user','Action_user','Action_User','actionuser','ACTION_USER')||'');
+    const dspActionUser=String(gv(row,'dsp action_user','DSP action_user','dsp_action_user','DSP_action_user','DSP_Action_User')||'');
+    agg.__allRaw.push({awb,pv,pd,loc,pc,date,age,fileType:'forward',binLevel,msg,dspBin,dspMsg,actionUser,dspActionUser});
   }
 
   if(age<2||age>15)return; // age gate for D2-D15 tracking only
@@ -2549,7 +2571,9 @@ function pHovRev(row,date,agg){
     const msg=String(gv(row,'message','Message','msg','MSG')||'');
     const dspBin=String(gv(row,'dsp bin_level','DSP bin_level','dsp_bin_level','DSP_bin_level','DSP_Bin_Level','dsp bin level')||'');
     const dspMsg=String(gv(row,'dsp message','DSP message','dsp_message','DSP_message','DSP_Message','dsp msg')||'');
-    agg.__allRaw.push({awb,pv,pd,loc,pc,date,age,fileType:'reverse',binLevel,msg,dspBin,dspMsg});
+    const actionUser=String(gv(row,'action_user','Action_user','Action_User','actionuser','ACTION_USER')||'');
+    const dspActionUser=String(gv(row,'dsp action_user','DSP action_user','dsp_action_user','DSP_action_user','DSP_Action_User')||'');
+    agg.__allRaw.push({awb,pv,pd,loc,pc,date,age,fileType:'reverse',binLevel,msg,dspBin,dspMsg,actionUser,dspActionUser});
   }
 
   if(age<2||age>15)return;
@@ -3494,6 +3518,7 @@ function renderHovPerFile(pcs,dc){
   });
 
   const pvByFile={};
+  // PRIMARY: master.hovPV (from pHov processors, has pd captured at row level)
   (master.hovPV||[]).forEach(r=>{
     const key=`${r.fileType}|${r.date}`;
     if(!pvByFile[key])pvByFile[key]=[];
@@ -3501,6 +3526,17 @@ function renderHovPerFile(pcs,dc){
       if(!dc||dc==='ALL'||(r.loc||'').toUpperCase()===(dc||'').toUpperCase())
         pvByFile[key].push(r);
     }
+  });
+  // SUPPLEMENT: for reverse files, also pull from hovAllRaw which captures pd directly from HOV PD PC sheet
+  // This fixes missing PD in reverse per-file PV list
+  (master.hovAllRaw||[]).forEach(r=>{
+    if(r.fileType!=='reverse')return;
+    if((parseFloat(r.pv)||0)<5000)return;
+    if(dc&&dc!=='ALL'&&(r.loc||'').toUpperCase()!==(dc||'').toUpperCase())return;
+    const key=`${r.fileType}|${r.date}`;
+    if(!pvByFile[key])pvByFile[key]=[];
+    // Only add if not already present by AWB (avoid duplication)
+    if(!pvByFile[key].some(e=>e.awb===r.awb))pvByFile[key].push(r);
   });
 
   const sortedKeys=Object.keys(fileGroups).sort();
@@ -3601,17 +3637,233 @@ function renderHovPerFile(pcs,dc){
 }
 
 /* ── Download HOV chart as PNG ── */
-/* ── 3-tab switcher ── */
+/* ── 4-tab switcher ── */
 function switchHovSubTab(idx){
-  [0,1,2].forEach(i=>{
+  [0,1,2,3].forEach(i=>{
     const btn=document.getElementById(`hovSubTab${i}`);
     const panel=document.getElementById(`hovSubPanel${i}`);
     if(btn)btn.classList.toggle('active',i===idx);
-    if(panel){panel.style.display=i===idx?'flex':'none';}
+    if(panel)panel.style.display=i===idx?'flex':'none';
   });
   if(idx===0)renderHovTab();
   if(idx===1)renderHovDetailed();
   if(idx===2)renderHovD15Tab();
+  if(idx===3)renderHovActionUser();
+}
+
+/* ── HOV Overview structured PDF report ── */
+function generateHovPDF(tabIdx){
+  // Build full structured HTML report for the selected tab
+  // Uses data directly from master — not the dashboard UI (no scroll limits)
+  const win=window.open('','_blank','width=1100,height=900,scrollbars=yes');
+  if(!win){toast('Allow pop-ups for report export','tw');return;}
+
+  const date=new Date().toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+  const tabTitles=['HOV TRACKING OVERVIEW','HOV DETAILED','D15+ TRACKING','ACTION USER TRENDS'];
+  const title=tabTitles[tabIdx]||'HOV Report';
+
+  let body='';
+
+  if(tabIdx===0){
+    // Per-file structured sections
+    const allHov=master.hov||[];
+    const fileGroups={};
+    allHov.forEach(r=>{
+      const key=`${r.fileType}|${r.date}`;
+      if(!fileGroups[key])fileGroups[key]={fileType:r.fileType,date:r.date,locs:{},total:0};
+      const g=fileGroups[key];
+      if(!g.locs[r.location])g.locs[r.location]={};
+      g.locs[r.location][r.age]=(g.locs[r.location][r.age]||0)+r.count;
+      g.total+=r.count;
+    });
+
+    const TYPE_FULL={forward:'📦 FORWARD R@DC HOV TRENDS (D2–D15)',reverse:'🔄 REVERSE R@DC HOV TRENDS (D2–D15)',lmodc:'🏪 LMODC HOV TRENDS (D2–D15)',forwardShort:'⚡ FORWARD SHORT SHIPMENT HOV TRENDS (D2–D15)'};
+
+    Object.entries(fileGroups).sort((a,b)=>a[0].localeCompare(b[0])).forEach(([key,g])=>{
+      const locs=Object.keys(g.locs).sort();
+      const ages=HOV_AGES;
+
+      // D2-D15 table
+      let tbl=`<table border="1" cellpadding="7" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:12px;margin-bottom:8px">
+        <thead><tr style="background:#0f2b25;color:#fff"><th>LOCATION</th>${ages.map(a=>`<th>D${a}</th>`).join('')}<th>TOTAL</th></tr></thead><tbody>`;
+      locs.forEach(loc=>{
+        const rt=ages.reduce((s,a)=>s+(g.locs[loc][a]||0),0);
+        tbl+=`<tr><td>${xe(loc)}</td>${ages.map(a=>{const v=g.locs[loc][a]||0;return`<td style="text-align:center">${v||'–'}</td>`;}).join('')}<td style="text-align:center;font-weight:bold">${fn(rt)}</td></tr>`;
+      });
+      const colTots=ages.map(a=>locs.reduce((s,l)=>s+(g.locs[l][a]||0),0));
+      tbl+=`<tr style="background:#0a2520;color:#fff;font-weight:bold"><td>TOTAL</td>${colTots.map(c=>`<td style="text-align:center">${fn(c)}</td>`).join('')}<td style="text-align:center">${fn(g.total)}</td></tr>`;
+      tbl+=`</tbody></table>`;
+
+      // PV table for this file (all rows, no scroll limit)
+      const pvRows=(master.hovPV||[]).filter(r=>r.fileType===g.fileType&&r.date===g.date&&(parseFloat(r.pv)||0)>=5000)
+        .sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
+      // Also supplement reverse with hovAllRaw for PD
+      const pvExtra=g.fileType==='reverse'?(master.hovAllRaw||[]).filter(r=>r.fileType==='reverse'&&r.date===g.date&&(parseFloat(r.pv)||0)>=5000&&!pvRows.some(p=>p.awb===r.awb)):[];
+      const allPV=[...pvRows,...pvExtra].sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
+      let pvTbl='';
+      if(allPV.length){
+        pvTbl=`<h4 style="color:#dc2626;margin:12px 0 4px">Product Value ≥ ₹5,000 (${fn(allPV.length)} AWBs)</h4>
+          <table border="1" cellpadding="7" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:12px">
+          <thead><tr style="background:#0f2b25;color:#fff"><th>LOCATION</th><th>AWB NUMBER</th><th>PRODUCT VALUE</th><th>PRODUCT DESCRIPTION</th></tr></thead><tbody>`;
+        allPV.forEach((r,i)=>{const bg=i%2===0?'#fff':'#f3faf7';pvTbl+=`<tr style="background:${bg}"><td>${xe(r.loc||'–')}</td><td>${xe(r.awb||'–')}</td><td style="text-align:right">₹${fn(Math.round(parseFloat(r.pv)||0))}</td><td>${xe(r.pd||'–')}</td></tr>`;});
+        pvTbl+=`</tbody></table>`;
+      }
+
+      // Criticality table for this file
+      const critRows=(master.hovAllRaw||[]).filter(r=>r.fileType===g.fileType&&r.date===g.date&&(parseFloat(r.pv)||0)>=10000&&parseInt(r.age)>=10&&parseInt(r.age)<=30).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
+      let critTbl='';
+      if(critRows.length){
+        critTbl=`<h4 style="color:#7c3aed;margin:12px 0 4px">⚠ Criticality (Age D10–D30, PV ≥ ₹10,000 — ${fn(critRows.length)} AWBs)</h4>
+          <table border="1" cellpadding="7" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:12px">
+          <thead><tr style="background:#0f2b25;color:#fff"><th>LOCATION</th><th>AWB</th><th>PV</th><th>AGE</th><th>BIN</th><th>MSG</th><th>DSP BIN</th><th>DSP MSG</th><th>PRODUCT DESC</th></tr></thead><tbody>`;
+        critRows.forEach((r,i)=>{const bg=i%2===0?'#fff':'#f3faf7';critTbl+=`<tr style="background:${bg}"><td>${xe(r.loc||'–')}</td><td>${xe(r.awb||'–')}</td><td style="text-align:right">₹${fn(Math.round(parseFloat(r.pv)||0))}</td><td>D${r.age}</td><td>${xe(r.binLevel||'–')}</td><td>${xe(r.msg||'–')}</td><td>${xe(r.dspBin||'–')}</td><td>${xe(r.dspMsg||'–')}</td><td>${xe(r.pd||'–')}</td></tr>`;});
+        critTbl+=`</tbody></table>`;
+      }
+
+      body+=`<div style="page-break-inside:avoid;margin-bottom:32px">
+        <h2 style="background:#0f2b25;color:#E9DF43;padding:12px 16px;border-radius:6px;margin:0 0 12px">${TYPE_FULL[g.fileType]||g.fileType.toUpperCase()} · ${xe(g.date)}</h2>
+        <h4 style="color:#1C856F;margin:0 0 6px">HOV Tracking D2–D15 (${fn(g.total)} AWBs)</h4>
+        ${tbl}${critTbl}${pvTbl}
+      </div>`;
+    });
+
+  }else if(tabIdx===3){
+    // Action User report — all sections
+    const allRaw=master.hovAllRaw||[];
+    body+=buildActionUserHTML(allRaw,'forward','ALL',2);
+    body+=buildActionUserHTML(allRaw,'reverse_fwd','ALL',2);
+    body+=buildActionUserHTML(allRaw,'reverse_rev','ALL',2);
+  }else{
+    body=`<p style="color:#64748b">Open the ${title} tab in the dashboard and use the PDF button there for the full report.</p>`;
+  }
+
+  win.document.write(`<!DOCTYPE html><html><head><title>HOV Report — ${title}</title>
+    <style>
+      body{font-family:Inter,Arial,sans-serif;margin:24px;color:#0a2520;font-size:13px}
+      h1{color:#0f2b25;border-bottom:3px solid #E9DF43;padding-bottom:8px}
+      h2{font-size:15px}h3{font-size:13px;color:#1C856F;margin:12px 0 6px}
+      table{border-collapse:collapse;width:100%}
+      th{background:#0f2b25;color:#fff;padding:8px 12px;text-align:left}
+      td{padding:7px 12px;border:1px solid #c8dfd9}
+      tr:nth-child(even)td{background:#f3faf7}
+      @media print{@page{margin:15mm;size:A4 landscape}.pbreak{page-break-before:always}}
+    </style>
+  </head><body>
+    <h1>HOV Report — ${title}</h1>
+    <p style="color:#64748b;font-size:11px">Generated: ${date}</p>
+    ${body||'<p style="color:#94a3b8">No data — upload HOV files first.</p>'}
+    <script>window.onload=function(){window.print()}<\/script>
+  </body></html>`);
+  win.document.close();
+}
+
+/* ── ACTION USER TRENDS — render function ── */
+function renderHovActionUser(){
+  const wrap=document.getElementById('hovAUContent');if(!wrap)return;
+  const fileTypeFilter=(document.getElementById('hovAUFileType')?.value)||'ALL';
+  const minAWB=parseInt(document.getElementById('hovAUMinAWB')?.value||'2')||2;
+  const allRaw=master.hovAllRaw||[];
+  if(!allRaw.length){
+    wrap.innerHTML=`<div class="empty" style="padding:24px"><div class="et">No HOV data</div><div class="em">Upload Forward or Reverse HOV files</div></div>`;return;
+  }
+  wrap.innerHTML=[
+    (fileTypeFilter==='ALL'||fileTypeFilter==='forward')?buildActionUserSection(allRaw,'forward',minAWB):'',
+    (fileTypeFilter==='ALL'||fileTypeFilter==='reverse_fwd')?buildActionUserSection(allRaw,'reverse_fwd',minAWB):'',
+    (fileTypeFilter==='ALL'||fileTypeFilter==='reverse_rev')?buildActionUserSection(allRaw,'reverse_rev',minAWB):'',
+  ].filter(Boolean).join('');
+}
+
+/* Build one Action User section */
+function buildActionUserSection(allRaw,sectionType,minAWB){
+  const html=buildActionUserHTML(allRaw,sectionType,'ALL',minAWB);
+  return html;
+}
+
+function buildActionUserHTML(allRaw,sectionType,dc,minAWB){
+  const SECTION_LABELS={
+    forward:'📦 FORWARD — Action User Trends',
+    reverse_fwd:'🔄 REVERSE — Forward Leg Miss (bin_level × message)',
+    reverse_rev:'🔄 REVERSE — Reverse Leg Miss (DSP bin_level × DSP message)',
+  };
+  const SECTION_COLORS={forward:'#2563eb',reverse_fwd:'#dc2626',reverse_rev:'#d97706'};
+  const color=SECTION_COLORS[sectionType]||'#64748b';
+
+  // Filter source rows
+  let rows=[];
+  if(sectionType==='forward'){
+    rows=allRaw.filter(r=>r.fileType==='forward'&&r.age>=2&&r.age<=15);
+  }else if(sectionType==='reverse_fwd'){
+    // FWD Leg Miss: bin_level and message are the relevant cols (not DSP)
+    rows=allRaw.filter(r=>r.fileType==='reverse'&&r.age>=2&&r.age<=15&&!isNA(r.binLevel));
+  }else if(sectionType==='reverse_rev'){
+    // REV Leg Miss: DSP bin_level and DSP message
+    rows=allRaw.filter(r=>r.fileType==='reverse'&&r.age>=2&&r.age<=15&&!isNA(r.dspBin));
+  }
+  if(dc&&dc!=='ALL')rows=rows.filter(r=>(r.loc||'').toUpperCase()===dc);
+  if(!rows.length)return`<div class="card" style="border:2px solid ${color};border-radius:8px;overflow:hidden;margin-bottom:4px"><div style="background:${color};color:#fff;padding:9px 14px;font-size:12px;font-weight:900">${SECTION_LABELS[sectionType]}</div><div style="padding:12px;color:#94a3b8;font-size:12px">No data for this section</div></div>`;
+
+  // Group by action user (or dspActionUser for reverse_rev)
+  const userKey=sectionType==='reverse_rev'?'dspActionUser':'actionUser';
+  const userMap=new Map();
+  rows.forEach(r=>{
+    const u=(r[userKey]||'').trim()||'(unknown)';
+    if(!userMap.has(u))userMap.set(u,[]);
+    userMap.get(u).push(r);
+  });
+
+  // Filter: only users with >= minAWB unique AWBs
+  const filtered=[...userMap.entries()]
+    .map(([u,rs])=>({user:u,rows:rs,awbs:new Set(rs.map(r=>r.awb)).size}))
+    .filter(e=>e.awbs>=minAWB)
+    .sort((a,b)=>b.awbs-a.awbs);
+
+  if(!filtered.length)return`<div class="card" style="border:2px solid ${color};border-radius:8px;overflow:hidden;margin-bottom:4px"><div style="background:${color};color:#fff;padding:9px 14px;font-size:12px;font-weight:900">${SECTION_LABELS[sectionType]}</div><div style="padding:12px;color:#94a3b8;font-size:12px">No action users with ${minAWB}+ AWBs found</div></div>`;
+
+  // Column definitions per section type
+  const isFwdLeg=sectionType==='forward'||sectionType==='reverse_fwd';
+  const hdrs=isFwdLeg
+    ?['ACTION USER','AWB NUMBER','PRODUCT VALUE','CURRENT LOCATION','AGE','BIN LEVEL','MESSAGE','PRODUCT CATEGORY']
+    :['DSP ACTION USER','AWB NUMBER','PRODUCT VALUE','CURRENT LOCATION','AGE','DSP BIN LEVEL','DSP MESSAGE','PRODUCT CATEGORY'];
+
+  let tblBody='';
+  filtered.forEach(({user,rows:rs})=>{
+    // Group header row for this user
+    tblBody+=`<tr style="background:#e8f5f0"><td colspan="${hdrs.length}" style="font-weight:900;color:#0f2b25;padding:7px 13px;border-bottom:2px solid #1C856F">
+      👤 ${xe(user)} — ${fn(new Set(rs.map(r=>r.awb)).size)} AWBs
+    </td></tr>`;
+    // Sort by location then AWB
+    rs.sort((a,b)=>(a.loc||'').localeCompare(b.loc||'')||(a.awb||'').localeCompare(b.awb||''));
+    rs.forEach((r,ri)=>{
+      const bg=ri%2===0?'#fff':'#f8fbfa';
+      const pv=parseFloat(r.pv)||0;
+      const binCol=isFwdLeg?r.binLevel:r.dspBin;
+      const msgCol=isFwdLeg?r.msg:r.dspMsg;
+      const userCol=isFwdLeg?r.actionUser:r.dspActionUser;
+      tblBody+=`<tr style="background:${bg}">
+        <td style="padding:7px 13px;font-family:var(--mono);font-size:11px">${xe(userCol||'–')}</td>
+        <td style="padding:7px 13px;font-family:var(--mono);font-size:11px">${xe(r.awb||'–')}</td>
+        <td style="padding:7px 13px;text-align:center;font-weight:700">${pv>0?`₹${fn(Math.round(pv))}`:'–'}</td>
+        <td style="padding:7px 13px">${xe(r.loc||'–')}</td>
+        <td style="padding:7px 13px;text-align:center">D${r.age||'?'}</td>
+        <td style="padding:7px 13px;text-align:center">${xe(binCol||'–')}</td>
+        <td style="padding:7px 13px">${xe(msgCol||'–')}</td>
+        <td style="padding:7px 13px">${xe(r.pc||'–')}</td>
+      </tr>`;
+    });
+  });
+
+  const tblHtml=`<table style="border-collapse:collapse;width:100%;font-size:12px">
+    <thead><tr>${hdrs.map(h=>`<th style="background:#0f2b25;color:#fff;padding:9px 13px;text-align:left;font-size:11px;text-transform:uppercase;white-space:nowrap;border-right:1px solid #1a5045">${h}</th>`).join('')}</tr></thead>
+    <tbody>${tblBody}</tbody>
+  </table>`;
+
+  return`<div class="card" style="border:2px solid ${color};border-radius:8px;overflow:hidden">
+    <div style="background:${color};color:#fff;padding:9px 14px;font-size:12px;font-weight:900;display:flex;justify-content:space-between">
+      <span>${SECTION_LABELS[sectionType]}</span>
+      <span style="background:rgba(255,255,255,.22);padding:2px 10px;border-radius:12px;font-size:11px">${fn(filtered.length)} users · ${fn(filtered.reduce((s,e)=>s+e.awbs,0))} AWBs</span>
+    </div>
+    <div style="overflow-x:auto;max-height:500px;overflow-y:auto">${tblHtml}</div>
+  </div>`;
 }
 
 /* ── Populate DC dropdown for Detailed tab ── */
