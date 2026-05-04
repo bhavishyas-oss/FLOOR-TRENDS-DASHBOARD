@@ -662,65 +662,90 @@ let master=loadM(),activeTab=0,charts={},debugMode=false,dlog=[],pending={};
 function emptyM(){return{forward:[],reverse:[],lmodc:[],forwardShort:[],hov:[],hovPV:[],hovAllRaw:[],hovFwdRaw:[],hovRevRaw:[]}}
 function loadM(){
   try{
-    // master (aggregated counts) — small, safe in localStorage
     const r=localStorage.getItem(SKEY);
     const m=r?Object.assign(emptyM(),JSON.parse(r)):emptyM();
-    // rawData (full row-level) — potentially large, use sessionStorage
-    // sessionStorage survives tab refresh but not close, which is the right behaviour:
-    // data persists across accidental refreshes but is cleared when the user is done.
+
+    // Restore rawData — try sessionStorage first (full data, survives refresh)
+    // then fall back to localStorage compact version
+    const restoredTypes=new Set();
     try{
-      const rd=sessionStorage.getItem(SKEY+'_raw');
-      if(rd){
-        const parsed=JSON.parse(rd);
-        Object.assign(rawData,parsed);
+      // Multi-chunk restore: rawData may be split across SKEY_raw_0, _1, _2…
+      let chunk=0,merged='';
+      const total=parseInt(sessionStorage.getItem(SKEY+'_raw_chunks')||'0');
+      if(total>0){
+        for(let c=0;c<total;c++)merged+=(sessionStorage.getItem(SKEY+'_raw_'+c)||'');
+        if(merged){
+          const parsed=JSON.parse(merged);
+          Object.assign(rawData,parsed);
+          Object.keys(parsed).forEach(k=>restoredTypes.add(k));
+        }
+      }else{
+        // Legacy single-key restore
+        const rd=sessionStorage.getItem(SKEY+'_raw');
+        if(rd){const parsed=JSON.parse(rd);Object.assign(rawData,parsed);Object.keys(parsed).forEach(k=>restoredTypes.add(k));}
       }
-    }catch(e){console.warn('rawData sessionStorage restore failed:',e);}
-    // Also try localStorage as secondary fallback (from previous sessions)
-    if(!Object.keys(rawData).length){
-      try{
-        const rd2=localStorage.getItem(SKEY+'_raw');
-        if(rd2){const parsed2=JSON.parse(rd2);Object.assign(rawData,parsed2);}
-      }catch{}
-    }
+    }catch(e){console.warn('sessionStorage rawData restore:',e);}
+
+    // Also restore any types missing from sessionStorage using localStorage compact
+    try{
+      const rd2=localStorage.getItem(SKEY+'_raw');
+      if(rd2){
+        const parsed2=JSON.parse(rd2);
+        Object.entries(parsed2).forEach(([type,dates])=>{
+          if(!restoredTypes.has(type))rawData[type]=dates;
+        });
+      }
+    }catch{}
     return m;
   }
-  catch{return emptyM()}
+  catch{return emptyM();}
 }
 
 function persistM(){
-  // 1. Save master (aggregated, small) to localStorage — permanent across sessions
+  // 1. master (aggregated, ~50KB) → localStorage permanent
   try{
     localStorage.setItem(SKEY,JSON.stringify(master));
   }catch(e){
-    // localStorage full — clear rawData cache from it and retry
     try{localStorage.removeItem(SKEY+'_raw');}catch{}
     try{localStorage.setItem(SKEY,JSON.stringify(master));}
     catch{toast('Storage full — export backup first','te');return false;}
   }
 
-  // 2. Save rawData (full rows) to sessionStorage — survives refresh, much larger limit
+  // 2. rawData → sessionStorage in CHUNKS (bypasses 5MB per-key limit)
+  //    Split into 2MB chunks to stay well within any browser's per-key limit.
   try{
-    sessionStorage.setItem(SKEY+'_raw',JSON.stringify(rawData));
-  }catch(e){
-    // sessionStorage full — store trimmed (10k rows/date max)
-    const slim={};
-    for(const [type,dates] of Object.entries(rawData)){
-      slim[type]={};
-      for(const [date,rows] of Object.entries(dates)){
-        slim[type][date]=rows.slice(0,10000);
-      }
+    const raw=JSON.stringify(rawData);
+    const CHUNK_SIZE=1.8*1024*1024; // 1.8MB per chunk
+    const numChunks=Math.ceil(raw.length/CHUNK_SIZE);
+    // Clear old chunks first
+    const oldTotal=parseInt(sessionStorage.getItem(SKEY+'_raw_chunks')||'0');
+    for(let c=0;c<oldTotal+5;c++){try{sessionStorage.removeItem(SKEY+'_raw_'+c);}catch{}}
+    sessionStorage.removeItem(SKEY+'_raw'); // remove legacy key
+    // Write new chunks
+    for(let c=0;c<numChunks;c++){
+      sessionStorage.setItem(SKEY+'_raw_'+c,raw.slice(c*CHUNK_SIZE,(c+1)*CHUNK_SIZE));
     }
-    try{sessionStorage.setItem(SKEY+'_raw',JSON.stringify(slim));}
-    catch{console.warn('rawData too large for sessionStorage — will require re-upload after tab close');}
+    sessionStorage.setItem(SKEY+'_raw_chunks',String(numChunks));
+  }catch(e){
+    // sessionStorage full — write trimmed version
+    console.warn('sessionStorage full, writing trimmed rawData:',e.message);
+    try{
+      const slim={};
+      for(const[type,dates]of Object.entries(rawData)){
+        slim[type]={};
+        for(const[date,rows]of Object.entries(dates))slim[type][date]=rows.slice(0,5000);
+      }
+      sessionStorage.setItem(SKEY+'_raw',JSON.stringify(slim));
+      sessionStorage.removeItem(SKEY+'_raw_chunks');
+    }catch{console.warn('sessionStorage unavailable for rawData');}
   }
 
-  // 3. Also mirror rawData to localStorage in a very compact form (latest date only per type)
-  // This allows some continuity across full browser close
+  // 3. Compact fallback in localStorage (1k rows/latest date per type)
   try{
     const compact={};
-    for(const [type,dates] of Object.entries(rawData)){
-      const latestDate=Object.keys(dates).sort().pop();
-      if(latestDate){compact[type]={[latestDate]:(dates[latestDate]||[]).slice(0,1000)};}
+    for(const[type,dates]of Object.entries(rawData)){
+      const d=Object.keys(dates).sort().pop();
+      if(d)compact[type]={[d]:(dates[d]||[]).slice(0,1000)};
     }
     localStorage.setItem(SKEY+'_raw',JSON.stringify(compact));
   }catch{}
@@ -2005,7 +2030,7 @@ function renderChart(cid,piv,idx){
           borderWidth:1.5,pointRadius:3,fill:false,tension:.35,borderDash:[5,3],order:i+1});
       });
   }else{
-    // Single DC
+    // Single DC — show data labels directly on each point
     ds.push({label:dc,
       data:piv.dates.map(d=>piv.grid[dc]?piv.grid[dc][d]||0:0),
       borderColor:'#2563eb',backgroundColor:'rgba(37,99,235,.07)',
@@ -2024,17 +2049,18 @@ function renderChart(cid,piv,idx){
       },
       datalabels:{
         display:ctx=>{
-          // ALL datasets show labels when a single DC is selected
-          // Only dataset index 0 (Total) shows labels in ALL mode
-          const isSingleDC=ds.length===1;
+          const isSingleDC=dc!=='ALL';
+          // Single DC: show label on ALL points with value>0
           if(isSingleDC)return ctx.dataset.data[ctx.dataIndex]>0;
+          // ALL mode: only show on Total (dataset 0) for non-zero values
           if(ctx.datasetIndex!==0)return false;
           return ctx.dataset.data[ctx.dataIndex]>0;
         },
         anchor:'end',align:'top',offset:4,
         color:ctx=>ctx.datasetIndex===0?'#1e40af':'#0f172a',
         font:{size:10,family:'Inter',weight:'800'},
-        formatter(v){return v>=1000?(v/1000).toFixed(1)+'K':v;}
+        // Show exact count on the graph point
+        formatter(v){return v>=1000?(v/1000).toFixed(1)+'K':fn(v);}
       }
     },
     scales:{
@@ -2364,11 +2390,16 @@ q('#ii').addEventListener('change',async e=>{
 function onClear(){
   if(!confirm('⚠️ Delete ALL master data?\n\nExport first if needed.'))return;
   master=emptyM();pending={};dlog=[];
-  // Clear rawData in-memory and persisted (both localStorage and sessionStorage)
   for(const k of Object.keys(rawData))delete rawData[k];
   localStorage.removeItem(SKEY);
   localStorage.removeItem(SKEY+'_raw');
-  try{sessionStorage.removeItem(SKEY+'_raw');}catch{}
+  // Clear chunked sessionStorage (chunk-based rawData storage)
+  try{
+    const total=parseInt(sessionStorage.getItem(SKEY+'_raw_chunks')||'0');
+    for(let c=0;c<total+5;c++){try{sessionStorage.removeItem(SKEY+'_raw_'+c);}catch{}}
+    sessionStorage.removeItem(SKEY+'_raw_chunks');
+    sessionStorage.removeItem(SKEY+'_raw'); // legacy key
+  }catch{}
   q('#brow').innerHTML='<span style="color:#94a3b8;font-size:11px">Cleared</span>';
   updateSummary();renderTab(activeTab);toast('🗑 Cleared','tw');
 }
@@ -4448,19 +4479,38 @@ function downloadSectionReport(idx){
 function downloadTableImage(wrapperId,filename){
   const wrap=document.getElementById(wrapperId);
   if(!wrap||!wrap.querySelector('table')){toast('No table data to download','tw');return;}
-  if(typeof html2canvas==='undefined'){toast('⚠ html2canvas not loaded — try refreshing','tw');return;}
-  html2canvas(wrap,{
-    scale:2,backgroundColor:'#ffffff',useCORS:true,
-    width:wrap.scrollWidth,height:wrap.scrollHeight,
-    windowWidth:wrap.scrollWidth,windowHeight:wrap.scrollHeight,
-    logging:false
-  }).then(canvas=>{
-    const a=document.createElement('a');
-    a.href=canvas.toDataURL('image/png',1.0);
-    a.download=filename||'table.png';
-    document.body.appendChild(a);a.click();document.body.removeChild(a);
-    toast(`🖼 Table saved: ${filename}`,'tok');
-  }).catch(e=>{console.warn('html2canvas error:',e);toast('Table image failed — try again','te');});
+  if(typeof html2canvas==='undefined'){toast('⚠ html2canvas not loaded','tw');return;}
+  toast('⏳ Preparing full-size image…','ti');
+
+  // Clone into a detached offscreen container — strips all scroll limits
+  // so html2canvas captures the FULL table, not just the visible viewport.
+  const host=document.createElement('div');
+  host.style.cssText='position:fixed;top:-99999px;left:-99999px;width:auto;pointer-events:none;z-index:-999';
+  document.body.appendChild(host);
+
+  const clone=wrap.cloneNode(true);
+  const fullW=Math.max(wrap.scrollWidth,800);
+  clone.style.cssText=`position:static;width:${fullW}px;overflow:visible;max-height:none;max-width:none`;
+  clone.querySelectorAll('*').forEach(el=>{
+    el.style.overflow='visible';
+    el.style.maxHeight='none';
+    el.style.maxWidth='none';
+  });
+  host.appendChild(clone);
+
+  setTimeout(()=>{
+    html2canvas(clone,{
+      scale:2,backgroundColor:'#ffffff',useCORS:true,allowTaint:true,
+      width:clone.scrollWidth,height:clone.scrollHeight,logging:false
+    }).then(canvas=>{
+      const a=document.createElement('a');
+      a.href=canvas.toDataURL('image/png',1.0);
+      a.download=filename||'table.png';
+      document.body.appendChild(a);a.click();document.body.removeChild(a);
+      toast(`🖼 Full table saved: ${filename}`,'tok');
+    }).catch(e=>{console.warn('html2canvas error:',e);toast('Table image failed','te');})
+    .finally(()=>document.body.removeChild(host));
+  },80);
 }
 
 function downloadChart(canvasId,filename){
@@ -4730,39 +4780,35 @@ async function pushSectionDate(sheetName,headers,rows,date){
   if(!url||!rows.length)return false;
 
   // No column cap — send ALL source columns.
-  // (Previous 50-col cap caused missing headers/data in Google Sheets.)
-  // Stringify everything so Apps Script setValues() never receives null.
-  const safeHdrs=headers.map(h=>(h===null||h===undefined)?'':String(h));
-  const safeRows=rows.map(r=>
-    (Array.isArray(r)?r:[]).map(v=>(v===null||v===undefined)?'':String(v))
-  );
+  // Stringify every value; skip entirely empty rows.
+  const safeHdrs=headers.map(h=>(h==null)?'':String(h));
+  const safeRows=rows
+    .filter(r=>Array.isArray(r)&&r.some(v=>v!==null&&v!==undefined&&v!==''))
+    .map(r=>r.map(v=>(v==null)?'':String(v)));
 
-  // 150 rows × unlimited cols stays well under Apps Script's 6MB POST limit
+  if(!safeRows.length)return true; // nothing to write
+
+  // 150 rows per chunk — unlimited cols, stays under 6MB Apps Script POST limit
   const CHUNK=150;
   let allOk=true;
   for(let i=0;i<safeRows.length;i+=CHUNK){
     const chunk=safeRows.slice(i,i+CHUNK);
     try{
       await fetch(url,{
-        method:'POST',
-        mode:'no-cors',
+        method:'POST',mode:'no-cors',
         headers:{'Content-Type':'application/json'},
-        // Send headers + date only on the first chunk — subsequent chunks
-        // append rows only (no re-deduplication trigger, no duplicate header)
         body:JSON.stringify({
           sheet:sheetName,
-          headers:i===0?safeHdrs:[],
+          headers:i===0?safeHdrs:[],  // headers only on first chunk
           rows:chunk,
-          date:i===0?date:''
+          date:i===0?date:''           // dedup only on first chunk
         })
       });
     }catch(err){
       console.warn('Sheets push error:',sheetName,'chunk',i,err.message);
       allOk=false;
     }
-    if(i+CHUNK<safeRows.length){
-      await new Promise(r=>setTimeout(r,80));
-    }
+    if(i+CHUNK<safeRows.length)await new Promise(r=>setTimeout(r,80));
   }
   return allOk;
 }
@@ -4801,42 +4847,48 @@ async function runSheetsPush(results){
 
   for(let i=0;i<SECS.length;i++){
     const sec=SECS[i];
+    // Safe sheet name — max 31 chars
     const sheetName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().slice(0,31);
 
-    /* PRIMARY: full row-level data from rawData cache */
+    /* PRIMARY: full row-level data from rawData (includes DCH/forwardShort) */
     const rawRows=filterRawForSection(sec,i);
 
     if(rawRows.length>0){
-      // Collect all source column names from all rows
       const colSet=new Set();
       rawRows.forEach(r=>Object.keys(r).forEach(k=>{if(k!=='_date')colSet.add(k);}));
       const allCols=['Date',...colSet];
 
-      // Group by date so deduplication fires once per date
       const byDate={};
       rawRows.forEach(r=>{
         const d=r._date;
         if(!byDate[d])byDate[d]=[];
-        byDate[d].push(allCols.map(c=>{
+        // Only push rows with at least one non-empty value beyond Date
+        const rowArr=allCols.map(c=>{
           if(c==='Date')return d;
           const v=r[c];
           return(v!==undefined&&v!==null&&v!=='')?String(v):'';
-        }));
+        });
+        if(rowArr.slice(1).some(v=>v!==''))byDate[d].push(rowArr);
       });
 
       for(const[date,rows] of Object.entries(byDate)){
         if(!rows.length)continue;
         total++;
-        const ok=await pushSectionDate(sheetName,allCols,rows,date);
+        let ok=await pushSectionDate(sheetName,allCols,rows,date);
+        if(!ok){
+          // Retry once after brief pause
+          await new Promise(r=>setTimeout(r,600));
+          ok=await pushSectionDate(sheetName,allCols,rows,date);
+        }
         if(ok)pushed++;
         await new Promise(r=>setTimeout(r,60));
       }
 
-      // Record section count
       const f=SEC_FILTERS[i]||{age:sec.ageOpts?.[0]||3};
-      sectionCounts.push({section:sec.title,ageFilter:`D${f.age}`,awbs:rawRows.length,records:rawRows.length});
+      sectionCounts.push({section:sec.title,src:sec.src,ageFilter:`D${f.age}`,awbs:rawRows.length,records:rawRows.length});
+
     }else{
-      /* FALLBACK: rawData not available — push aggregated pivot counts */
+      /* FALLBACK: rawData unavailable — push aggregated pivot counts */
       const piv=buildPivot(sec,i);
       if(!piv.locs.length)continue;
       const headers=['Date','Location','Count'];
@@ -4844,7 +4896,7 @@ async function runSheetsPush(results){
         const rows=[];
         piv.locs.forEach(loc=>{
           const count=(piv.grid[loc]&&piv.grid[loc][date])||0;
-          if(count>0)rows.push([date,loc,count]);
+          if(count>0)rows.push([date,loc,String(count)]);
         });
         if(!rows.length)continue;
         total++;
@@ -4852,19 +4904,17 @@ async function runSheetsPush(results){
         if(ok)pushed++;
         await new Promise(r=>setTimeout(r,60));
       }
-
       const totAWBs=piv.locs.reduce((s,l)=>s+(piv.rowTotals[l]||0),0);
-      sectionCounts.push({section:sec.title,ageFilter:'aggregated',awbs:totAWBs,records:piv.locs.length});
+      sectionCounts.push({section:sec.title,src:sec.src,ageFilter:'aggregated',awbs:totAWBs,records:piv.locs.length});
     }
   }
 
-  // Push section counts to dedicated sheet
   if(sectionCounts.length>0)await pushSectionCounts(sectionCounts);
 
   showP(false);
 
   if(pushed>0){
-    console.info(`Google Sheets: ${pushed}/${total} section-date batches synced (all columns)`);
+    console.info(`Google Sheets: ${pushed}/${total} batches synced — all sections including DCH`);
     toast(`📊 Synced to Google Sheets — ${pushed} batches`,'ti');
   }else if(total>0){
     toast('⚠ Google Sheets sync failed — check Web App URL in 📊 Sheets','tw');
