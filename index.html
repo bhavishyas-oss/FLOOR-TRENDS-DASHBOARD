@@ -463,7 +463,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
         <div class="chead"><span class="ct">🔎 AWB Search Result</span>
           <button class="btn bg" onclick="downloadHovSectionImage('hovAWBresultCard','HOV_AWBSearch.png')" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4);margin-left:auto">🖼 PNG</button>
         </div>
-        <div id="hovAWBresultInner" style="max-height:360px;overflow-y:auto"></div>
+        <div id="hovAWBresultInner" style="overflow-x:auto"></div>
       </div>
     </div>
 
@@ -473,7 +473,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
         <div class="chead"><span class="ct" id="hovSiteDetailTitle">Site Detail</span>
           <button class="btn bg" onclick="downloadHovSectionImage('hovSiteDetailCard','HOV_SiteDetail.png')" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4);margin-left:auto">🖼 PNG</button>
         </div>
-        <div id="hovSiteDetailWrap" style="max-height:360px;overflow-y:auto"></div>
+        <div id="hovSiteDetailWrap" style="overflow-x:auto"></div>
       </div>
     </div>
 
@@ -486,11 +486,11 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
       <div style="padding:12px;display:flex;flex-direction:column;gap:12px">
         <div>
           <div style="font-size:11px;font-weight:800;color:var(--brand);margin-bottom:6px;text-transform:uppercase">PASSED BIN 1 — Age × Message pivot (AWB count)</div>
-          <div id="hovFwdBin1Wrap" style="overflow-x:auto;max-height:280px;overflow-y:auto"></div>
+          <div id="hovFwdBin1Wrap" style="overflow-x:auto"></div>
         </div>
         <div>
           <div style="font-size:11px;font-weight:800;color:var(--brand);margin-bottom:6px;text-transform:uppercase">PASSED BIN 2 — Age × Message pivot (AWB count)</div>
-          <div id="hovFwdBin2Wrap" style="overflow-x:auto;max-height:280px;overflow-y:auto"></div>
+          <div id="hovFwdBin2Wrap" style="overflow-x:auto"></div>
         </div>
       </div>
     </div>
@@ -507,11 +507,11 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
           <div style="display:flex;flex-direction:column;gap:10px">
             <div>
               <div style="font-size:11px;font-weight:700;color:var(--tx2);margin-bottom:4px">PASSED BIN 1</div>
-              <div id="hovRevFLMBin1Wrap" style="overflow-x:auto;max-height:240px;overflow-y:auto"></div>
+              <div id="hovRevFLMBin1Wrap" style="overflow-x:auto"></div>
             </div>
             <div>
               <div style="font-size:11px;font-weight:700;color:var(--tx2);margin-bottom:4px">PASSED BIN 2</div>
-              <div id="hovRevFLMBin2Wrap" style="overflow-x:auto;max-height:240px;overflow-y:auto"></div>
+              <div id="hovRevFLMBin2Wrap" style="overflow-x:auto"></div>
             </div>
           </div>
         </div>
@@ -520,18 +520,18 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
           <div style="display:flex;flex-direction:column;gap:10px">
             <div>
               <div style="font-size:11px;font-weight:700;color:var(--tx2);margin-bottom:4px">PASSED BIN 1</div>
-              <div id="hovRevRLMBin1Wrap" style="overflow-x:auto;max-height:240px;overflow-y:auto"></div>
+              <div id="hovRevRLMBin1Wrap" style="overflow-x:auto"></div>
             </div>
             <div>
               <div style="font-size:11px;font-weight:700;color:var(--tx2);margin-bottom:4px">PASSED BIN 2</div>
-              <div id="hovRevRLMBin2Wrap" style="overflow-x:auto;max-height:240px;overflow-y:auto"></div>
+              <div id="hovRevRLMBin2Wrap" style="overflow-x:auto"></div>
             </div>
           </div>
         </div>
         <div>
           <div style="font-size:12px;font-weight:900;color:#7c3aed;margin-bottom:8px;text-transform:uppercase;border-bottom:2px solid #7c3aed;padding-bottom:4px">3. NO LANDROVAL DETAILS</div>
           <div style="font-size:11px;color:var(--tx3);margin-bottom:6px">All four fields (#N/A or blank): bin_level · message · DSP bin_level · DSP message</div>
-          <div id="hovRevNoLandWrap" style="overflow-x:auto;max-height:240px;overflow-y:auto"></div>
+          <div id="hovRevNoLandWrap" style="overflow-x:auto"></div>
         </div>
       </div>
     </div>
@@ -553,7 +553,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
     <div id="hovD15TabContent" style="display:flex;flex-direction:column;gap:14px">
       <div class="card" id="hovD15Card">
         <div class="chead"><span class="ct">D16 → D90 — All Files Combined</span><span class="cbg">LOCATION × AGE</span></div>
-        <div id="hovD15Wrap" style="max-height:500px;overflow-y:auto;overflow-x:auto"></div>
+        <div id="hovD15Wrap" style="overflow-x:auto"></div>
       </div>
       <div class="card" id="hovD15AWBCard" style="display:none">
         <div class="chead">
@@ -561,7 +561,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
           <span class="cbg">D16–D90 · FULL AWB LIST</span>
           <button class="btn bg" onclick="downloadHovSectionImage('hovD15AWBCard','HOV_D15_AWBDetail.png')" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4);margin-left:auto">🖼 PNG</button>
         </div>
-        <div id="hovD15AWBWrap" style="max-height:480px;overflow-y:auto;overflow-x:auto"></div>
+        <div id="hovD15AWBWrap" style="overflow-x:auto"></div>
       </div>
       <div id="hovD15PerFileWrap" style="display:flex;flex-direction:column;gap:14px"></div>
     </div>
@@ -3559,36 +3559,70 @@ function renderHovD15Tab(){
     }
   }
 
-  // Per-file D15+ breakdown
+  // Per-file D15+ breakdown — separated by file name and type (NOT merged)
   const pfWrap=document.getElementById('hovD15PerFileWrap');
   if(!pfWrap)return;
   const fileGroups={};
   filtRaw.forEach(r=>{
+    // Key includes fileType AND date so each file upload is shown separately
     const key=`${r.fileType}|${r.date}`;
-    if(!fileGroups[key])fileGroups[key]={fileType:r.fileType,date:r.date,locs:{},total:0};
+    if(!fileGroups[key])fileGroups[key]={fileType:r.fileType,date:r.date,locs:{},rows:[],total:0};
     const g=fileGroups[key];const loc=(r.loc||'UNKNOWN').toUpperCase();const age=parseInt(r.age)||0;
     if(!g.locs[loc])g.locs[loc]={};
-    g.locs[loc][age]=(g.locs[loc][age]||0)+1;g.total++;
+    g.locs[loc][age]=(g.locs[loc][age]||0)+1;
+    g.rows.push(r); // keep full row for AWB detail list
+    g.total++;
   });
   if(!Object.keys(fileGroups).length){pfWrap.innerHTML='';return;}
   const TYPE_LABELS={forward:'📦 FORWARD FILE',reverse:'🔄 REVERSE FILE',lmodc:'🏪 LMODC FILE',forwardShort:'⚡ SHORT SHIP FILE'};
   const TYPE_BADGE={forward:'#2563eb',reverse:'#dc2626',lmodc:'#059669',forwardShort:'#d97706'};
+
   pfWrap.innerHTML=Object.entries(fileGroups).sort((a,b)=>a[0].localeCompare(b[0])).map(([key,g])=>{
     const locs=Object.keys(g.locs).sort();
     const ages=[...new Set(locs.flatMap(l=>Object.keys(g.locs[l]).map(Number)))].sort((a,b)=>a-b);
     const color=TYPE_BADGE[g.fileType]||'#64748b';
+
+    // Location × Age pivot — no scroll
     const hdrs=['LOCATION',...ages.map(a=>`D${a}`),'TOTAL'];
     const tblRows=locs.map(loc=>{
       const rt=ages.reduce((s,a)=>s+(g.locs[loc][a]||0),0);
       return [loc,...ages.map(a=>({__val:g.locs[loc][a]||0?fn(g.locs[loc][a]):'-',__cls:g.locs[loc][a]?'':'czr'})),fn(rt)];
     });
     const foot=['TOTAL',...ages.map(a=>fn(locs.reduce((s,l)=>s+(g.locs[l][a]||0),0))),fn(g.total)];
+    const pivotHtml=pivTbl(hdrs,tblRows,foot,null); // no maxHeight
+
+    // AWB detail list for this file (when DC is selected, already filtered)
+    let awbDetailHtml='';
+    if(dc&&dc!=='ALL'){
+      const dcRows=g.rows.filter(r=>(r.loc||'').toUpperCase()===dc)
+        .sort((a,b)=>(parseInt(a.age)||0)-(parseInt(b.age)||0));
+      if(dcRows.length){
+        const awbRows=dcRows.map(r=>([
+          r.loc||'–',r.awb||'–',
+          r.pv&&parseFloat(r.pv)>0?`₹${fn(Math.round(parseFloat(r.pv)||0))}`:'–',
+          r.age!==undefined?`D${r.age}`:'–',
+          r.binLevel||'–',r.msg||'–',r.dspBin||'–',r.dspMsg||'–',r.pd||'–'
+        ]));
+        awbDetailHtml=`
+          <div style="margin-top:10px">
+            <div style="font-size:10px;font-weight:800;color:#64748b;text-transform:uppercase;margin-bottom:5px">AWB DETAIL — ${xe(dc)}</div>
+            <div style="overflow-x:auto">${pivTbl(
+              ['LOCATION','AWB NUMBER','PRODUCT VALUE','AGE','BIN LEVEL','MESSAGE','DSP BIN LEVEL','DSP MESSAGE','PRODUCT DESC'],
+              awbRows,null,null
+            )}</div>
+          </div>`;
+      }
+    }
+
     return`<div style="border:2px solid ${color};border-radius:8px;overflow:hidden">
-      <div style="background:${color};color:#fff;padding:9px 14px;font-size:12px;font-weight:900;display:flex;justify-content:space-between">
-        <span>${xe(TYPE_LABELS[g.fileType]||g.fileType.toUpperCase())} · ${xe(g.date)}</span>
+      <div style="background:${color};color:#fff;padding:9px 14px;font-size:12px;font-weight:900;display:flex;justify-content:space-between;align-items:center">
+        <span style="text-transform:uppercase">${xe(TYPE_LABELS[g.fileType]||g.fileType.toUpperCase())} · ${xe(g.date)}</span>
         <span style="background:rgba(255,255,255,.22);padding:2px 10px;border-radius:12px;font-size:11px">${fn(g.total)} AWBs</span>
       </div>
-      ${pivTbl(hdrs,tblRows,foot,'260px')}
+      <div style="padding:12px;display:flex;flex-direction:column;gap:8px">
+        <div style="overflow-x:auto">${pivotHtml}</div>
+        ${awbDetailHtml}
+      </div>
     </div>`;
   }).join('');
 }
@@ -3604,11 +3638,14 @@ function renderHovPerFile(pcs,dc){
     return true;
   });
   if(!filtHov.length){
-    wrap.innerHTML=`<div class="empty" style="padding:24px"><div class="ei">&#x1F681;</div><div class="et">No HOV data yet</div><div class="em">Upload Forward, Reverse, LMODC or Short Ship files</div></div>`;
+    wrap.innerHTML=`<div class="empty" style="padding:24px"><div class="ei">🚁</div><div class="et">No HOV data yet</div><div class="em">Upload Forward, Reverse, LMODC or Short Ship files</div></div>`;
     return;
   }
-  const TYPE_LABELS={forward:'&#x1F4E6; FORWARD R@DC',reverse:'&#x1F504; REVERSE R@DC',lmodc:'&#x1F3F7; LMODC',forwardShort:'&#x26A1; SHORT SHIP'};
+
+  const TYPE_LABELS={forward:'FORWARD R@DC',reverse:'REVERSE R@DC',lmodc:'LMODC',forwardShort:'SHORT SHIP'};
   const TYPE_BADGE={forward:'#2563eb',reverse:'#dc2626',lmodc:'#059669',forwardShort:'#d97706'};
+
+  // Group by fileType+date
   const fileGroups={};
   filtHov.forEach(r=>{
     const key=`${r.fileType}|${r.date}`;
@@ -3618,6 +3655,8 @@ function renderHovPerFile(pcs,dc){
     g.locs[r.location][r.age]=(g.locs[r.location][r.age]||0)+r.count;
     g.total+=r.count;
   });
+
+  // PV by file (supplement reverse with hovAllRaw for PD)
   const pvByFile={};
   (master.hovPV||[]).forEach(r=>{
     if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return;
@@ -3636,6 +3675,8 @@ function renderHovPerFile(pcs,dc){
     if(!pvByFile[key])pvByFile[key]=[];
     if(!pvByFile[key].some(e=>e.awb===r.awb))pvByFile[key].push(r);
   });
+
+  // Criticality by file
   const critByFile={};
   (master.hovAllRaw||[]).forEach(r=>{
     const pv2=parseFloat(r.pv)||0;const age=parseInt(r.age)||0;
@@ -3646,15 +3687,22 @@ function renderHovPerFile(pcs,dc){
     if(!critByFile[key])critByFile[key]=[];
     critByFile[key].push(r);
   });
+
+  // Collect all unique PC values across all HOV data for per-section dropdowns
+  const allPCs=[...new Set((master.hovPV||[]).map(r=>r.pc).filter(Boolean))].sort();
+  const allDCsGlobal=[...new Set(filtHov.map(r=>r.location))].sort();
+
   const sortedKeys=Object.keys(fileGroups).sort();
   const canvasIds=[];
+
   const sectionsHTML=sortedKeys.map((key,ki)=>{
     const g=fileGroups[key];
     const locs=Object.keys(g.locs).sort();
     const color=TYPE_BADGE[g.fileType]||'#64748b';
     const donutId=`hovPerDonut_${ki}`;
     canvasIds.push({id:donutId,key});
-    // D2-D15 table — no maxHeight (full expand, no scroll)
+
+    // ── D2-D15 pivot table (Age as column, Location as row) — no scroll
     const hdrs=['LOCATION',...HOV_AGES.map(a=>`D${a}`),'TOTAL'];
     const tblRows=locs.map(loc=>{
       const rt=HOV_AGES.reduce((s,a)=>s+(g.locs[loc][a]||0),0);
@@ -3663,64 +3711,115 @@ function renderHovPerFile(pcs,dc){
         const v=g.locs[loc][a]||0;
         const prev=ai>0?g.locs[loc][HOV_AGES[ai-1]]||0:null;
         const cls=v===0?'czr':prev!==null&&v>prev?'cup':prev!==null&&v<prev?'cdn':'';
-        cells.push({__val:v===0?'\u2013':fn(v),__cls:cls});
+        cells.push({__val:v===0?'–':fn(v),__cls:cls});
       });
       cells.push(fn(rt));return cells;
     });
     const cTotals=HOV_AGES.map(a=>locs.reduce((s,l)=>s+(g.locs[l][a]||0),0));
     const foot=['TOTAL',...cTotals.map(c=>fn(c)),fn(g.total)];
-    const tblHtml=pivTbl(hdrs,tblRows,foot,null); // null = no maxHeight, fully expanded
-    // Criticality — full expand
+    const tblHtml=pivTbl(hdrs,tblRows,foot,null); // no maxHeight — fully visible
+
+    // ── Criticality — full expand, no scroll
     const critRows=(critByFile[key]||[]).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
     const critHtml=critRows.length===0
-      ?`<div style="padding:8px 14px;color:#94a3b8;font-size:11px">No criticality entries</div>`
-      :pivTbl(['LOCATION','AWB NUMBER','PRODUCT VALUE','AGE','BIN LEVEL','MESSAGE','DSP BIN LEVEL','DSP MESSAGE','PRODUCT DESC'],
-          critRows.map(r=>([r.loc||'\u2013',r.awb||'\u2013',r.pv&&parseFloat(r.pv)>0?`\u20b9${fn(Math.round(parseFloat(r.pv)||0))}`:'\u2013',
-            `D${r.age||'?'}`,r.binLevel||'\u2013',r.msg||'\u2013',r.dspBin||'\u2013',r.dspMsg||'\u2013',r.pd||'\u2013'])),
+      ?`<div style="padding:8px;color:#94a3b8;font-size:11px;font-style:italic">No criticality entries (Age D10–D30 · PV ≥ ₹10,000)</div>`
+      :pivTbl(
+          ['LOCATION','AWB NUMBER','PRODUCT VALUE','AGE','BIN LEVEL','MESSAGE','DSP BIN LEVEL','DSP MESSAGE','PRODUCT DESC'],
+          critRows.map(r=>([r.loc||'–',r.awb||'–',
+            r.pv&&parseFloat(r.pv)>0?`₹${fn(Math.round(parseFloat(r.pv)||0))}`:'–',
+            `D${r.age||'?'}`,r.binLevel||'–',r.msg||'–',r.dspBin||'–',r.dspMsg||'–',r.pd||'–'])),
           [`${fn(critRows.length)} AWBs`,'','','','','','','',''],null);
-    // PV — full expand
+
+    // ── Product Value — full expand, no scroll
     const pvRows=(pvByFile[key]||[]).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
     const pvHtml=pvRows.length===0
-      ?`<div style="padding:8px 14px;color:#94a3b8;font-size:11px">No PV \u2265 \u20b95,000 for this file</div>`
-      :pivTbl(['LOCATION','AWB NUMBER','PRODUCT VALUE','PRODUCT DESCRIPTION'],
-          pvRows.map(r=>([r.loc||'\u2013',r.awb||'\u2013',`\u20b9${fn(Math.round(parseFloat(r.pv)||0))}`,r.pd||'\u2013'])),
+      ?`<div style="padding:8px;color:#94a3b8;font-size:11px;font-style:italic">No PV ≥ ₹5,000 for this file</div>`
+      :pivTbl(
+          ['LOCATION','AWB NUMBER','PRODUCT VALUE','PRODUCT DESCRIPTION'],
+          pvRows.map(r=>([r.loc||'–',r.awb||'–',`₹${fn(Math.round(parseFloat(r.pv)||0))}`,r.pd||'–'])),
           null,null);
-    return`<div class="card" style="border:2px solid ${color};border-radius:8px;overflow:hidden">
-      <div style="background:${color};color:#fff;padding:10px 16px;font-size:13px;font-weight:900;display:flex;justify-content:space-between;align-items:center">
-        <span>${TYPE_LABELS[g.fileType]||g.fileType.toUpperCase()} &nbsp;\u00b7&nbsp; ${xe(g.date)}</span>
-        <div style="display:flex;align-items:center;gap:8px">
-          <span style="background:rgba(255,255,255,.22);padding:2px 10px;border-radius:12px;font-size:11px">${fn(g.total)} AWBs</span>
-          <button class="btn bg" onclick="downloadHovSectionImage('hovPFSection_${ki}','HOV_${ki}_${g.date}.png')"
-            style="font-size:9px;padding:2px 7px;color:var(--gold);border-color:rgba(233,223,67,.4)">\ud83d\uddbc PNG</button>
-        </div>
+
+    // ── Site dropdown for this section (per-file DC filter)
+    const sectionDCOpts='<option value="ALL">All Sites</option>'+locs.map(l=>`<option value="${l}">${xe(l)}</option>`).join('');
+
+    return`<div class="card" style="border:2px solid ${color};border-radius:10px;overflow:hidden;margin-bottom:4px">
+
+      <!-- a. SECTION HEADER — bold, uppercase, prominent -->
+      <div style="background:${color};color:#fff;padding:12px 18px;display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:15px;font-weight:900;letter-spacing:.6px;text-transform:uppercase">
+          ${xe(TYPE_LABELS[g.fileType]||g.fileType.toUpperCase())}
+          <span style="font-size:12px;font-weight:700;opacity:.8;margin-left:8px">· ${xe(g.date)}</span>
+        </span>
+        <span style="background:rgba(255,255,255,.22);padding:3px 12px;border-radius:14px;font-size:11px;font-weight:700">${fn(g.total)} AWBs</span>
       </div>
-      <div id="hovPFSection_${ki}" style="padding:12px;display:flex;flex-direction:column;gap:12px">
-        <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
-          <div style="min-width:280px;max-width:360px;flex:0 0 auto">
-            <div style="font-size:11px;font-weight:800;color:var(--brand);text-transform:uppercase;margin-bottom:6px">AWB Count by Site</div>
-            <div style="height:220px;position:relative"><canvas id="${donutId}"></canvas></div>
+
+      <div id="hovPFSection_${ki}" style="padding:16px;display:flex;flex-direction:column;gap:16px">
+
+        <!-- b. DROPDOWN FILTERS — Site Name + Product Category -->
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:10px 14px;background:#f0f9f7;border-radius:7px;border:1px solid #c8dfd9">
+          <span style="font-size:10px;font-weight:800;color:${color};text-transform:uppercase;letter-spacing:.5px">🔍 FILTERS</span>
+          <div style="display:flex;flex-direction:column;gap:2px">
+            <span style="font-size:9px;font-weight:700;color:#64748b;text-transform:uppercase">SITE NAME</span>
+            <select class="dc-select" id="hovPFdc_${ki}" style="font-size:11px;min-width:150px" onchange="renderHovPerFileSingle(${ki})">
+              ${sectionDCOpts}
+            </select>
           </div>
-          <div style="flex:1;min-width:300px;overflow-x:auto">
-            <div style="font-size:11px;font-weight:800;color:var(--brand);text-transform:uppercase;margin-bottom:6px">D2\u2013D15 Tracking</div>
-            ${tblHtml}
-            <div class="leg" style="padding:6px 10px;font-size:10px">
-              <span class="lc"><span class="lb lu"></span>\u25b2 Higher</span>
-              <span class="lc" style="margin-left:12px"><span class="lb ld"></span>\u25bc Lower</span>
-            </div>
+          <div style="display:flex;flex-direction:column;gap:2px">
+            <span style="font-size:9px;font-weight:700;color:#64748b;text-transform:uppercase">PRODUCT CATEGORY</span>
+            <select class="dc-select" id="hovPFpc_${ki}" style="font-size:11px;min-width:150px" onchange="renderHovPerFileSingle(${ki})">
+              <option value="ALL">All Categories</option>
+              ${allPCs.map(p=>`<option value="${xe(p)}">${xe(p)}</option>`).join('')}
+            </select>
           </div>
         </div>
+
+        <!-- c. ACTION BUTTON — Generate Collated Report (PDF) -->
         <div>
-          <div style="font-size:11px;font-weight:800;color:#dc2626;text-transform:uppercase;margin-bottom:6px;border-left:3px solid #dc2626;padding-left:8px">\u26a0 CRITICALITY — Age D10\u2013D30 \u00b7 PV \u2265 \u20b910,000</div>
-          <div style="overflow-x:auto">${critHtml}</div>
+          <button class="btn bg" onclick="generateHovFilePDF(${ki},'${xe(TYPE_LABELS[g.fileType]||g.fileType)}','${xe(g.date)}')"
+            style="font-size:11px;padding:7px 16px;color:var(--brand);border-color:var(--bdr2);font-weight:700;border-radius:6px">
+            📄 GENERATE COLLATED REPORT (PDF)
+          </button>
+          <button class="btn bg" onclick="downloadHovSectionImage('hovPFSection_${ki}','HOV_${ki}_${g.date}.png')"
+            style="font-size:10px;padding:6px 12px;color:var(--gold);border-color:rgba(233,223,67,.4);margin-left:8px">
+            🖼 PNG
+          </button>
         </div>
+
+        <!-- d. DONUT CHART — AWB Count by Site (full width, centred) -->
         <div>
-          <div style="font-size:11px;font-weight:800;color:var(--brand);text-transform:uppercase;margin-bottom:6px;border-left:3px solid var(--brand);padding-left:8px">Product Value \u2014 AWB List (\u2265 \u20b95,000)</div>
-          <div style="overflow-x:auto">${pvHtml}</div>
+          <div style="font-size:11px;font-weight:800;color:${color};text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px;border-left:3px solid ${color};padding-left:8px">AWB COUNT BY SITE</div>
+          <div style="max-width:520px;height:240px;position:relative"><canvas id="${donutId}"></canvas></div>
         </div>
+
+        <!-- e. D2–D15 TRACKING TABLE — full width, no scroll -->
+        <div>
+          <div style="font-size:11px;font-weight:800;color:${color};text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px;border-left:3px solid ${color};padding-left:8px">HOV TRACKING — D2 TO D15</div>
+          <div id="hovPFtbl_${ki}" style="overflow-x:auto">${tblHtml}</div>
+          <div style="display:flex;gap:14px;font-size:10px;padding:5px 8px">
+            <span style="display:flex;align-items:center;gap:5px"><span style="width:11px;height:11px;background:#ef4444;border-radius:2px;display:inline-block"></span>▲ Higher than prev bucket</span>
+            <span style="display:flex;align-items:center;gap:5px"><span style="width:11px;height:11px;background:#dff0ea;border:1px solid #a8d4c9;border-radius:2px;display:inline-block"></span>▼ Lower than prev bucket</span>
+          </div>
+        </div>
+
+        <!-- f. CRITICALITY TABLE — Age D10-D30, PV ≥ ₹10,000 -->
+        <div>
+          <div style="font-size:11px;font-weight:800;color:#dc2626;text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px;border-left:3px solid #dc2626;padding-left:8px">⚠ CRITICALITY — AGE D10–D30 · PV ≥ ₹10,000</div>
+          <div id="hovPFcrit_${ki}" style="overflow-x:auto">${critHtml}</div>
+        </div>
+
+        <!-- g. PRODUCT VALUE TABLE — PV ≥ ₹5,000, highest first -->
+        <div>
+          <div style="font-size:11px;font-weight:800;color:var(--brand);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px;border-left:3px solid var(--brand);padding-left:8px">PRODUCT VALUE — AWB LIST (≥ ₹5,000 · HIGHEST FIRST)</div>
+          <div id="hovPFpv_${ki}" style="overflow-x:auto">${pvHtml}</div>
+        </div>
+
       </div>
     </div>`;
   }).join('');
+
   wrap.innerHTML=sectionsHTML;
+
+  // Render donuts after DOM is ready
   requestAnimationFrame(()=>{
     canvasIds.forEach(({id,key})=>{
       const g=fileGroups[key];
@@ -3733,6 +3832,66 @@ function renderHovPerFile(pcs,dc){
       renderHovDonut(id,id,locs,vals,'');
     });
   });
+}
+
+/* ── Per-file PDF: visual collated report for one file type ── */
+function generateHovFilePDF(ki,fileTypeLabel,date){
+  // Capture the section's rendered content
+  const section=document.getElementById(`hovPFSection_${ki}`);
+  if(!section){toast('Section not found','tw');return;}
+  const win=window.open('','_blank','width=1100,height=900,scrollbars=yes');
+  if(!win){toast('Allow pop-ups for PDF export','tw');return;}
+  const chart=document.getElementById(`hovPerDonut_${ki}`);
+  const chartSrc=chart?chart.toDataURL('image/png',0.92):'';
+  const tbl=section.querySelector('[id^="hovPFtbl_"]');
+  const crit=section.querySelector('[id^="hovPFcrit_"]');
+  const pv=section.querySelector('[id^="hovPFpv_"]');
+  const tblHTML=tbl?tbl.innerHTML:'';
+  const critHTML=crit?crit.innerHTML:'';
+  const pvHTML=pv?pv.innerHTML:'';
+  const generated=new Date().toLocaleString('en-IN');
+  win.document.write(`<!DOCTYPE html><html><head>
+    <title>HOV Report — ${xe(fileTypeLabel)} · ${xe(date)}</title>
+    <style>
+      *{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:Arial,sans-serif;font-size:11px;color:#0a2520;padding:18px}
+      h1{font-size:16px;font-weight:900;color:#0f2b25;border-bottom:3px solid #1C856F;padding-bottom:8px;margin-bottom:12px}
+      h2{font-size:12px;font-weight:800;color:#1C856F;text-transform:uppercase;letter-spacing:.4px;border-left:4px solid #1C856F;padding-left:8px;margin:16px 0 8px}
+      h3{font-size:11px;font-weight:800;color:#dc2626;text-transform:uppercase;border-left:4px solid #dc2626;padding-left:8px;margin:16px 0 8px}
+      h4{font-size:11px;font-weight:800;color:#1C856F;text-transform:uppercase;border-left:4px solid #1C856F;padding-left:8px;margin:16px 0 8px}
+      table{border-collapse:collapse;width:100%;font-size:10px;margin-bottom:10px}
+      th{background:#0f2b25;color:#fff;padding:5px 8px;text-align:left;font-size:10px;text-transform:uppercase}
+      td{padding:4px 8px;border-bottom:1px solid #c8dfd9;border-right:1px solid #daeee9}
+      tr:nth-child(even)td{background:#f3faf7}
+      .cup{background:#ef4444!important;color:#fff!important;font-weight:700}
+      .cdn{background:#dff0ea!important;color:#0a4a35}
+      .czr{color:#94a3b8}
+      img{max-width:100%;height:auto;border:1px solid #c8dfd9;border-radius:4px;margin:8px 0}
+      .noprint{margin-bottom:12px}
+      @media print{.noprint{display:none}@page{margin:10mm;size:A3 landscape}}
+    </style>
+  </head><body>
+    <h1>📊 HOV REPORT — ${xe(fileTypeLabel.toUpperCase())} · ${xe(date)}</h1>
+    <p style="color:#64748b;font-size:10px;margin-bottom:12px">Generated: ${generated}</p>
+    <div class="noprint">
+      <button onclick="window.print()" style="background:#1C856F;color:#fff;border:none;padding:7px 16px;border-radius:5px;font-size:11px;font-weight:700;cursor:pointer">🖨 Print / Save as PDF</button>
+      <button onclick="window.close()" style="background:#f1f5f9;color:#333;border:1px solid #ccc;padding:7px 12px;border-radius:5px;font-size:11px;cursor:pointer;margin-left:8px">✕ Close</button>
+    </div>
+    ${chartSrc?`<h2>AWB Count by Site</h2><img src="${chartSrc}" style="max-width:420px">`:``}
+    <h2>HOV Tracking — D2 to D15</h2>${tblHTML}
+    <h3>⚠ Criticality — Age D10–D30 · PV ≥ ₹10,000</h3>${critHTML}
+    <h4>Product Value — AWB List (≥ ₹5,000 · Highest First)</h4>${pvHTML}
+  </body></html>`);
+  win.document.close();
+  toast(`📄 PDF report opened for ${fileTypeLabel}`,'tok');
+}
+
+/* Stub for per-file filter change — re-render that section only */
+function renderHovPerFileSingle(ki){
+  // Full re-render is simplest and avoids stale data
+  const pcs=getHovPCs();
+  const dc=(document.getElementById('hovDCselect')?.value)||'ALL';
+  renderHovPerFile(pcs,dc);
 }
 
 /* ── Download HOV chart as PNG ── */
