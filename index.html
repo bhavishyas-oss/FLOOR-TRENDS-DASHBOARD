@@ -176,34 +176,34 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
   padding:2px 7px;border-radius:10px;font-weight:700;margin-left:4px}
 
 /* TABLE */
-.tsc{overflow-x:auto;max-height:440px;overflow-y:auto;border-bottom:1px solid var(--bdr)}
-.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tsc{overflow-x:auto;max-height:none;border-bottom:1px solid var(--bdr)}
+.tbl{width:100%;border-collapse:collapse;font-size:11px}
 .tbl thead th{
   background:var(--navy);color:#ffffff;
-  padding:13px 16px;text-align:center;
+  padding:7px 10px;text-align:center;
   font-weight:900;white-space:nowrap;position:sticky;top:0;z-index:4;
-  font-size:13px;border-right:1.5px solid #1a5045;letter-spacing:.5px;
+  font-size:11px;border-right:1.5px solid #1a5045;letter-spacing:.3px;
   text-transform:uppercase}
 .tbl thead th:first-child{
   text-align:left;position:sticky;left:0;z-index:5;
-  background:var(--navy);min-width:180px;border-right:2.5px solid #1a5045;font-size:13px}
+  background:var(--navy);min-width:140px;max-width:200px;border-right:2.5px solid #1a5045;font-size:11px}
 .tbl thead th:last-child{border-right:none;background:#0a2520}
 /* alternating rows */
 .tbl tbody tr:nth-child(odd) td{background:#ffffff}
 .tbl tbody tr:nth-child(even) td{background:#f3faf7}
 .tbl tbody tr:hover td{background:#d0ede5!important}
-/* data cells — CENTRE aligned */
+/* data cells — compact pivot style */
 .tbl tbody td{
-  padding:11px 16px;text-align:center;
-  border-bottom:1.5px solid #c8dfd9;
+  padding:5px 9px;text-align:center;
+  border-bottom:1px solid #c8dfd9;
   border-right:1px solid #daeee9;
-  font-family:var(--mono);white-space:nowrap;
-  font-size:13px;font-weight:700;color:#0a2520}
+  font-family:var(--mono);white-space:normal;word-break:break-word;
+  font-size:11px;font-weight:700;color:#0a2520}
 /* location column — left aligned, sticky */
 .tbl tbody td:first-child{
   text-align:left;font-family:var(--sans);font-weight:800;
-  font-size:13px;background:#ffffff;position:sticky;left:0;
-  border-right:2.5px solid #a8d4c9;z-index:2;min-width:180px;color:var(--navy)}
+  font-size:11px;background:#ffffff;position:sticky;left:0;
+  border-right:2.5px solid #a8d4c9;z-index:2;min-width:140px;max-width:200px;color:var(--navy);white-space:normal;word-break:break-word}
 .tbl tbody tr:nth-child(even) td:first-child{background:#f3faf7}
 .tbl tbody tr:hover td:first-child{background:#d0ede5!important}
 /* total column */
@@ -211,15 +211,15 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 /* footer */
 .tbl tfoot td{
   background:var(--navy)!important;color:#ffffff!important;
-  font-weight:900;padding:12px 16px;
+  font-weight:900;padding:6px 9px;
   border-right:1.5px solid #1a5045;
-  font-family:var(--mono);font-size:13px;
+  font-family:var(--mono);font-size:11px;
   text-align:center;
   position:sticky;bottom:0;z-index:3}
 .tbl tfoot td:first-child{
   position:sticky;left:0;z-index:4;font-family:var(--sans);
-  text-align:left;font-size:13px;
-  background:#0a2520!important;border-right:2.5px solid #1a5045;letter-spacing:.5px}
+  text-align:left;font-size:11px;
+  background:#0a2520!important;border-right:2.5px solid #1a5045;letter-spacing:.3px}
 .tbl tfoot td:last-child{border-right:none;background:#0a2520!important}
 
 /* CONDITIONAL FORMATTING */
@@ -259,14 +259,14 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 .stbl tfoot td:last-child{border-right:none}
 
 /* TREND CHART */
-.tarea{padding:16px 18px 20px;background:#f0f9f7;border-bottom:1px solid var(--bdr)}
-.twrap{position:relative;height:240px;background:#f0f9f7}
+.tarea{padding:10px 16px 14px;background:#f0f9f7;border-bottom:1px solid var(--bdr)}
+.twrap{position:relative;height:180px;background:#f0f9f7}
 
 /* CHART */
-.carea{padding:14px 16px 18px}
+.carea{padding:8px 14px 12px}
 .clbl{font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;
   letter-spacing:.8px;margin-bottom:10px}
-.cwrap{position:relative;height:200px}
+.cwrap{position:relative;height:160px}
 
 /* LEGEND */
 .leg{display:flex;gap:14px;padding:9px 16px;background:var(--sur2);
@@ -2148,6 +2148,131 @@ function secFilterBar(s,i){
   return html;
 }
 
+/* ── Section PDF report (Fix 9) ─────────────────────────────────────
+   Visual collated report per section:
+   • Full pivot table (all locations × all dates)
+   • Trend bar chart (screenshot of current canvas)
+   • Section counts summary
+   • Works for EXISTING data — reads from master[], not rawData
+   Opens a print-ready browser window → user can Save as PDF.       */
+function generateSectionPDF(idx){
+  const sec=SECS[idx];
+  const piv=buildPivot(sec,idx);
+  const f=SEC_FILTERS[idx]||{age:sec.ageOpts?.[0]||3,bins:[],msgs:[]};
+
+  if(!piv.locs.length){
+    toast('No data for this section — upload the matching file first','tw');
+    return;
+  }
+
+  // Capture current trend chart canvas as data URL
+  const tCanvas=document.getElementById(`tchrt${idx}`);
+  const tImgSrc=tCanvas?tCanvas.toDataURL('image/png',0.92):'';
+  const bCanvas=document.getElementById(`ch${idx}`);
+  const bImgSrc=bCanvas?bCanvas.toDataURL('image/png',0.92):'';
+
+  // Build full pivot table HTML
+  const grand=piv.locs.reduce((s,l)=>s+(piv.rowTotals[l]||0),0);
+  let tableHTML=`<table style="width:100%;border-collapse:collapse;font-size:10px;margin-bottom:12px">
+    <thead><tr style="background:#0f2b25;color:#fff">
+      <th style="padding:6px 8px;text-align:left;border-right:1px solid #1a5045">LOCATION</th>
+      ${piv.dates.map(d=>`<th style="padding:6px 8px;text-align:center;border-right:1px solid #1a5045">${fmtD(d)}</th>`).join('')}
+      <th style="padding:6px 8px;text-align:center">TOTAL</th>
+    </tr></thead><tbody>`;
+
+  piv.locs.forEach((loc,ri)=>{
+    const bg=ri%2===0?'#fff':'#f3faf7';
+    const rt=piv.rowTotals[loc]||0;
+    tableHTML+=`<tr>
+      <td style="padding:5px 8px;background:${bg};font-weight:700;border-bottom:1px solid #c8dfd9;border-right:2px solid #a8d4c9">${xe(loc)}</td>`;
+    piv.dates.forEach((d,di)=>{
+      const val=piv.grid[loc][d]||0;
+      const prev=di>0?piv.dates[di-1]:null;
+      const pval=prev!==null?(piv.grid[loc][prev]||0):null;
+      let cellStyle=`padding:5px 8px;text-align:center;border-bottom:1px solid #c8dfd9;border-right:1px solid #daeee9;font-weight:700;`;
+      if(val===0)cellStyle+='color:#94a3b8;';
+      else if(pval!==null&&val>pval)cellStyle+='background:#ef4444;color:#fff;';
+      else if(pval!==null&&val<pval)cellStyle+='background:#dff0ea;color:#0a4a35;';
+      else cellStyle+=`background:${bg};`;
+      tableHTML+=`<td style="${cellStyle}">${val===0?'–':fn(val)}</td>`;
+    });
+    tableHTML+=`<td style="padding:5px 8px;text-align:center;font-weight:900;background:#eaf6f2;border-bottom:1px solid #c8dfd9">${fn(rt)}</td></tr>`;
+  });
+
+  // Footer totals
+  tableHTML+=`<tr style="background:#0f2b25;color:#fff">
+    <td style="padding:6px 8px;font-weight:900;text-align:left">TOTAL</td>
+    ${piv.dates.map(d=>`<td style="padding:6px 8px;text-align:center;font-weight:900">${fn(piv.colTotals[d]||0)}</td>`).join('')}
+    <td style="padding:6px 8px;text-align:center;font-weight:900">${fn(grand)}</td>
+  </tr></tbody></table>`;
+
+  // Build filter summary
+  const filterSummary=`Age: D${f.age}${f.bins&&f.bins.length?' · Bin: '+f.bins.join(','):''}${f.msgs&&f.msgs.length?' · Msg: '+f.msgs.join(','):''}`;
+  const generatedAt=new Date().toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+
+  const win=window.open('','_blank','width=1200,height=900,scrollbars=yes');
+  if(!win){toast('Allow pop-ups for PDF export','tw');return;}
+
+  win.document.write(`<!DOCTYPE html><html><head>
+    <title>${sec.title} — Collated Report</title>
+    <style>
+      *{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:Inter,Arial,sans-serif;font-size:11px;color:#0a2520;background:#fff;padding:20px}
+      h1{font-size:18px;font-weight:900;color:#0f2b25;margin-bottom:4px}
+      h2{font-size:13px;font-weight:800;color:#1C856F;margin:16px 0 8px;text-transform:uppercase;letter-spacing:.5px;border-left:4px solid #1C856F;padding-left:8px}
+      .meta{font-size:10px;color:#64748b;margin-bottom:16px}
+      .badge{display:inline-block;background:#1C856F;color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;margin-right:6px}
+      img{max-width:100%;height:auto;border:1px solid #c8dfd9;border-radius:4px;margin-bottom:12px}
+      .legend{display:flex;gap:16px;font-size:10px;margin-top:6px;margin-bottom:16px}
+      .lc{display:flex;align-items:center;gap:6px}
+      .lb{width:12px;height:12px;border-radius:2px;display:inline-block}
+      .lu{background:#ef4444}
+      .ld{background:#dff0ea;border:1px solid #a8d4c9}
+      @media print{@page{margin:12mm;size:A3 landscape}.no-print{display:none}body{padding:8px}}
+    </style>
+  </head><body>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;border-bottom:3px solid #1C856F;padding-bottom:12px">
+      <div>
+        <h1>📊 ${xe(sec.title)}</h1>
+        <div class="meta">
+          <span class="badge">${xe(sec.badge)}</span>
+          <span class="badge" style="background:#0a2520">${xe(filterSummary)}</span>
+          &nbsp;Generated: ${generatedAt}
+        </div>
+      </div>
+      <div style="text-align:right;font-size:10px;color:#64748b">
+        <div style="font-size:22px;font-weight:900;color:#1C856F">${fn(grand)}</div>
+        <div>Total AWBs</div>
+      </div>
+    </div>
+    <div class="no-print" style="margin-bottom:12px">
+      <button onclick="window.print()" style="background:#1C856F;color:#fff;border:none;padding:8px 18px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">🖨 Print / Save as PDF</button>
+      <button onclick="window.close()" style="background:#f1f5f9;color:#0a2520;border:1px solid #c8dfd9;padding:8px 14px;border-radius:6px;font-size:12px;cursor:pointer;margin-left:8px">✕ Close</button>
+    </div>
+
+    ${tImgSrc?`<h2>📊 ${xe(sec.title)} — Trend Chart</h2><img src="${tImgSrc}" alt="Trend chart">`:``}
+
+    <h2>📋 Full Pivot Table — ${xe(sec.title)}</h2>
+    ${tableHTML}
+    <div class="legend">
+      <div class="lc"><div class="lb lu"></div>▲ Higher than previous date (pendency increased)</div>
+      <div class="lc"><div class="lb ld"></div>▼ Lower than previous date (improving)</div>
+    </div>
+
+    ${bImgSrc?`<h2>📈 Location Breakdown Chart</h2><img src="${bImgSrc}" alt="Breakdown chart">`:``}
+
+    <div style="margin-top:16px;padding:10px;background:#f0f9f7;border-radius:6px;font-size:10px;color:#64748b;border:1px solid #c8dfd9">
+      Floor Trends Dashboard — Collated Report &nbsp;|&nbsp; ${xe(sec.title)} &nbsp;|&nbsp; ${filterSummary} &nbsp;|&nbsp; ${fn(piv.locs.length)} locations &nbsp;|&nbsp; ${piv.dates.length} dates
+    </div>
+    <script>
+      // Auto-print on load (remove if you prefer manual)
+      // window.onload=function(){window.print();}
+    <\/script>
+  </body></html>`);
+  win.document.close();
+  toast(`📄 PDF report opened — use Print → Save as PDF`,'tok');
+}
+
 function initPanels(){
   document.getElementById('panels').innerHTML=SECS.map((s,i)=>`
     <div class="panel ${i===0?'active':''}" id="pnl${i}">
@@ -2155,7 +2280,8 @@ function initPanels(){
         <div class="chead">
           <span class="ct">§${i+1} · ${s.title}</span>
           <div class="cm"><span class="cc" id="cnt${i}">–</span><span class="cbg">${s.badge}</span>
-            <button class="btn bg" onclick="downloadSectionReport(${i})" style="font-size:10px;padding:4px 9px;margin-left:8px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download Excel report">⬇ Report</button>
+            <button class="btn bg" onclick="downloadSectionReport(${i})" style="font-size:10px;padding:4px 9px;margin-left:8px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download Excel collated report">⬇ Report</button>
+            <button class="btn bg" onclick="generateSectionPDF(${i})" style="font-size:10px;padding:4px 9px;color:var(--brand);border-color:var(--bdr2)" title="Download PDF visual report with charts and tables">📄 PDF</button>
             <button class="btn bg" onclick="downloadTableImage('tbl${i}','${s.title.replace(/[^\w]/g,'_')}_table.png')" style="font-size:10px;padding:4px 9px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download table as HD PNG">🖼 Table</button>
           </div>
         </div>
