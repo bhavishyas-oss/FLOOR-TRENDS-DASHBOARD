@@ -589,6 +589,14 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
         <button class="btn bg" onclick="generateHovPDF(3)" style="font-size:10px;padding:4px 9px;color:var(--brand);border-color:var(--bdr2);margin-left:auto">📄 PDF</button>
         <button class="btn bg" onclick="downloadHovSectionImage('hovAUContent','HOV_ActionUser.png')" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG</button>
       </div>
+      <!-- WhatsApp-style search for Action User -->
+      <div style="padding:6px 16px 10px;border-top:1px solid var(--bdr);display:flex;align-items:center;gap:8px">
+        <span style="font-size:10px;font-weight:700;color:#64748b;white-space:nowrap">🔍 Search Action User:</span>
+        <input id="hovAUSearchInput" type="text" placeholder="Type Action User ID…" oninput="hovAUSearch(this.value)"
+          style="flex:1;font-size:11px;padding:5px 10px;border-radius:5px;border:1px solid var(--bdr2);outline:none;max-width:300px">
+        <button onclick="document.getElementById('hovAUSearchInput').value='';hovAUSearch('')"
+          style="font-size:10px;padding:4px 8px;border-radius:4px;border:1px solid var(--bdr2);background:#f1f5f9;cursor:pointer;color:#64748b">✕</button>
+      </div>
     </div>
     <div id="hovAUContent" style="display:flex;flex-direction:column;gap:14px"></div>
   </div>
@@ -3785,31 +3793,55 @@ function renderHovPerFile(pcs,dc){
           </button>
         </div>
 
-        <!-- d. DONUT CHART — AWB Count by Site (full width, centred) -->
+        <!-- d. DONUT + BAR CHART — side by side, no wasted white space -->
         <div>
           <div style="font-size:11px;font-weight:800;color:${color};text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px;border-left:3px solid ${color};padding-left:8px">AWB COUNT BY SITE</div>
-          <div style="max-width:520px;height:240px;position:relative"><canvas id="${donutId}"></canvas></div>
-        </div>
-
-        <!-- e. D2–D15 TRACKING TABLE — full width, no scroll -->
-        <div>
-          <div style="font-size:11px;font-weight:800;color:${color};text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px;border-left:3px solid ${color};padding-left:8px">HOV TRACKING — D2 TO D15</div>
-          <div id="hovPFtbl_${ki}" style="overflow-x:auto">${tblHtml}</div>
-          <div style="display:flex;gap:14px;font-size:10px;padding:5px 8px">
-            <span style="display:flex;align-items:center;gap:5px"><span style="width:11px;height:11px;background:#ef4444;border-radius:2px;display:inline-block"></span>▲ Higher than prev bucket</span>
-            <span style="display:flex;align-items:center;gap:5px"><span style="width:11px;height:11px;background:#dff0ea;border:1px solid #a8d4c9;border-radius:2px;display:inline-block"></span>▼ Lower than prev bucket</span>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start">
+            <div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                <span style="font-size:9px;font-weight:700;color:#64748b;text-transform:uppercase">Donut Chart</span>
+                <button class="btn bg" onclick="downloadHovCanvasPNG('${donutId}','HOV_Donut_${ki}.png')" style="font-size:9px;padding:2px 7px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG</button>
+              </div>
+              <div style="height:240px;position:relative"><canvas id="${donutId}"></canvas></div>
+            </div>
+            <div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                <span style="font-size:9px;font-weight:700;color:#64748b;text-transform:uppercase">Bar Chart</span>
+                <button class="btn bg" onclick="downloadHovCanvasPNG('hovPerBar_${ki}','HOV_Bar_${ki}.png')" style="font-size:9px;padding:2px 7px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG</button>
+              </div>
+              <div style="height:240px;position:relative"><canvas id="hovPerBar_${ki}"></canvas></div>
+            </div>
           </div>
         </div>
 
-        <!-- f. CRITICALITY TABLE — Age D10-D30, PV ≥ ₹10,000 -->
+        <!-- e. D2–D15 TRACKING TABLE — full width, no scroll, wrap text -->
         <div>
-          <div style="font-size:11px;font-weight:800;color:#dc2626;text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px;border-left:3px solid #dc2626;padding-left:8px">⚠ CRITICALITY — AGE D10–D30 · PV ≥ ₹10,000</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <div style="font-size:11px;font-weight:800;color:${color};text-transform:uppercase;letter-spacing:.4px;border-left:3px solid ${color};padding-left:8px">HOV TRACKING — D2 TO D15</div>
+            <button class="btn bg" onclick="downloadHovSectionPNG('hovPFtbl_${ki}','HOV_D2D15_${ki}.png')" style="font-size:9px;padding:2px 7px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG</button>
+          </div>
+          <div id="hovPFtbl_${ki}" style="overflow-x:auto">${tblHtml}</div>
+          <div style="display:flex;gap:14px;font-size:10px;padding:5px 8px">
+            <span style="display:flex;align-items:center;gap:5px"><span style="width:11px;height:11px;background:#ef4444;border-radius:2px;display:inline-block"></span>▲ Higher</span>
+            <span style="display:flex;align-items:center;gap:5px"><span style="width:11px;height:11px;background:#dff0ea;border:1px solid #a8d4c9;border-radius:2px;display:inline-block"></span>▼ Lower</span>
+          </div>
+        </div>
+
+        <!-- f. CRITICALITY TABLE -->
+        <div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <div style="font-size:11px;font-weight:800;color:#dc2626;text-transform:uppercase;letter-spacing:.4px;border-left:3px solid #dc2626;padding-left:8px">⚠ CRITICALITY — AGE D10–D30 · PV ≥ ₹10,000</div>
+            <button class="btn bg" onclick="downloadHovSectionPNG('hovPFcrit_${ki}','HOV_Criticality_${ki}.png')" style="font-size:9px;padding:2px 7px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG</button>
+          </div>
           <div id="hovPFcrit_${ki}" style="overflow-x:auto">${critHtml}</div>
         </div>
 
-        <!-- g. PRODUCT VALUE TABLE — PV ≥ ₹5,000, highest first -->
+        <!-- g. PRODUCT VALUE TABLE -->
         <div>
-          <div style="font-size:11px;font-weight:800;color:var(--brand);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px;border-left:3px solid var(--brand);padding-left:8px">PRODUCT VALUE — AWB LIST (≥ ₹5,000 · HIGHEST FIRST)</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <div style="font-size:11px;font-weight:800;color:var(--brand);text-transform:uppercase;letter-spacing:.4px;border-left:3px solid var(--brand);padding-left:8px">PRODUCT VALUE — AWB LIST (≥ ₹5,000 · HIGHEST FIRST)</div>
+            <button class="btn bg" onclick="downloadHovSectionPNG('hovPFpv_${ki}','HOV_PV_${ki}.png')" style="font-size:9px;padding:2px 7px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG</button>
+          </div>
           <div id="hovPFpv_${ki}" style="overflow-x:auto">${pvHtml}</div>
         </div>
 
@@ -3819,7 +3851,7 @@ function renderHovPerFile(pcs,dc){
 
   wrap.innerHTML=sectionsHTML;
 
-  // Render donuts after DOM is ready
+  // Render donuts + bar charts after DOM is ready
   requestAnimationFrame(()=>{
     canvasIds.forEach(({id,key})=>{
       const g=fileGroups[key];
@@ -3827,9 +3859,42 @@ function renderHovPerFile(pcs,dc){
       const vals=locs.map(l=>HOV_AGES.reduce((s,a)=>s+(g.locs[l][a]||0),0));
       const total=vals.reduce((a,b)=>a+b,0);
       if(!total)return;
+
+      // Donut
       const cv=document.getElementById(id);if(!cv)return;
       if(_hovCharts[id])_hovCharts[id].destroy();
       renderHovDonut(id,id,locs,vals,'');
+
+      // Bar chart (horizontal — cleaner for many DCs)
+      const ki=id.replace('hovPerDonut_','');
+      const barId=`hovPerBar_${ki}`;
+      const barCv=document.getElementById(barId);if(!barCv)return;
+      if(_hovCharts[barId]){_hovCharts[barId].destroy();}
+      const barLabels=locs.map(l=>l.replace(/ DC$/i,'').slice(0,14));
+      _hovCharts[barId]=new Chart(barCv,{
+        type:'bar',
+        data:{labels:barLabels,datasets:[{
+          label:'AWBs',
+          data:vals,
+          backgroundColor:HOV_PALETTE.slice(0,locs.length),
+          borderRadius:3,borderSkipped:false
+        }]},
+        options:{
+          responsive:true,maintainAspectRatio:false,
+          indexAxis:'y',
+          plugins:{
+            legend:{display:false},
+            datalabels:{display:false},
+            tooltip:{callbacks:{label:c=>` ${fn(c.parsed.x)} AWBs`}},
+          },
+          scales:{
+            x:{ticks:{font:{size:9},color:'#475569'},
+               grid:{color:'rgba(0,0,0,.05)'},
+               beginAtZero:true},
+            y:{ticks:{font:{size:9,weight:'600'},color:'#0f2b25'}}
+          }
+        }
+      });
     });
   });
 }
@@ -3887,11 +3952,146 @@ function generateHovFilePDF(ki,fileTypeLabel,date){
 }
 
 /* Stub for per-file filter change — re-render that section only */
+/* ── Per-file filter change: re-read the per-section DC/PC selects
+   and rebuild ONLY that section's charts and tables ── */
 function renderHovPerFileSingle(ki){
-  // Full re-render is simplest and avoids stale data
-  const pcs=getHovPCs();
-  const dc=(document.getElementById('hovDCselect')?.value)||'ALL';
-  renderHovPerFile(pcs,dc);
+  // Collect the per-section filter values set by the user
+  const dcEl=document.getElementById(`hovPFdc_${ki}`);
+  const pcEl=document.getElementById(`hovPFpc_${ki}`);
+  const selDC=dcEl?dcEl.value:'ALL';
+  const selPC=pcEl?pcEl.value:'ALL';
+
+  // Find the fileGroups key for this section index (ki-th sorted key)
+  const allHov=master.hov||[];
+  const fileGroups={};
+  allHov.forEach(r=>{
+    if(r.age<2||r.age>15)return;
+    const key=`${r.fileType}|${r.date}`;
+    if(!fileGroups[key])fileGroups[key]={fileType:r.fileType,date:r.date,locs:{},total:0,rows:[]};
+    const g=fileGroups[key];
+    if(!g.locs[r.location])g.locs[r.location]={};
+    g.locs[r.location][r.age]=(g.locs[r.location][r.age]||0)+r.count;
+    g.total+=r.count;
+    g.rows.push(r);
+  });
+  const sortedKeys=Object.keys(fileGroups).sort();
+  const key=sortedKeys[ki];
+  if(!key)return;
+  const g=fileGroups[key];
+
+  // Apply DC and PC filters
+  const filtLocs=Object.keys(g.locs).filter(loc=>{
+    if(selDC!=='ALL'&&loc!==selDC)return false;
+    return true;
+  }).sort();
+
+  // --- Update Donut chart ---
+  const donutId=`hovPerDonut_${ki}`;
+  const donutVals=filtLocs.map(l=>HOV_AGES.reduce((s,a)=>s+(g.locs[l][a]||0),0));
+  const donutTotal=donutVals.reduce((a,b)=>a+b,0);
+  if(donutTotal>0){
+    if(_hovCharts[donutId])_hovCharts[donutId].destroy();
+    renderHovDonut(donutId,donutId,filtLocs,donutVals,'');
+  }
+
+  // --- Update Bar chart ---
+  const barId=`hovPerBar_${ki}`;
+  const barCv=document.getElementById(barId);
+  if(barCv){
+    if(_hovCharts[barId]){_hovCharts[barId].destroy();}
+    const barLabels=filtLocs.map(l=>l.replace(/ DC$/i,''));
+    _hovCharts[barId]=new Chart(barCv,{
+      type:'bar',
+      data:{labels:barLabels,datasets:[{
+        label:'AWBs',data:donutVals,
+        backgroundColor:HOV_PALETTE.slice(0,filtLocs.length),
+        borderRadius:4,borderSkipped:false
+      }]},
+      options:{
+        responsive:true,maintainAspectRatio:false,
+        indexAxis:'y', // horizontal bar for readability with many DCs
+        plugins:{
+          legend:{display:false},
+          datalabels:{display:false},
+          tooltip:{callbacks:{label:c=>` ${fn(c.parsed.x)} AWBs`}},
+        },
+        scales:{
+          x:{ticks:{font:{size:10}},grid:{color:'rgba(0,0,0,.06)'}},
+          y:{ticks:{font:{size:9,weight:'600'}}}
+        }
+      }
+    });
+  }
+
+  // --- Update D2-D15 table ---
+  const tblEl=document.getElementById(`hovPFtbl_${ki}`);
+  if(tblEl){
+    if(!filtLocs.length){
+      tblEl.innerHTML=`<div style="padding:8px;color:#94a3b8;font-size:11px">No data for selected filters</div>`;
+    }else{
+      const hdrs=['LOCATION',...HOV_AGES.map(a=>`D${a}`),'TOTAL'];
+      const tblRows=filtLocs.map(loc=>{
+        const rt=HOV_AGES.reduce((s,a)=>s+(g.locs[loc][a]||0),0);
+        const cells=[loc];
+        HOV_AGES.forEach((a,ai)=>{
+          const v=g.locs[loc][a]||0;
+          const prev=ai>0?g.locs[loc][HOV_AGES[ai-1]]||0:null;
+          const cls=v===0?'czr':prev!==null&&v>prev?'cup':prev!==null&&v<prev?'cdn':'';
+          cells.push({__val:v===0?'–':fn(v),__cls:cls});
+        });
+        cells.push(fn(rt));return cells;
+      });
+      const cTotals=HOV_AGES.map(a=>filtLocs.reduce((s,l)=>s+(g.locs[l][a]||0),0));
+      const foot=['TOTAL',...cTotals.map(c=>fn(c)),fn(filtLocs.reduce((s,l)=>s+cTotals.reduce((a)=>a,0),donutTotal))];
+      tblEl.innerHTML=pivTbl(hdrs,tblRows,foot,null);
+    }
+  }
+
+  // --- Update Criticality table ---
+  const critEl=document.getElementById(`hovPFcrit_${ki}`);
+  if(critEl){
+    const critRows=(master.hovAllRaw||[]).filter(r=>{
+      const pv2=parseFloat(r.pv)||0;const age=parseInt(r.age)||0;
+      if(pv2<10000||age<10||age>30)return false;
+      if(r.fileType!==g.fileType||r.date!==g.date)return false;
+      if(selDC!=='ALL'&&(r.loc||'').toUpperCase()!==selDC)return false;
+      if(selPC!=='ALL'&&r.pc!==selPC)return false;
+      return true;
+    }).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
+    critEl.innerHTML=critRows.length===0
+      ?`<div style="padding:8px;color:#94a3b8;font-size:11px;font-style:italic">No criticality entries</div>`
+      :pivTbl(['LOCATION','AWB NUMBER','PRODUCT VALUE','AGE','BIN LEVEL','MESSAGE','DSP BIN LEVEL','DSP MESSAGE','PRODUCT DESC'],
+          critRows.map(r=>([r.loc||'–',r.awb||'–',r.pv&&parseFloat(r.pv)>0?`₹${fn(Math.round(parseFloat(r.pv)||0))}`:'–',
+            `D${r.age||'?'}`,r.binLevel||'–',r.msg||'–',r.dspBin||'–',r.dspMsg||'–',r.pd||'–'])),
+          [`${fn(critRows.length)} AWBs`,'','','','','','','',''],null);
+  }
+
+  // --- Update PV table ---
+  const pvEl=document.getElementById(`hovPFpv_${ki}`);
+  if(pvEl){
+    const pvRows=(master.hovPV||[]).filter(r=>{
+      if(r.fileType!==g.fileType||r.date!==g.date)return false;
+      if(selDC!=='ALL'&&(r.loc||'').toUpperCase()!==selDC)return false;
+      if(selPC!=='ALL'&&r.pc!==selPC)return false;
+      return(parseFloat(r.pv)||0)>=5000;
+    });
+    // Supplement reverse with hovAllRaw for PD
+    if(g.fileType==='reverse'){
+      (master.hovAllRaw||[]).forEach(r=>{
+        if(r.fileType!=='reverse'||r.date!==g.date)return;
+        if(selDC!=='ALL'&&(r.loc||'').toUpperCase()!==selDC)return;
+        if(selPC!=='ALL'&&r.pc!==selPC)return;
+        if((parseFloat(r.pv)||0)<5000)return;
+        if(!pvRows.some(e=>e.awb===r.awb))pvRows.push(r);
+      });
+    }
+    pvRows.sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
+    pvEl.innerHTML=pvRows.length===0
+      ?`<div style="padding:8px;color:#94a3b8;font-size:11px;font-style:italic">No PV ≥ ₹5,000</div>`
+      :pivTbl(['LOCATION','AWB NUMBER','PRODUCT VALUE','PRODUCT DESCRIPTION'],
+          pvRows.map(r=>([r.loc||'–',r.awb||'–',`₹${fn(Math.round(parseFloat(r.pv)||0))}`,r.pd||'–'])),
+          null,null);
+  }
 }
 
 /* ── Download HOV chart as PNG ── */
@@ -4120,7 +4320,7 @@ function buildActionUserHTML(allRaw,sectionType,dc,minAWB){
       <span>${SECTION_LABELS[sectionType]}</span>
       <span style="background:rgba(255,255,255,.22);padding:2px 10px;border-radius:12px;font-size:11px">${fn(filtered.length)} users · ${fn(filtered.reduce((s,e)=>s+e.awbs,0))} AWBs</span>
     </div>
-    <div style="overflow-x:auto;max-height:500px;overflow-y:auto">${tblHtml}</div>
+    <div style="overflow-x:auto" id="auTbl_${sectionType}">${tblHtml}</div>
   </div>`;
 }
 
@@ -4278,7 +4478,6 @@ function renderHovFwdPivot(dc){
   [1,2].forEach(bin=>{
     const wrId=`hovFwdBin${bin}Wrap`;
     const wr=document.getElementById(wrId);if(!wr)return;
-    // Filter: bin_level === bin, optionally DC filter
     const filtered=rows.filter(r=>{
       const bl=parseInt(gv(r,'bin_level','Bin_Level','bin level','Bin level')||'0')||0;
       if(bl!==bin)return false;
@@ -4290,43 +4489,42 @@ function renderHovFwdPivot(dc){
     });
     if(!filtered.length){wr.innerHTML=`<div style="padding:8px;color:#94a3b8;font-size:11px">No BIN ${bin} data</div>`;return;}
 
-    // Ages D2-D15
-    const ages=[2,3,4,5,6,7,8,9,10,11,12,13,14,15];
-    // Collect all distinct messages
+    const ages=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]; // D1–D15 per spec
     const msgSet=new Set();
     filtered.forEach(r=>{
       const m=String(gv(r,'message','Message','msg','MSG')||'').trim()||'(blank)';
       msgSet.add(m);
     });
-    const msgs=[...msgSet].sort();
+    const msgs=['SUCCESS','MPSR','RTOR','CFGR',...[...msgSet].filter(m=>!['SUCCESS','MPSR','RTOR','CFGR'].includes(m)).sort()];
+    // Only keep messages that have data
+    const activeMsgs=msgs.filter(m=>msgSet.has(m));
 
-    // Build age × message grid (count AWBs by Awb_number)
-    const grid={};
-    ages.forEach(a=>{grid[a]={};msgs.forEach(m=>{grid[a][m]=0;});});
-    const ageTotals={},msgTotals={};
-    ages.forEach(a=>{ageTotals[a]=0;});
-    msgs.forEach(m=>{msgTotals[m]=0;});
+    // Build message × age grid (ROWS=Message, COLS=Age)
+    const grid={};activeMsgs.forEach(m=>{grid[m]={};ages.forEach(a=>{grid[m][a]=0;});});
+    const ageTotals={};ages.forEach(a=>{ageTotals[a]=0;});
+    const msgTotals={};activeMsgs.forEach(m=>{msgTotals[m]=0;});
 
     filtered.forEach(r=>{
       const ageRaw=parseFloat(gv(r,'ageing_from_bag_rec','Ageing_from_Bag_Rec','Ageing_From_Bag_Rec','ageing_from_bag_recc','ageing','Ageing','age','Age')||'0')||0;
       const age=Math.round(ageRaw);
-      if(age<2||age>15)return;
+      if(age<1||age>15)return;
       const msg=String(gv(r,'message','Message','msg','MSG')||'').trim()||'(blank)';
-      if(grid[age]!==undefined&&grid[age][msg]!==undefined){
-        grid[age][msg]++;
+      if(grid[msg]!==undefined){
+        grid[msg][age]=(grid[msg][age]||0)+1;
         ageTotals[age]=(ageTotals[age]||0)+1;
         msgTotals[msg]=(msgTotals[msg]||0)+1;
       }
     });
 
-    const hdrs=['AGE',...msgs,'TOTAL'];
-    const tblRows=ages.map(a=>{
-      const tot=ageTotals[a]||0;
-      return [`D${a}`,...msgs.map(m=>({__val:(grid[a][m]||0)===0?'–':fn(grid[a][m]),__cls:(grid[a][m]||0)>0?'':'czr'})),fn(tot)];
+    // ROWS = Message, COLUMNS = Age D1…D15, last col = TOTAL
+    const hdrs=['MESSAGE',...ages.map(a=>`D${a}`),'TOTAL'];
+    const tblRows=activeMsgs.map(msg=>{
+      const tot=msgTotals[msg]||0;
+      return [msg,...ages.map(a=>({__val:(grid[msg][a]||0)===0?'–':fn(grid[msg][a]),__cls:(grid[msg][a]||0)>0?'':'czr'})),fn(tot)];
     });
-    const grandTotal=ages.reduce((s,a)=>s+(ageTotals[a]||0),0);
-    const foot=['TOTAL',...msgs.map(m=>fn(msgTotals[m]||0)),fn(grandTotal)];
-    wr.innerHTML=pivTbl(hdrs,tblRows,foot,'260px');
+    const grandTotal=activeMsgs.reduce((s,m)=>s+(msgTotals[m]||0),0);
+    const foot=['TOTAL',...ages.map(a=>fn(ageTotals[a]||0)),fn(grandTotal)];
+    wr.innerHTML=pivTbl(hdrs,tblRows,foot,null); // no maxHeight
   });
 }
 
@@ -4346,27 +4544,31 @@ function renderHovRevPivot(dc){
   const ages=[2,3,4,5,6,7,8,9,10,11,12,13,14,15];
 
   function makeAgeMsgPivot(filteredRows,ageCol,msgCol){
+    const ages=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]; // D1-D15
     const msgSet=new Set();
     filteredRows.forEach(r=>{
       const m=String(gv(r,...msgCol)||'').trim()||'(blank)';
       msgSet.add(m);
     });
-    const msgs=[...msgSet].sort();
+    // Priority ordering for common message types
+    const priority=['SUCCESS','MPSR','RTOR','CFGR'];
+    const msgs=[...priority.filter(m=>msgSet.has(m)),...[...msgSet].filter(m=>!priority.includes(m)).sort()];
+    // Message × Age grid (ROWS=Message, COLS=Age)
     const grid={};const ageTot={};const msgTot={};
-    ages.forEach(a=>{grid[a]={};msgs.forEach(m=>{grid[a][m]=0;});ageTot[a]=0;});
-    msgs.forEach(m=>{msgTot[m]=0;});
+    msgs.forEach(m=>{grid[m]={};ages.forEach(a=>{grid[m][a]=0;});msgTot[m]=0;});
+    ages.forEach(a=>{ageTot[a]=0;});
     filteredRows.forEach(r=>{
       const ageRaw=parseFloat(gv(r,...ageCol)||'0')||0;
       const age=Math.round(ageRaw);
-      if(age<2||age>15)return;
+      if(age<1||age>15)return;
       const msg=String(gv(r,...msgCol)||'').trim()||'(blank)';
-      if(grid[age]&&grid[age][msg]!==undefined){grid[age][msg]++;ageTot[age]++;msgTot[msg]++;}
+      if(grid[msg]&&grid[msg][age]!==undefined){grid[msg][age]++;ageTot[age]++;msgTot[msg]++;}
     });
-    const hdrs=['AGE',...msgs,'TOTAL'];
-    const tblRows=ages.map(a=>[`D${a}`,...msgs.map(m=>({__val:grid[a][m]===0?'–':fn(grid[a][m]),__cls:grid[a][m]>0?'':'czr'})),fn(ageTot[a]||0)]);
-    const grand=ages.reduce((s,a)=>s+(ageTot[a]||0),0);
-    const foot=['TOTAL',...msgs.map(m=>fn(msgTot[m]||0)),fn(grand)];
-    return pivTbl(hdrs,tblRows,foot,'240px');
+    const hdrs=['MESSAGE',...ages.map(a=>`D${a}`),'TOTAL'];
+    const tblRows=msgs.map(msg=>[msg,...ages.map(a=>({__val:grid[msg][a]===0?'–':fn(grid[msg][a]),__cls:grid[msg][a]>0?'':'czr'})),fn(msgTot[msg]||0)]);
+    const grand=msgs.reduce((s,m)=>s+(msgTot[m]||0),0);
+    const foot=['TOTAL',...ages.map(a=>fn(ageTot[a]||0)),fn(grand)];
+    return pivTbl(hdrs,tblRows,foot,null); // no maxHeight
   }
 
   const dcFilter=r=>{
@@ -4424,11 +4626,115 @@ function renderHovRevPivot(dc){
     const hdrs=['AGE','AWB COUNT'];
     const tblRows=ages.map(a=>[`D${a}`,ageCounts[a]===0?'–':fn(ageCounts[a])]);
     const foot=['TOTAL',fn(noLand.length)];
-    wrNL.innerHTML=pivTbl(hdrs,tblRows,foot,'240px');
+    wrNL.innerHTML=pivTbl(hdrs,tblRows,foot,null); // no maxHeight
   }
 }
 
 
+/* ── Individual PNG download for a canvas (donut or bar chart) ── */
+function downloadHovCanvasPNG(canvasId,filename){
+  const cv=document.getElementById(canvasId);
+  if(!cv){toast('Chart not found','tw');return;}
+  const sc=2;
+  const off=document.createElement('canvas');
+  off.width=cv.width*sc;off.height=cv.height*sc;
+  const ctx=off.getContext('2d');
+  ctx.scale(sc,sc);ctx.fillStyle='#ffffff';ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.drawImage(cv,0,0);
+  const a=document.createElement('a');
+  a.href=off.toDataURL('image/png',1.0);
+  a.download=filename||'chart.png';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  toast(`🖼 ${filename} downloaded`,'tok');
+}
+
+/* ── Individual PNG download for a table/section wrapper ── */
+async function downloadHovSectionPNG(wrapperId,filename){
+  const wrap=document.getElementById(wrapperId);
+  if(!wrap){toast('Section not found','tw');return;}
+  if(typeof html2canvas==='undefined'){toast('⚠ html2canvas not loaded','tw');return;}
+  toast('⏳ Preparing image…','ti');
+  const host=document.createElement('div');
+  host.style.cssText='position:fixed;top:-99999px;left:-99999px;pointer-events:none;z-index:-999;background:#fff';
+  const noSticky=document.createElement('style');
+  noSticky.textContent='*{position:static!important;overflow:visible!important;max-height:none!important;max-width:none!important;left:auto!important;right:auto!important;z-index:auto!important;}';
+  host.appendChild(noSticky);
+  document.body.appendChild(host);
+  const clone=wrap.cloneNode(true);
+  const liveTable=wrap.querySelector('table');
+  const fullW=Math.max(liveTable?liveTable.scrollWidth:wrap.scrollWidth,700);
+  clone.style.cssText=`position:static;width:${fullW}px;overflow:visible;max-height:none;background:#fff`;
+  host.appendChild(clone);
+  setTimeout(async()=>{
+    try{
+      const canvas=await html2canvas(clone,{
+        scale:2,backgroundColor:'#ffffff',useCORS:true,allowTaint:true,
+        width:Math.max(clone.scrollWidth,fullW),height:clone.scrollHeight,
+        logging:false,
+        onclone(doc){
+          const s=doc.createElement('style');
+          s.textContent='*{position:static!important;overflow:visible!important;max-height:none!important;left:auto!important;z-index:auto!important;}';
+          doc.head.appendChild(s);
+        }
+      });
+      const a=document.createElement('a');
+      a.href=canvas.toDataURL('image/png',1.0);
+      a.download=filename||'hov.png';
+      document.body.appendChild(a);a.click();document.body.removeChild(a);
+      toast(`🖼 ${filename} downloaded`,'tok');
+    }catch(e){toast('Image failed — try PDF instead','te');}
+    finally{try{document.body.removeChild(host);}catch{}}
+  },100);
+}
+
+/* ── Action User search: WhatsApp-style highlight + scroll ── */
+function hovAUSearch(query){
+  const q=(query||'').trim().toLowerCase();
+  const content=document.getElementById('hovAUContent');
+  if(!content)return;
+
+  // Remove existing highlights
+  content.querySelectorAll('.au-highlight').forEach(el=>{
+    el.style.background='';el.classList.remove('au-highlight');
+  });
+
+  if(!q)return;
+
+  // Find all user-group header rows (cells with 👤)
+  let firstMatch=null;
+  content.querySelectorAll('tr').forEach(tr=>{
+    const td=tr.querySelector('td');
+    if(!td)return;
+    const text=(td.textContent||'').toLowerCase();
+    if(text.includes(q)){
+      // Highlight the entire group header
+      td.style.background='#fef08a';
+      td.style.color='#713f12';
+      td.classList.add('au-highlight');
+      tr.classList.add('au-highlight');
+      if(!firstMatch)firstMatch=tr;
+    }else{
+      // Also search within data rows (AWB, action user cell)
+      const cells=tr.querySelectorAll('td');
+      let matched=false;
+      cells.forEach(c=>{
+        if((c.textContent||'').toLowerCase().includes(q)){
+          c.style.background='#fef08a';c.classList.add('au-highlight');matched=true;
+        }
+      });
+      if(matched&&!firstMatch)firstMatch=tr;
+    }
+  });
+
+  if(firstMatch){
+    firstMatch.scrollIntoView({behavior:'smooth',block:'center'});
+    toast(`Found: scrolled to match for "${query}"`,'tok');
+  }else{
+    toast(`No match found for "${query}"`,'tw');
+  }
+}
+
+/* ── Action User section render — adds search bar ── */
 /* ── Product Value Table (wrap text, all file types) ── */
 function renderHovPVTable(pcs,dc,pd){
   const wrap=document.getElementById('hovPVWrap');if(!wrap)return;
