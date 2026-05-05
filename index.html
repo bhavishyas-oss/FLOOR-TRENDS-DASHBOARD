@@ -665,14 +665,13 @@ function loadM(){
     const r=localStorage.getItem(SKEY);
     const m=r?Object.assign(emptyM(),JSON.parse(r)):emptyM();
 
-    // Restore rawData — try sessionStorage first (full data, survives refresh)
-    // then fall back to localStorage compact version
     const restoredTypes=new Set();
+
+    // 1. sessionStorage chunks (full data, survives refresh but not close)
     try{
-      // Multi-chunk restore: rawData may be split across SKEY_raw_0, _1, _2…
-      let chunk=0,merged='';
       const total=parseInt(sessionStorage.getItem(SKEY+'_raw_chunks')||'0');
       if(total>0){
+        let merged='';
         for(let c=0;c<total;c++)merged+=(sessionStorage.getItem(SKEY+'_raw_'+c)||'');
         if(merged){
           const parsed=JSON.parse(merged);
@@ -686,13 +685,25 @@ function loadM(){
       }
     }catch(e){console.warn('sessionStorage rawData restore:',e);}
 
-    // Also restore any types missing from sessionStorage using localStorage compact
+    // 2. localStorage full fallback — ALL dates, ALL types.
+    //    Merge: for each type, if sessionStorage had it use that (more rows);
+    //    if missing from sessionStorage, use localStorage version.
     try{
       const rd2=localStorage.getItem(SKEY+'_raw');
       if(rd2){
         const parsed2=JSON.parse(rd2);
         Object.entries(parsed2).forEach(([type,dates])=>{
-          if(!restoredTypes.has(type))rawData[type]=dates;
+          if(!restoredTypes.has(type)){
+            // Full restore from localStorage for this type
+            rawData[type]=dates;
+          }else{
+            // Merge: add any dates that sessionStorage didn't have
+            const existing=rawData[type]||{};
+            Object.entries(dates).forEach(([date,rows])=>{
+              if(!existing[date])existing[date]=rows;
+            });
+            rawData[type]=existing;
+          }
         });
       }
     }catch{}
@@ -740,14 +751,42 @@ function persistM(){
     }catch{console.warn('sessionStorage unavailable for rawData');}
   }
 
-  // 3. Compact fallback in localStorage (1k rows/latest date per type)
+  // 3. Enhanced localStorage fallback — ALL dates, up to 2000 rows per date per type.
+  //    This ensures downloadSectionReport produces full collated data even after
+  //    the browser tab is closed and sessionStorage is cleared.
   try{
-    const compact={};
+    const full={};
+    let totalSize=0;
+    const SIZE_BUDGET=4*1024*1024; // 4MB budget for rawData in localStorage
     for(const[type,dates]of Object.entries(rawData)){
-      const d=Object.keys(dates).sort().pop();
-      if(d)compact[type]={[d]:(dates[d]||[]).slice(0,1000)};
+      full[type]={};
+      for(const[date,rows]of Object.entries(dates)){
+        const kept=rows.slice(0,2000);
+        full[type][date]=kept;
+        totalSize+=JSON.stringify(kept).length;
+      }
     }
-    localStorage.setItem(SKEY+'_raw',JSON.stringify(compact));
+    if(totalSize<SIZE_BUDGET){
+      // Full multi-date version fits — store it
+      localStorage.setItem(SKEY+'_raw',JSON.stringify(full));
+    }else{
+      // Too large — trim to 1000 rows per date but keep ALL dates
+      const trimmed={};
+      for(const[type,dates]of Object.entries(rawData)){
+        trimmed[type]={};
+        for(const[date,rows]of Object.entries(dates))trimmed[type][date]=rows.slice(0,1000);
+      }
+      try{localStorage.setItem(SKEY+'_raw',JSON.stringify(trimmed));}
+      catch{
+        // Still too large — last resort: latest date only
+        const tiny={};
+        for(const[type,dates]of Object.entries(rawData)){
+          const d=Object.keys(dates).sort().pop();
+          if(d)tiny[type]={[d]:(dates[d]||[]).slice(0,500)};
+        }
+        localStorage.setItem(SKEY+'_raw',JSON.stringify(tiny));
+      }
+    }
   }catch{}
 
   return true;
@@ -2278,7 +2317,7 @@ function initPanels(){
     <div class="panel ${i===0?'active':''}" id="pnl${i}">
       <div class="card">
         <div class="chead">
-          <span class="ct">§${i+1} · ${s.title}</span>
+          <span class="ct" style="font-size:17px;font-weight:900;letter-spacing:.5px">§${i+1} · ${s.title}</span>
           <div class="cm"><span class="cc" id="cnt${i}">–</span><span class="cbg">${s.badge}</span>
             <button class="btn bg" onclick="downloadSectionReport(${i})" style="font-size:10px;padding:4px 9px;margin-left:8px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download Excel collated report">⬇ Report</button>
             <button class="btn bg" onclick="generateSectionPDF(${i})" style="font-size:10px;padding:4px 9px;color:var(--brand);border-color:var(--bdr2)" title="Download PDF visual report with charts and tables">📄 PDF</button>
@@ -2392,7 +2431,18 @@ function renderTab(idx){
   populateDCDropdown(idx,piv);
   renderChart(`ch${idx}`,piv,idx);
   const el=document.getElementById(`cnt${idx}`);
-  if(el)el.textContent=g>0?fn(g)+' AWBs':'–';
+  if(el){
+    // Fix 3: show count for the LATEST uploaded date only, not cumulative sum across all files.
+    // This reflects the most recent file's data rather than an ever-growing total.
+    if(piv.dates&&piv.dates.length>0){
+      const latestDate=piv.dates[piv.dates.length-1];
+      const latestCount=piv.colTotals[latestDate]||0;
+      el.textContent=latestCount>0?fn(latestCount)+' AWBs':'–';
+      el.title=`Latest date: ${latestDate} | All dates total: ${fn(g)}`;
+    }else{
+      el.textContent=g>0?fn(g)+' AWBs':'–';
+    }
+  }
 }
 
 function sw(idx){
@@ -4608,35 +4658,64 @@ function downloadTableImage(wrapperId,filename){
   if(typeof html2canvas==='undefined'){toast('⚠ html2canvas not loaded','tw');return;}
   toast('⏳ Preparing full-size image…','ti');
 
-  // Clone into a detached offscreen container — strips all scroll limits
-  // so html2canvas captures the FULL table, not just the visible viewport.
+  // Offscreen host — invisible, full page width available
   const host=document.createElement('div');
-  host.style.cssText='position:fixed;top:-99999px;left:-99999px;width:auto;pointer-events:none;z-index:-999';
+  host.style.cssText='position:fixed;top:-99999px;left:-99999px;pointer-events:none;z-index:-999;background:#fff';
+
+  // Inject a style that strips sticky from ALL descendants of the clone.
+  // Using a <style> tag works reliably on detached elements whereas
+  // getComputedStyle does NOT work on nodes not yet in the document.
+  const noSticky=document.createElement('style');
+  noSticky.textContent='*{position:static!important;overflow:visible!important;max-height:none!important;max-width:none!important;left:auto!important;right:auto!important;z-index:auto!important;}';
+  host.appendChild(noSticky);
   document.body.appendChild(host);
 
+  // Deep-clone the wrapper so the live UI is untouched
   const clone=wrap.cloneNode(true);
-  const fullW=Math.max(wrap.scrollWidth,800);
-  clone.style.cssText=`position:static;width:${fullW}px;overflow:visible;max-height:none;max-width:none`;
-  clone.querySelectorAll('*').forEach(el=>{
-    el.style.overflow='visible';
-    el.style.maxHeight='none';
-    el.style.maxWidth='none';
-  });
+
+  // Measure actual table dimensions from the LIVE element (before detaching)
+  const liveTable=wrap.querySelector('table');
+  const tableW=liveTable?liveTable.scrollWidth:wrap.scrollWidth;
+  const tableH=liveTable?liveTable.scrollHeight:wrap.scrollHeight;
+  const fullW=Math.max(tableW,900);
+
+  clone.style.cssText=`position:static;width:${fullW}px;overflow:visible;max-height:none;max-width:none;background:#fff`;
   host.appendChild(clone);
 
+  // Give the browser one paint cycle to compute layout
   setTimeout(()=>{
+    const captureW=Math.max(clone.scrollWidth||0,fullW);
+    const captureH=Math.max(clone.scrollHeight||0,tableH,200);
+
     html2canvas(clone,{
-      scale:2,backgroundColor:'#ffffff',useCORS:true,allowTaint:true,
-      width:clone.scrollWidth,height:clone.scrollHeight,logging:false
+      scale:2,
+      backgroundColor:'#ffffff',
+      useCORS:true,
+      allowTaint:true,
+      width:captureW,
+      height:captureH,
+      windowWidth:captureW+200,
+      windowHeight:captureH+200,
+      logging:false,
+      onclone(doc){
+        // Secondary strip inside html2canvas's own clone document
+        const s=doc.createElement('style');
+        s.textContent='*{position:static!important;overflow:visible!important;max-height:none!important;max-width:none!important;left:auto!important;right:auto!important;z-index:auto!important;}';
+        doc.head.appendChild(s);
+      }
     }).then(canvas=>{
       const a=document.createElement('a');
       a.href=canvas.toDataURL('image/png',1.0);
       a.download=filename||'table.png';
       document.body.appendChild(a);a.click();document.body.removeChild(a);
       toast(`🖼 Full table saved: ${filename}`,'tok');
-    }).catch(e=>{console.warn('html2canvas error:',e);toast('Table image failed','te');})
-    .finally(()=>document.body.removeChild(host));
-  },80);
+    }).catch(e=>{
+      console.warn('html2canvas error:',e);
+      toast('Table image failed — try again','te');
+    }).finally(()=>{
+      try{document.body.removeChild(host);}catch{}
+    });
+  },120);
 }
 
 function downloadChart(canvasId,filename){
@@ -5011,7 +5090,9 @@ async function runSheetsPush(results){
       }
 
       const f=SEC_FILTERS[i]||{age:sec.ageOpts?.[0]||3};
-      sectionCounts.push({section:sec.title,src:sec.src,ageFilter:`D${f.age}`,awbs:rawRows.length,records:rawRows.length});
+      // Collect actual file dates for this section
+      const fileDates=Object.keys(byDate).sort().join(', ');
+      sectionCounts.push({section:sec.title,src:sec.src,ageFilter:`D${f.age}`,awbs:rawRows.length,records:rawRows.length,fileDates});
 
     }else{
       /* FALLBACK: rawData unavailable — push aggregated pivot counts */
@@ -5031,7 +5112,8 @@ async function runSheetsPush(results){
         await new Promise(r=>setTimeout(r,60));
       }
       const totAWBs=piv.locs.reduce((s,l)=>s+(piv.rowTotals[l]||0),0);
-      sectionCounts.push({section:sec.title,src:sec.src,ageFilter:'aggregated',awbs:totAWBs,records:piv.locs.length});
+      const fileDates2=piv.dates.join(', ');
+      sectionCounts.push({section:sec.title,src:sec.src,ageFilter:'aggregated',awbs:totAWBs,records:piv.locs.length,fileDates:fileDates2});
     }
   }
 
