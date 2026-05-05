@@ -668,6 +668,147 @@ const rawData={};
 let master=loadM(),activeTab=0,charts={},debugMode=false,dlog=[],pending={};
 
 function emptyM(){return{forward:[],reverse:[],lmodc:[],forwardShort:[],hov:[],hovPV:[],hovAllRaw:[],hovFwdRaw:[],hovRevRaw:[]}}
+/* ═══════════════════════════════════════════════
+   INDEXEDDB — permanent rawData storage.
+   No size limit. Survives tab close. Never degrades.
+   sessionStorage chunks = fast same-session cache.
+   localStorage _raw = emergency offline fallback only.
+   KEY GUARANTEE: IDB is NEVER overwritten with
+   degraded (restored-from-fallback) data. Only
+   fresh upload data (flagged by _rawDataFull=true)
+   is allowed to update IDB.
+═══════════════════════════════════════════════ */
+const IDB_NAME='FloorTrendsRaw_v1';
+const IDB_STORE='rawChunks';
+let _idb=null;
+let _rawDataFull=false; // true only when rawData was populated by fresh file upload (captureRaw)
+let _rawRestoredRows=0; // total rows currently in rawData (used to detect degradation)
+
+function openIDB(){
+  if(_idb)return Promise.resolve(_idb);
+  return new Promise((res,rej)=>{
+    const req=indexedDB.open(IDB_NAME,1);
+    req.onupgradeneeded=e=>{
+      const db=e.target.result;
+      if(!db.objectStoreNames.contains(IDB_STORE))
+        db.createObjectStore(IDB_STORE,{keyPath:'k'});
+    };
+    req.onsuccess=e=>{_idb=e.target.result;res(_idb);};
+    req.onerror=e=>{console.warn('IDB open error:',e.target.error);rej(e.target.error);};
+  });
+}
+
+/* Save entire rawData to IDB — one record per type (forward/reverse/lmodc/forwardShort).
+   Called only when _rawDataFull===true (fresh upload), never from restored degraded data. */
+async function saveRawToIDB(){
+  if(!_rawDataFull){
+    console.info('IDB: skipping save — rawData not from fresh upload (prevent degradation)');
+    return false;
+  }
+  try{
+    const db=await openIDB();
+    const tx=db.transaction(IDB_STORE,'readwrite');
+    const store=tx.objectStore(IDB_STORE);
+    // Save each type as a separate record to avoid single-value size limits
+    for(const[type,dates]of Object.entries(rawData)){
+      store.put({k:type,data:dates,ts:Date.now()});
+    }
+    // Also save a manifest so we can verify completeness on restore
+    const manifest={types:Object.keys(rawData),
+      totalRows:Object.values(rawData).reduce((s,d)=>s+Object.values(d).reduce((s2,r)=>s2+r.length,0),0),
+      ts:Date.now()};
+    store.put({k:'__manifest__',data:manifest,ts:Date.now()});
+    return new Promise((res,rej)=>{
+      tx.oncomplete=()=>{
+        console.info(`IDB: saved ${fn(manifest.totalRows)} full rows permanently`);
+        res(true);
+      };
+      tx.onerror=e=>{console.warn('IDB save tx error:',e.target.error);rej(e.target.error);};
+    });
+  }catch(e){
+    console.warn('IDB saveRawToIDB failed:',e.message);
+    return false;
+  }
+}
+
+/* Load rawData from IDB — returns {type: {date:[rows]}} or {} */
+async function loadRawFromIDB(){
+  try{
+    const db=await openIDB();
+    const tx=db.transaction(IDB_STORE,'readonly');
+    const store=tx.objectStore(IDB_STORE);
+    return new Promise((res,rej)=>{
+      const req=store.getAll();
+      req.onsuccess=()=>{
+        const records=req.result||[];
+        const out={};
+        records.forEach(r=>{
+          if(r.k&&r.k!=='__manifest__'&&r.data)out[r.k]=r.data;
+        });
+        const manifest=records.find(r=>r.k==='__manifest__');
+        if(manifest){
+          console.info(`IDB: found ${fn(manifest.data.totalRows)} rows saved at ${new Date(manifest.data.ts).toLocaleString()}`);
+        }
+        res(out);
+      };
+      req.onerror=e=>{console.warn('IDB getAll error:',e.target.error);rej(e.target.error);};
+    });
+  }catch(e){
+    console.warn('loadRawFromIDB failed:',e.message);
+    return {};
+  }
+}
+
+/* Clear all rawData from IDB (called by onClear) */
+async function clearRawFromIDB(){
+  try{
+    const db=await openIDB();
+    const tx=db.transaction(IDB_STORE,'readwrite');
+    tx.objectStore(IDB_STORE).clear();
+    console.info('IDB: rawData cleared');
+  }catch(e){console.warn('clearRawFromIDB:',e.message);}
+}
+
+/* ── After page boot: async restore from IDB ──
+   This runs after initPanels() so the UI is already visible.
+   If IDB has more rows than current rawData (from sessionStorage),
+   we replace rawData with IDB version — the most complete dataset.
+   NOTE: The primary call is now at the bottom of the script (boot sequence).
+   This function is kept for backward compatibility / explicit calls only. */
+async function initFromIDB(){
+  try{
+    const idbData=await loadRawFromIDB();
+    if(!Object.keys(idbData).length)return;
+    // Count current in-memory rows
+    const currTotal=Object.values(rawData).reduce((s,d)=>s+Object.values(d).reduce((s2,r)=>s2+r.length,0),0);
+    const idbTotal=Object.values(idbData).reduce((s,d)=>s+Object.values(d).reduce((s2,r)=>s2+r.length,0),0);
+
+    if(idbTotal>currTotal){
+      // IDB has more complete data — replace rawData in memory
+      for(const k of Object.keys(rawData))delete rawData[k];
+      Object.assign(rawData,idbData);
+      _rawRestoredRows=idbTotal;
+      // DO NOT set _rawDataFull=true — this is a restored dataset, not a fresh upload.
+      // This prevents re-writing IDB with itself unnecessarily, but we do refresh localStorage
+      // to stop the degradation spiral where each reopen loses more rows from localStorage.
+      try{
+        const refreshed={};
+        for(const[type,dates]of Object.entries(idbData)){
+          refreshed[type]={};
+          for(const[date,rows]of Object.entries(dates))refreshed[type][date]=rows.slice(0,2000);
+        }
+        localStorage.setItem(SKEY+'_raw',JSON.stringify(refreshed));
+      }catch{}
+      console.info(`IDB restore (initFromIDB): replaced ${currTotal} rows with ${idbTotal} full rows`);
+    }else{
+      _rawRestoredRows=currTotal;
+      console.info(`IDB: in-memory (${currTotal} rows) ≥ IDB (${idbTotal} rows) — no replace needed`);
+    }
+  }catch(e){
+    console.warn('initFromIDB failed:',e.message);
+  }
+}
+
 function loadM(){
   try{
     const r=localStorage.getItem(SKEY);
@@ -675,7 +816,7 @@ function loadM(){
 
     const restoredTypes=new Set();
 
-    // 1. sessionStorage chunks (full data, survives refresh but not close)
+    // 1. sessionStorage chunks — fast same-session cache (cleared on tab close)
     try{
       const total=parseInt(sessionStorage.getItem(SKEY+'_raw_chunks')||'0');
       if(total>0){
@@ -687,34 +828,29 @@ function loadM(){
           Object.keys(parsed).forEach(k=>restoredTypes.add(k));
         }
       }else{
-        // Legacy single-key restore
         const rd=sessionStorage.getItem(SKEY+'_raw');
         if(rd){const parsed=JSON.parse(rd);Object.assign(rawData,parsed);Object.keys(parsed).forEach(k=>restoredTypes.add(k));}
       }
     }catch(e){console.warn('sessionStorage rawData restore:',e);}
 
-    // 2. localStorage full fallback — ALL dates, ALL types.
-    //    Merge: for each type, if sessionStorage had it use that (more rows);
-    //    if missing from sessionStorage, use localStorage version.
+    // 2. localStorage — emergency offline fallback only (NOT used as primary after IDB available)
+    //    Only merge dates that sessionStorage didn't have.
     try{
       const rd2=localStorage.getItem(SKEY+'_raw');
       if(rd2){
         const parsed2=JSON.parse(rd2);
         Object.entries(parsed2).forEach(([type,dates])=>{
           if(!restoredTypes.has(type)){
-            // Full restore from localStorage for this type
             rawData[type]=dates;
           }else{
-            // Merge: add any dates that sessionStorage didn't have
             const existing=rawData[type]||{};
-            Object.entries(dates).forEach(([date,rows])=>{
-              if(!existing[date])existing[date]=rows;
-            });
+            Object.entries(dates).forEach(([date,rows])=>{if(!existing[date])existing[date]=rows;});
             rawData[type]=existing;
           }
         });
       }
     }catch{}
+    // Note: IDB restore happens async in initFromIDB() called after boot
     return m;
   }
   catch{return emptyM();}
@@ -730,24 +866,26 @@ function persistM(){
     catch{toast('Storage full — export backup first','te');return false;}
   }
 
-  // 2. rawData → sessionStorage in CHUNKS (bypasses 5MB per-key limit)
-  //    Split into 2MB chunks to stay well within any browser's per-key limit.
+  // 2. IDB — permanent, unlimited size (non-blocking, only fresh upload data)
+  //    saveRawToIDB() internally checks _rawDataFull flag.
+  //    This means: after every upload, full data is stored permanently in IDB.
+  //    After a restore, we never overwrite IDB with the restored (possibly trimmed) data.
+  saveRawToIDB().catch(e=>console.warn('IDB persist error:',e.message));
+
+  // 3. sessionStorage chunks — fast cache for same-session access
+  //    Store full rawData (not trimmed) for same-session reports.
   try{
     const raw=JSON.stringify(rawData);
-    const CHUNK_SIZE=1.8*1024*1024; // 1.8MB per chunk
+    const CHUNK_SIZE=1.8*1024*1024;
     const numChunks=Math.ceil(raw.length/CHUNK_SIZE);
-    // Clear old chunks first
     const oldTotal=parseInt(sessionStorage.getItem(SKEY+'_raw_chunks')||'0');
     for(let c=0;c<oldTotal+5;c++){try{sessionStorage.removeItem(SKEY+'_raw_'+c);}catch{}}
-    sessionStorage.removeItem(SKEY+'_raw'); // remove legacy key
-    // Write new chunks
+    sessionStorage.removeItem(SKEY+'_raw');
     for(let c=0;c<numChunks;c++){
       sessionStorage.setItem(SKEY+'_raw_'+c,raw.slice(c*CHUNK_SIZE,(c+1)*CHUNK_SIZE));
     }
     sessionStorage.setItem(SKEY+'_raw_chunks',String(numChunks));
   }catch(e){
-    // sessionStorage full — write trimmed version
-    console.warn('sessionStorage full, writing trimmed rawData:',e.message);
     try{
       const slim={};
       for(const[type,dates]of Object.entries(rawData)){
@@ -756,46 +894,47 @@ function persistM(){
       }
       sessionStorage.setItem(SKEY+'_raw',JSON.stringify(slim));
       sessionStorage.removeItem(SKEY+'_raw_chunks');
-    }catch{console.warn('sessionStorage unavailable for rawData');}
+    }catch{console.warn('sessionStorage unavailable:',e.message);}
   }
 
-  // 3. Enhanced localStorage fallback — ALL dates, up to 2000 rows per date per type.
-  //    This ensures downloadSectionReport produces full collated data even after
-  //    the browser tab is closed and sessionStorage is cleared.
-  try{
-    const full={};
-    let totalSize=0;
-    const SIZE_BUDGET=4*1024*1024; // 4MB budget for rawData in localStorage
-    for(const[type,dates]of Object.entries(rawData)){
-      full[type]={};
-      for(const[date,rows]of Object.entries(dates)){
-        const kept=rows.slice(0,2000);
-        full[type][date]=kept;
-        totalSize+=JSON.stringify(kept).length;
-      }
-    }
-    if(totalSize<SIZE_BUDGET){
-      // Full multi-date version fits — store it
-      localStorage.setItem(SKEY+'_raw',JSON.stringify(full));
-    }else{
-      // Too large — trim to 1000 rows per date but keep ALL dates
-      const trimmed={};
+  // 4. localStorage emergency fallback — written ONLY when rawData is from fresh upload.
+  //    CRITICAL: We never re-write localStorage with degraded restored data.
+  //    This prevents the degradation spiral where each reopen trims data further.
+  if(_rawDataFull){
+    try{
+      const full={};
+      let totalSize=0;
+      const SIZE_BUDGET=4*1024*1024;
       for(const[type,dates]of Object.entries(rawData)){
-        trimmed[type]={};
-        for(const[date,rows]of Object.entries(dates))trimmed[type][date]=rows.slice(0,1000);
-      }
-      try{localStorage.setItem(SKEY+'_raw',JSON.stringify(trimmed));}
-      catch{
-        // Still too large — last resort: latest date only
-        const tiny={};
-        for(const[type,dates]of Object.entries(rawData)){
-          const d=Object.keys(dates).sort().pop();
-          if(d)tiny[type]={[d]:(dates[d]||[]).slice(0,500)};
+        full[type]={};
+        for(const[date,rows]of Object.entries(dates)){
+          const kept=rows.slice(0,2000);
+          full[type][date]=kept;
+          totalSize+=kept.length*200; // estimate
         }
-        localStorage.setItem(SKEY+'_raw',JSON.stringify(tiny));
       }
-    }
-  }catch{}
+      if(totalSize<SIZE_BUDGET){
+        localStorage.setItem(SKEY+'_raw',JSON.stringify(full));
+      }else{
+        const trimmed={};
+        for(const[type,dates]of Object.entries(rawData)){
+          trimmed[type]={};
+          for(const[date,rows]of Object.entries(dates))trimmed[type][date]=rows.slice(0,800);
+        }
+        try{localStorage.setItem(SKEY+'_raw',JSON.stringify(trimmed));}
+        catch{
+          const tiny={};
+          for(const[type,dates]of Object.entries(rawData)){
+            const d=Object.keys(dates).sort().pop();
+            if(d)tiny[type]={[d]:(dates[d]||[]).slice(0,400)};
+          }
+          try{localStorage.setItem(SKEY+'_raw',JSON.stringify(tiny));}catch{}
+        }
+      }
+    }catch{}
+  }
+  // If _rawDataFull===false: we deliberately skip localStorage write
+  // to prevent overwriting a potentially richer stored version with degraded data.
 
   return true;
 }
@@ -2575,15 +2714,19 @@ function onClear(){
   if(!confirm('⚠️ Delete ALL master data?\n\nExport first if needed.'))return;
   master=emptyM();pending={};dlog=[];
   for(const k of Object.keys(rawData))delete rawData[k];
+  _rawDataFull=false;
+  _rawRestoredRows=0;
   localStorage.removeItem(SKEY);
   localStorage.removeItem(SKEY+'_raw');
-  // Clear chunked sessionStorage (chunk-based rawData storage)
+  // Clear sessionStorage chunks
   try{
     const total=parseInt(sessionStorage.getItem(SKEY+'_raw_chunks')||'0');
     for(let c=0;c<total+5;c++){try{sessionStorage.removeItem(SKEY+'_raw_'+c);}catch{}}
     sessionStorage.removeItem(SKEY+'_raw_chunks');
-    sessionStorage.removeItem(SKEY+'_raw'); // legacy key
+    sessionStorage.removeItem(SKEY+'_raw');
   }catch{}
+  // Clear IDB (permanent storage)
+  clearRawFromIDB();
   q('#brow').innerHTML='<span style="color:#94a3b8;font-size:11px">Cleared</span>';
   updateSummary();renderTab(activeTab);toast('🗑 Cleared','tw');
 }
@@ -4993,6 +5136,8 @@ function captureRaw(type,row,date){
   if(!rawData[type])rawData[type]={};
   if(!rawData[type][date])rawData[type][date]=[];
   rawData[type][date].push(row);
+  // Flag that rawData now contains fresh upload data — enables IDB save in persistM()
+  _rawDataFull=true;
 }
 
 /* Filter raw captured rows for one specific section */
@@ -5599,6 +5744,107 @@ initPanels();updateSummary();renderTab(0);
 (()=>{const btn=document.getElementById('sheetsbtn');if(btn&&getGsUrl())btn.textContent='📊 Sheets ✓';})();
 const _tot=Object.values(master).reduce((a,arr)=>a+arr.reduce((s,r)=>s+r.count,0),0);
 if(_tot>0)setTimeout(()=>toast(`📊 Restored ${fn(_tot)} AWBs from saved data`,'ti'),400);
+
+/* ══════════════════════════════════════════════════════════════════
+   PERMANENT REPORT PERSISTENCE FIX
+   Root cause: initFromIDB() was defined but never called at boot.
+   IDB is the only storage tier that holds FULL unlimited row-level data
+   permanently across sessions. Without this call:
+     Session 1 upload → IDB saved (unlimited rows)
+     Session 2 reopen → sessionStorage empty (tab closed) →
+                        localStorage used (only 2000 rows trimmed) →
+                        IDB NEVER consulted → degraded data
+     Session 3+ →      localStorage re-saved from degraded 2000 rows →
+                        progressively more degraded each cycle
+   This fix:
+   1. Always calls initFromIDB() at boot
+   2. Re-renders the UI after IDB data loads (so report uses full data)
+   3. Refreshes localStorage from IDB data after restore (stops degradation spiral)
+   4. Sets _rawDataFull guard correctly so IDB is never overwritten with worse data
+═══════════════════════════════════════════════════════════════════ */
+(async()=>{
+  try{
+    const idbData=await loadRawFromIDB();
+    if(!Object.keys(idbData).length){
+      console.info('IDB: no stored data found — nothing to restore');
+      return;
+    }
+
+    // Count rows in IDB vs current in-memory rawData
+    const countRows=d=>Object.values(d).reduce((s,dates)=>s+Object.values(dates).reduce((s2,r)=>s2+r.length,0),0);
+    const idbTotal=countRows(idbData);
+    const currTotal=countRows(rawData);
+
+    if(idbTotal<=0){
+      console.info('IDB: empty records found — skipping restore');
+      return;
+    }
+
+    if(idbTotal>=currTotal){
+      // IDB has equal or more complete data — ALWAYS use it (equal handles same-size edge case)
+      for(const k of Object.keys(rawData))delete rawData[k];
+      Object.assign(rawData,idbData);
+      console.info(`IDB restore: ${currTotal} rows → ${idbTotal} full rows (PERMANENT — detail preserved)`);
+
+      // CRITICAL: refresh localStorage from the full IDB data so that the NEXT session's
+      // localStorage fallback is also the full dataset (not a previously trimmed version).
+      // This stops the degradation spiral where each session trims more rows.
+      // We write IDB data (not rawData which might be the same trimmed localStorage version)
+      // up to 2000 rows/date — a much richer fallback than the previous 400-row emergency version.
+      try{
+        const refreshed={};
+        let totalSize=0;
+        const SIZE_BUDGET=4.5*1024*1024; // 4.5MB
+        for(const[type,dates]of Object.entries(idbData)){
+          refreshed[type]={};
+          for(const[date,rows]of Object.entries(dates)){
+            const kept=rows.slice(0,2000);
+            refreshed[type][date]=kept;
+            totalSize+=JSON.stringify(kept).length;
+          }
+        }
+        if(totalSize<SIZE_BUDGET){
+          localStorage.setItem(SKEY+'_raw',JSON.stringify(refreshed));
+          console.info(`IDB restore: refreshed localStorage fallback (${Math.round(totalSize/1024)}KB) — degradation spiral broken`);
+        }else{
+          // Too large: store 800 rows/date but keep ALL dates
+          const compact={};
+          for(const[type,dates]of Object.entries(idbData)){
+            compact[type]={};
+            for(const[date,rows]of Object.entries(dates))compact[type][date]=rows.slice(0,800);
+          }
+          localStorage.setItem(SKEY+'_raw',JSON.stringify(compact));
+          console.info('IDB restore: refreshed localStorage fallback (compact — all dates kept)');
+        }
+      }catch(lsErr){console.warn('IDB restore: localStorage refresh failed:',lsErr.message);}
+
+      // Re-render the entire UI with the now-complete rawData so reports use full detail
+      updateSummary();
+      renderTab(activeTab);
+      // Show confirmation toast only if IDB meaningfully improved data
+      if(idbTotal>currTotal){
+        const gain=fn(idbTotal-currTotal);
+        setTimeout(()=>toast(`✅ Full report restored from IndexedDB (+${gain} rows) — detail preserved permanently`,'tok'),600);
+      }
+    }else{
+      console.info(`IDB: in-memory (${currTotal}) > IDB (${idbTotal}) — current data is more complete, no replace`);
+    }
+  }catch(err){
+    console.warn('Boot IDB restore failed:',err.message);
+  }
+})();
+// PERMANENT FIX: async restore from IndexedDB after page is ready.
+// IDB has no size limit and survives tab close — this ensures full detailed
+// report data is ALWAYS available regardless of how many times the tab is reopened.
+// initFromIDB() only replaces rawData if IDB has MORE rows than current in-memory data.
+initFromIDB().then(()=>{
+  // If IDB provided a richer dataset, refresh the summary and current tab
+  const idbRows=Object.values(rawData).reduce((s,d)=>s+Object.values(d).reduce((s2,r)=>s2+r.length,0),0);
+  if(idbRows>0){
+    updateSummary();
+    // Don't re-render tab here to avoid flicker — data is available for next user interaction
+  }
+}).catch(e=>console.warn('initFromIDB boot error:',e));
 </script>
 </body>
 </html>
