@@ -776,7 +776,7 @@ const SECS=[
     title:'DCH',
     badge:'SHORT SHIPMENT',
     src:'forwardShort',
-    ageOpts:[3,10],
+    ageOpts:[3,6,10],   // D6 added — strict age=6 match, same logic as D3 and D10
     binOpts:null,
     msgOpts:null,
   },
@@ -5307,7 +5307,7 @@ document.getElementById('hovFi').addEventListener('change',async e=>{
    Only ages relevant to sections are kept.
    Used exclusively by downloadSectionReport().
 ═══════════════════════════════════════════════ */
-const _VALID_AGES={forward:[3,6],reverse:[3,10],lmodc:[3,6,10],forwardShort:[3,6]};
+const _VALID_AGES={forward:[3,6],reverse:[3,10],lmodc:[3,6,10],forwardShort:[3,6,10]};
 
 function captureRaw(type,row,date){
   // 1. Apply base filter (mirrors each type's processor)
