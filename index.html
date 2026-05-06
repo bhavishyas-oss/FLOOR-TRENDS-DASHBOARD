@@ -2040,33 +2040,33 @@ async function runFiles(files){
   // Each file's ArrayBuffer is fully released before the next one starts.
   const BATCH = 1;
 
-  // Only persist to localStorage when batch is large (avoid repeated I/O per file).
-  // IDB persist happens inside persistM() regardless — it's always non-blocking.
-  const DEFER_PERSIST = total > 3;
-  let persistPending = false;
-
   // Track memory pressure: pause if heap is getting large (Chrome API)
   const canCheckMemory = typeof performance !== 'undefined' && performance.memory;
+
+  // ── PER-FILE: persist → Sheets push → rawData purge ─────────────
+  // DEFER_PERSIST removed — every file now persists and pushes immediately,
+  // then rawData for that date is freed. This prevents the "20-file OOM"
+  // where rawData accumulated all session's rows across the JS heap.
+  // IDB holds the permanent full copy — in-memory rawData is disposable.
 
   for(let i=0; i<total; i+=BATCH){
     const batchEnd = Math.min(i+BATCH, total);
     const pct      = Math.round((i/total)*88); // leave 88-100 for post-processing
-    setP(pct, `📂 ${i+1}–${batchEnd} of ${total} files…`);
+    setP(pct, `📂 File ${i+1} of ${total}…`);
 
-    // Yield BEFORE each batch: resets the browser's "page unresponsive" watchdog
-    // (fires if the main thread blocks for ~5s without yielding)
+    // Yield BEFORE each file: resets the "page unresponsive" watchdog
     await new Promise(r=>setTimeout(r, 16));
 
-    // Optional: if heap usage is above 80%, yield longer to let GC run
+    // Check memory pressure BEFORE loading the next file's ArrayBuffer
     if(canCheckMemory){
       const heapRatio = performance.memory.usedJSHeapSize / performance.memory.jsHeapSizeLimit;
-      if(heapRatio > 0.80){
-        console.log(`Memory pressure: ${Math.round(heapRatio*100)}% heap — yielding for GC`);
-        await new Promise(r=>setTimeout(r, 200));
+      if(heapRatio > 0.75){
+        console.log(`Memory pressure before file ${i+1}: ${Math.round(heapRatio*100)}% heap — yielding 500ms for GC`);
+        await new Promise(r=>setTimeout(r, 500));
       }
     }
 
-    // Process this batch in parallel
+    // Process exactly one file (BATCH=1)
     const batchSlice = Array.from({length: batchEnd-i}, (_,k) => files[i+k]);
     const batchResults = await Promise.all(batchSlice.map(async f=>{
       const ext = f.name.split('.').pop().toLowerCase();
@@ -2080,25 +2080,36 @@ async function runFiles(files){
       }
     }));
 
-    // Store results and track whether any file produced data
-    batchResults.forEach((r,k)=>{
+    for(let k=0; k<batchResults.length; k++){
+      const r = batchResults[k];
       results[i+k] = r;
-      const hasData = r && r.type && !['error','unsupported','skipped'].includes(r.type) && r.awbs>0;
-      if(hasData){
-        if(DEFER_PERSIST){ persistPending=true; }
-        else{ persistM(); } // immediate persist for small batches
-      }
-    });
 
-    // Yield AFTER each file — 200ms for large files (>10k rows), 50ms otherwise.
-    // Critical: this yield gives Chrome's GC time to collect the processed ArrayBuffer
-    // and intermediate pako decompression buffers before the next file is loaded.
-    // Without this pause, buffers from the completed file remain on the heap while
-    // the next file's buffer is being allocated, doubling peak memory usage.
+      const hasData = r && r.type && !['error','unsupported','skipped'].includes(r.type) && r.awbs>0;
+      if(!hasData) continue;
+
+      // 1. Persist master to IDB + localStorage immediately (never defer)
+      persistM();
+
+      // 2. Push this file's raw rows to Google Sheets NOW — while rawData is
+      //    still populated for this date. Awaited so purge happens only after push.
+      if(getGsUrl()){
+        setP(pct, `📊 Syncing ${r.name ? r.name.slice(0,30) : 'file'} to Sheets…`);
+        await pushOneFileToSheets(r);
+      }
+
+      // 3. CRITICAL MEMORY FIX: purge rawData[type][date] immediately after Sheets push.
+      //    rawData rows can be tens of thousands of objects per large file.
+      //    Deleting them here ensures the 20th, 50th, 1000th file starts with
+      //    the same low heap as the 1st. IDB has the permanent copy.
+      purgeRawDataForDate(r.type, r.date);
+    }
+
+    // Yield AFTER each file — gives GC time to reclaim purged rawData arrays
+    // and the processed ArrayBuffer before the next file is loaded
     const heavy = batchResults.some(r=>r && r.rows && r.rows>10000);
     await new Promise(r=>setTimeout(r, heavy ? 200 : 50));
 
-    // Explicitly check memory pressure and yield longer if needed
+    // Post-file memory pressure check
     if(canCheckMemory){
       const heapRatio = performance.memory.usedJSHeapSize / performance.memory.jsHeapSizeLimit;
       if(heapRatio > 0.70){
@@ -2108,15 +2119,9 @@ async function runFiles(files){
     }
   } // end for loop
 
-  // Batch-persist once at end (avoids repeated I/O across 100s of files)
-  if(persistPending){
-    setP(92, '💾 Saving to storage…');
-    await new Promise(r=>setTimeout(r, 0));
-    persistM();
-  }
-
-  // Push to Google Sheets (non-blocking — runs in background)
-  setP(96, '📊 Syncing to Google Sheets…');
+  // All raw rows already pushed per-file above.
+  // Final pass: push master snapshot + section counts (uses master aggregates, not rawData).
+  setP(96, '📊 Finalising Sheets sync…');
   await new Promise(r=>setTimeout(r, 0));
 
   showP(false);
@@ -2126,7 +2131,7 @@ async function runFiles(files){
   updateSummary();
   await new Promise(r=>setTimeout(r, 0));
   renderTab(activeTab);
-  runSheetsPush(valid); // fire-and-forget — non-blocking
+  runSheetsPush(valid); // fire-and-forget — pushes master snapshot + section counts
   return valid;
 }
 
@@ -5345,6 +5350,28 @@ function captureRaw(type,row,date){
   _rawDataFull=true;
 }
 
+/* ── MEMORY PURGE — free rawData for one type+date after Sheets sync ──────────
+   Root cause of 20-file OOM: rawData accumulates ALL rows from EVERY file ever
+   uploaded in the session. A single Reverse file can add 50k+ filtered row
+   objects. After 20 files = 1M+ objects sitting in the JS heap permanently.
+
+   Fix: after each file's raw rows are pushed to Sheets (and saved to IDB),
+   delete rawData[type][date] immediately. Memory drops back to near-zero between
+   files. IDB holds the permanent copy — in-memory rawData is disposable cache.
+
+   downloadSectionReport() gracefully falls back to the master-aggregate path when
+   rawData is empty, which still produces a useful date×location×count Excel.      */
+function purgeRawDataForDate(type,date){
+  if(!type||!date)return;
+  if(rawData[type]&&rawData[type][date]){
+    const freed=rawData[type][date].length;
+    rawData[type][date]=null;   // null first — lets GC start on the array immediately
+    delete rawData[type][date];
+    if(!Object.keys(rawData[type]).length)delete rawData[type];
+    console.log(`Memory freed: rawData[${type}][${date}] — ${freed} rows released. IDB has permanent copy.`);
+  }
+}
+
 /* Filter raw captured rows for one specific section */
 function filterRawForSection(sec,idx){
   const typeData=rawData[sec.src]||{};
@@ -5848,6 +5875,57 @@ async function pushSectionCounts(counts){
       body:JSON.stringify({type:'section_counts',counts,syncDate})
     });
   }catch(e){console.warn('Section counts push failed:',e.message);}
+}
+
+/* ── Immediately push one file's raw rows to Sheets right after processing ─────
+   Called per-file inside runFiles() BEFORE rawData is purged for that date.
+   This replaces the end-of-batch bulk push for row-level data, ensuring:
+     • Each file's data reaches Sheets as soon as it is processed
+     • rawData can be immediately purged after this returns
+     • No accumulation of rows across 100s of files in the JS heap
+
+   Pushes for every section whose src type matches the file type.
+   Filters by current SEC_FILTERS age (same logic as runSheetsPush primary path). */
+async function pushOneFileToSheets(fileResult){
+  const url=getGsUrl();
+  if(!url||!fileResult||!fileResult.type||!fileResult.date)return;
+  const{type,date}=fileResult;
+
+  for(let i=0;i<SECS.length;i++){
+    const sec=SECS[i];
+    if(sec.src!==type)continue;
+
+    const sheetName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().slice(0,31);
+
+    // filterRawForSection returns age-filtered rows (respects current SEC_FILTERS[i].age)
+    // Limit to THIS file's date only — older dates may already be in Sheets
+    const allRaw=filterRawForSection(sec,i);
+    const thisDate=allRaw.filter(r=>r._date===date);
+    if(!thisDate.length)continue;
+
+    const colSet=new Set();
+    thisDate.forEach(r=>Object.keys(r).forEach(k=>{if(k!=='_date')colSet.add(k);}));
+    const allCols=['Date',...colSet];
+
+    const rowArrs=thisDate
+      .map(row=>allCols.map(c=>{
+        if(c==='Date')return row._date;
+        const v=row[c];
+        return(v!==undefined&&v!==null&&v!=='')?String(v):'';
+      }))
+      .filter(arr=>arr.slice(1).some(v=>v!==''));
+
+    if(!rowArrs.length)continue;
+
+    // Push with one retry on failure
+    let ok=await pushSectionDate(sheetName,allCols,rowArrs,date);
+    if(!ok){
+      await new Promise(r=>setTimeout(r,600));
+      ok=await pushSectionDate(sheetName,allCols,rowArrs,date);
+    }
+    // Small pause between sections to avoid Sheets rate limit
+    await new Promise(r=>setTimeout(r,80));
+  }
 }
 
 /* ── Push all Floor Trends sections to Sheets after every upload ──
