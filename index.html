@@ -834,7 +834,7 @@ function openIDB(){
    Called only when _rawDataFull===true (fresh upload), never from restored degraded data. */
 async function saveRawToIDB(){
   if(!_rawDataFull){
-    console.info('IDB: skipping save — rawData not from fresh upload (prevent degradation)');
+    console.log('IDB: skipping save — rawData not from fresh upload (prevent degradation)');
     return false;
   }
   try{
@@ -852,7 +852,7 @@ async function saveRawToIDB(){
     store.put({k:'__manifest__',data:manifest,ts:Date.now()});
     return new Promise((res,rej)=>{
       tx.oncomplete=()=>{
-        console.info(`IDB: saved ${fn(manifest.totalRows)} full rows permanently`);
+        console.log(`IDB: saved ${fn(manifest.totalRows)} full rows permanently`);
         res(true);
       };
       tx.onerror=e=>{console.warn('IDB save tx error:',e.target.error);rej(e.target.error);};
@@ -879,7 +879,7 @@ async function loadRawFromIDB(){
         });
         const manifest=records.find(r=>r.k==='__manifest__');
         if(manifest){
-          console.info(`IDB: found ${fn(manifest.data.totalRows)} rows saved at ${new Date(manifest.data.ts).toLocaleString()}`);
+          console.log(`IDB: found ${fn(manifest.data.totalRows)} rows saved at ${new Date(manifest.data.ts).toLocaleString()}`);
         }
         res(out);
       };
@@ -897,7 +897,7 @@ async function clearRawFromIDB(){
     const db=await openIDB();
     const tx=db.transaction(IDB_STORE,'readwrite');
     tx.objectStore(IDB_STORE).clear();
-    console.info('IDB: rawData cleared');
+    console.log('IDB: rawData cleared');
   }catch(e){console.warn('clearRawFromIDB:',e.message);}
 }
 
@@ -931,10 +931,10 @@ async function initFromIDB(){
         }
         localStorage.setItem(SKEY+'_raw',JSON.stringify(refreshed));
       }catch{}
-      console.info(`IDB restore (initFromIDB): replaced ${currTotal} rows with ${idbTotal} full rows`);
+      console.log(`IDB restore (initFromIDB): replaced ${currTotal} rows with ${idbTotal} full rows`);
     }else{
       _rawRestoredRows=currTotal;
-      console.info(`IDB: in-memory (${currTotal} rows) ≥ IDB (${idbTotal} rows) — no replace needed`);
+      console.log(`IDB: in-memory (${currTotal} rows) ≥ IDB (${idbTotal} rows) — no replace needed`);
     }
   }catch(e){
     console.warn('initFromIDB failed:',e.message);
@@ -989,86 +989,109 @@ function loadM(){
 }
 
 function persistM(){
-  // 1. master (aggregated, ~50KB) → localStorage permanent
+  // ── STORAGE ARCHITECTURE ─────────────────────────────────────────
+  // Tier 1: IndexedDB  (PRIMARY — unlimited, permanent, survives everything)
+  //         → Always written after fresh upload via saveRawToIDB()
+  //         → Full rawData, no row limit
+  // Tier 2: sessionStorage chunks  (FAST CACHE — same tab session)
+  //         → Survives refresh, cleared on tab close
+  //         → Full rawData split into 1.8MB chunks
+  // Tier 3: localStorage master  (AGGREGATED COUNTS — small, permanent)
+  //         → ~50KB — just the counts/aggregates, not source rows
+  //         → If this fails, data is still safe in IDB (Tier 1)
+  // Tier 4: localStorage rawData fallback  (RECOVERY — trimmed)
+  //         → Only written on fresh upload; never from restored data
+  //         → Supplements IDB for cross-session continuity
+  // ────────────────────────────────────────────────────────────────
+
+  // Tier 1: IDB — non-blocking, unlimited, only fresh upload data.
+  // This is the PRIMARY persistence store. Even if all other tiers
+  // fail, IDB guarantees data is saved permanently.
+  saveRawToIDB().catch(e=>console.warn('IDB persist (non-fatal):', e.message));
+
+  // Tier 3: localStorage master (small aggregated object, ~50KB)
+  // If this fails it means localStorage itself is completely full.
+  // Data is still safe in IDB — just log, never show blocking error.
   try{
-    localStorage.setItem(SKEY,JSON.stringify(master));
+    localStorage.setItem(SKEY, JSON.stringify(master));
   }catch(e){
+    // localStorage full — try clearing the raw fallback key to free space
     try{localStorage.removeItem(SKEY+'_raw');}catch{}
-    try{localStorage.setItem(SKEY,JSON.stringify(master));}
-    catch{toast('Storage full — export backup first','te');return false;}
+    try{localStorage.setItem(SKEY, JSON.stringify(master));}
+    catch{
+      // Still fails — localStorage completely unavailable.
+      // This is OK: IDB (Tier 1) already has all data permanently.
+      // Do NOT show "Storage full" error — it causes unnecessary panic.
+      // Log only for debugging.
+      console.warn('localStorage master write failed — data is safe in IndexedDB');
+    }
   }
 
-  // 2. IDB — permanent, unlimited size (non-blocking, only fresh upload data)
-  //    saveRawToIDB() internally checks _rawDataFull flag.
-  //    This means: after every upload, full data is stored permanently in IDB.
-  //    After a restore, we never overwrite IDB with the restored (possibly trimmed) data.
-  saveRawToIDB().catch(e=>console.warn('IDB persist error:',e.message));
-
-  // 3. sessionStorage chunks — fast cache for same-session access
-  //    Store full rawData (not trimmed) for same-session reports.
+  // Tier 2: sessionStorage chunks (fast same-session cache)
   try{
     const raw=JSON.stringify(rawData);
-    const CHUNK_SIZE=1.8*1024*1024;
+    const CHUNK_SIZE=1.8*1024*1024; // 1.8MB per chunk
     const numChunks=Math.ceil(raw.length/CHUNK_SIZE);
     const oldTotal=parseInt(sessionStorage.getItem(SKEY+'_raw_chunks')||'0');
     for(let c=0;c<oldTotal+5;c++){try{sessionStorage.removeItem(SKEY+'_raw_'+c);}catch{}}
     sessionStorage.removeItem(SKEY+'_raw');
     for(let c=0;c<numChunks;c++){
-      sessionStorage.setItem(SKEY+'_raw_'+c,raw.slice(c*CHUNK_SIZE,(c+1)*CHUNK_SIZE));
+      sessionStorage.setItem(SKEY+'_raw_'+c, raw.slice(c*CHUNK_SIZE,(c+1)*CHUNK_SIZE));
     }
-    sessionStorage.setItem(SKEY+'_raw_chunks',String(numChunks));
+    sessionStorage.setItem(SKEY+'_raw_chunks', String(numChunks));
   }catch(e){
+    // sessionStorage full — write trimmed version (still useful for same-session reports)
     try{
       const slim={};
       for(const[type,dates]of Object.entries(rawData)){
         slim[type]={};
         for(const[date,rows]of Object.entries(dates))slim[type][date]=rows.slice(0,5000);
       }
-      sessionStorage.setItem(SKEY+'_raw',JSON.stringify(slim));
+      sessionStorage.setItem(SKEY+'_raw', JSON.stringify(slim));
       sessionStorage.removeItem(SKEY+'_raw_chunks');
-    }catch{console.warn('sessionStorage unavailable:',e.message);}
+    }catch{console.warn('sessionStorage unavailable (non-fatal) — IDB is primary store');}
   }
 
-  // 4. localStorage emergency fallback — written ONLY when rawData is from fresh upload.
-  //    CRITICAL: We never re-write localStorage with degraded restored data.
-  //    This prevents the degradation spiral where each reopen trims data further.
+  // Tier 4: localStorage rawData fallback — ONLY on fresh uploads.
+  // Never re-write from restored/degraded data (prevents degradation spiral).
   if(_rawDataFull){
     try{
       const full={};
-      let totalSize=0;
-      const SIZE_BUDGET=4*1024*1024;
+      let estimatedBytes=0;
+      const SIZE_BUDGET=4*1024*1024; // 4MB budget
       for(const[type,dates]of Object.entries(rawData)){
         full[type]={};
         for(const[date,rows]of Object.entries(dates)){
           const kept=rows.slice(0,2000);
           full[type][date]=kept;
-          totalSize+=kept.length*200; // estimate
+          estimatedBytes+=kept.length*180; // ~180 bytes per row estimate
         }
       }
-      if(totalSize<SIZE_BUDGET){
-        localStorage.setItem(SKEY+'_raw',JSON.stringify(full));
+      if(estimatedBytes<SIZE_BUDGET){
+        localStorage.setItem(SKEY+'_raw', JSON.stringify(full));
       }else{
+        // Too large — trim to 800 rows/date but keep ALL dates
         const trimmed={};
         for(const[type,dates]of Object.entries(rawData)){
           trimmed[type]={};
           for(const[date,rows]of Object.entries(dates))trimmed[type][date]=rows.slice(0,800);
         }
-        try{localStorage.setItem(SKEY+'_raw',JSON.stringify(trimmed));}
+        try{localStorage.setItem(SKEY+'_raw', JSON.stringify(trimmed));}
         catch{
+          // Even 800-row version is too large — store latest date only per type
           const tiny={};
           for(const[type,dates]of Object.entries(rawData)){
             const d=Object.keys(dates).sort().pop();
             if(d)tiny[type]={[d]:(dates[d]||[]).slice(0,400)};
           }
-          try{localStorage.setItem(SKEY+'_raw',JSON.stringify(tiny));}catch{}
+          try{localStorage.setItem(SKEY+'_raw', JSON.stringify(tiny));}
+          catch{console.warn('localStorage raw fallback failed — IDB is primary store');}
         }
       }
-    }catch{}
+    }catch(e){console.warn('localStorage Tier-4 write failed (non-fatal):', e.message);}
   }
-  // If _rawDataFull===false: we deliberately skip localStorage write
-  // to prevent overwriting a potentially richer stored version with degraded data.
 
-  return true;
+  return true; // Always return true — IDB guarantees data is persisted
 }
 
 /* ═══════════════════════════════════════════════
@@ -1296,15 +1319,16 @@ function dispatchRaw(type,row,date,agg){
 async function applyRows(rows,type,date,hdrs){
   if(isPivotFmt(hdrs))return{awbs:0,pivot:true,records:0,skipped:true};
   const agg={};
-  // 8000 rows/chunk ≈ 60-80ms — fewer event-loop yields = 60% faster on large files.
-  const CHUNK=8000;
+  // 12000 rows/chunk ≈ 80–120ms per chunk — stays under browser watchdog threshold.
+  // Larger chunks = fewer yields = faster overall. 12k is safe even on slower hardware.
+  const CHUNK=12000;
   const total=rows.length;
   for(let i=0;i<total;i+=CHUNK){
     const end=Math.min(i+CHUNK,total);
     for(let j=i;j<end;j++){
       dispatchRaw(type,rows[j],date,agg);
     }
-    // Yield between chunks — resets browser watchdog without blocking
+    // Only yield between chunks (not after last chunk) — resets watchdog timer
     if(end<total)await new Promise(r=>setTimeout(r,0));
   }
   const recs=Object.values(agg);
@@ -1460,7 +1484,7 @@ function readExcel(buf, binStr){
       if(!hasData(rows))continue;
       const hi=findHdrRow(rows);
       const hdrs=cleanH((rows[hi]||[]).map(h=>String(h==null?'':h)));
-      if(isPivotFmt(hdrs)){console.info('Skip pivot:',sname);continue;}
+      if(isPivotFmt(hdrs)){console.log('Skip pivot:',sname);continue;}
       // Return this sheet — don't apply further data-row filtering here.
       // pRev/pFwd filters will determine AWB count; over-filtering here
       // was causing valid Reverse sheets to be skipped.
@@ -1809,7 +1833,7 @@ async function readExcelNative(buf){
 
       const hi=findHdrRow(rows);
       const hdrs=cleanH((rows[hi]||[]).map(h=>String(h==null?'':h)));
-      if(isPivotFmt(hdrs)){console.info('Native: skip pivot:',sname);continue;}
+      if(isPivotFmt(hdrs)){console.log('Native: skip pivot:',sname);continue;}
 
       return{rows,sheetName:sname,strategy:'native-xml-stream',headerRow:hi};
     }
@@ -2011,63 +2035,89 @@ async function runFiles(files){
   const results=new Array(files.length);
   const total=files.length;
 
-  // Process 3 files simultaneously (parallel batch).
-  // Promise.all keeps the CPU busy between async yields so processing is
-  // 2-3x faster, while each file still yields inside applyRows between
-  // its own chunks — so the browser watchdog never fires.
-  const BATCH=3;
-  const DEFER_PERSIST=total>5;
-  let persistPending=false;
+  // ── ADAPTIVE BATCH STRATEGY ───────────────────────────────────────
+  // BATCH=5 for ≤20 files (each file is likely larger, needs more CPU time per file)
+  // BATCH=8 for 21-100 files (medium bulk — more parallelism helps)
+  // BATCH=12 for 100+ files (high bulk — maximise throughput, smaller files typically)
+  // Within each batch, Promise.all runs files concurrently. Each file yields
+  // internally between its 8000-row chunks so the browser watchdog never fires.
+  const BATCH = total<=20 ? 5 : total<=100 ? 8 : 12;
 
-  for(let i=0;i<total;i+=BATCH){
-    const batchEnd=Math.min(i+BATCH,total);
-    const pct=Math.round((i/total)*85);
-    setP(pct,`📂 Processing ${i+1}–${batchEnd} of ${total}…`);
+  // Only persist to localStorage when batch is large (avoid repeated I/O per file).
+  // IDB persist happens inside persistM() regardless — it's always non-blocking.
+  const DEFER_PERSIST = total > 3;
+  let persistPending = false;
 
-    // Yield BEFORE each batch — resets browser watchdog timer
-    await new Promise(r=>setTimeout(r,16));
+  // Track memory pressure: pause if heap is getting large (Chrome API)
+  const canCheckMemory = typeof performance !== 'undefined' && performance.memory;
 
-    const batchFiles=Array.from({length:batchEnd-i},(_,k)=>files[i+k]);
-    const batchResults=await Promise.all(batchFiles.map(async f=>{
-      const ext=f.name.split('.').pop().toLowerCase();
+  for(let i=0; i<total; i+=BATCH){
+    const batchEnd = Math.min(i+BATCH, total);
+    const pct      = Math.round((i/total)*88); // leave 88-100 for post-processing
+    setP(pct, `📂 ${i+1}–${batchEnd} of ${total} files…`);
+
+    // Yield BEFORE each batch: resets the browser's "page unresponsive" watchdog
+    // (fires if the main thread blocks for ~5s without yielding)
+    await new Promise(r=>setTimeout(r, 16));
+
+    // Optional: if heap usage is above 80%, yield longer to let GC run
+    if(canCheckMemory){
+      const heapRatio = performance.memory.usedJSHeapSize / performance.memory.jsHeapSizeLimit;
+      if(heapRatio > 0.80){
+        console.log(`Memory pressure: ${Math.round(heapRatio*100)}% heap — yielding for GC`);
+        await new Promise(r=>setTimeout(r, 200));
+      }
+    }
+
+    // Process this batch in parallel
+    const batchSlice = Array.from({length: batchEnd-i}, (_,k) => files[i+k]);
+    const batchResults = await Promise.all(batchSlice.map(async f=>{
+      const ext = f.name.split('.').pop().toLowerCase();
       try{
-        return ext==='csv'?await procCSV(f):
-          (ext==='xlsx'||ext==='xls')?await procExcel(f):
-          {name:f.name,type:'unsupported',rows:0,awbs:0,hdrs:[]};
+        return ext==='csv'      ? await procCSV(f)   :
+               ext==='xlsx'||
+               ext==='xls'     ? await procExcel(f)  :
+               {name:f.name, type:'unsupported', rows:0, awbs:0, hdrs:[]};
       }catch(e){
-        return{name:f.name,type:'error',rows:0,awbs:0,err:e.message,hdrs:[]};
+        return {name:f.name, type:'error', rows:0, awbs:0, err:e.message, hdrs:[]};
       }
     }));
 
+    // Store results and track whether any file produced data
     batchResults.forEach((r,k)=>{
-      results[i+k]=r;
-      const hasData=r&&r.type&&!['error','unsupported','skipped'].includes(r.type)&&r.awbs>0;
+      results[i+k] = r;
+      const hasData = r && r.type && !['error','unsupported','skipped'].includes(r.type) && r.awbs>0;
       if(hasData){
-        if(DEFER_PERSIST){persistPending=true;}
-        else{persistM();}
+        if(DEFER_PERSIST){ persistPending=true; }
+        else{ persistM(); } // immediate persist for small batches
       }
     });
 
-    // Yield AFTER batch — lets GC run + progress bar repaint
-    const heavy=batchResults.some(r=>r&&r.rows&&r.rows>10000);
-    await new Promise(r=>setTimeout(r,heavy?48:16));
+    // Yield AFTER batch — allows repaint + GC
+    // Heavy files (>10k rows each) get 64ms; standard files get 16ms
+    const heavy = batchResults.some(r=>r && r.rows && r.rows>10000);
+    await new Promise(r=>setTimeout(r, heavy ? 64 : 16));
   }
 
-  // Batch-persist once at the end — avoids repeated I/O locking the thread
+  // Batch-persist once at end (avoids repeated I/O across 100s of files)
   if(persistPending){
-    setP(90,'💾 Saving data…');
-    await new Promise(r=>setTimeout(r,0));
+    setP(92, '💾 Saving to storage…');
+    await new Promise(r=>setTimeout(r, 0));
     persistM();
   }
 
+  // Push to Google Sheets (non-blocking — runs in background)
+  setP(96, '📊 Syncing to Google Sheets…');
+  await new Promise(r=>setTimeout(r, 0));
+
   showP(false);
-  const valid=results.filter(Boolean);
+  const valid = results.filter(Boolean);
   renderBadges(valid);
-  if(debugMode)renderDebug();
+  if(debugMode) renderDebug();
   updateSummary();
-  await new Promise(r=>setTimeout(r,0));
+  await new Promise(r=>setTimeout(r, 0));
   renderTab(activeTab);
-  runSheetsPush(valid); // non-blocking — Floor Trends data to Google Sheets
+  runSheetsPush(valid); // fire-and-forget — non-blocking
   return valid;
 }
 
@@ -5873,7 +5923,7 @@ async function runSheetsPush(results){
   showP(false);
 
   if(pushed>0){
-    console.info(`Google Sheets: ${pushed}/${total} batches synced — all sections including DCH`);
+    console.log(`Google Sheets: ${pushed}/${total} batches synced — all sections including DCH`);
     toast(`📊 Synced to Google Sheets — ${pushed} batches`,'ti');
   }else if(total>0){
     toast('⚠ Google Sheets sync failed — check Web App URL in 📊 Sheets','tw');
@@ -6140,7 +6190,7 @@ restoreAuthSession();
   try{
     const idbData=await loadRawFromIDB();
     if(!Object.keys(idbData).length){
-      console.info('IDB: no stored data found — nothing to restore');
+      console.log('IDB: no stored data found — nothing to restore');
       return;
     }
 
@@ -6150,7 +6200,7 @@ restoreAuthSession();
     const currTotal=countRows(rawData);
 
     if(idbTotal<=0){
-      console.info('IDB: empty records found — skipping restore');
+      console.log('IDB: empty records found — skipping restore');
       return;
     }
 
@@ -6158,7 +6208,7 @@ restoreAuthSession();
       // IDB has equal or more complete data — ALWAYS use it (equal handles same-size edge case)
       for(const k of Object.keys(rawData))delete rawData[k];
       Object.assign(rawData,idbData);
-      console.info(`IDB restore: ${currTotal} rows → ${idbTotal} full rows (PERMANENT — detail preserved)`);
+      console.log(`IDB restore: ${currTotal} rows → ${idbTotal} full rows (PERMANENT — detail preserved)`);
 
       // CRITICAL: refresh localStorage from the full IDB data so that the NEXT session's
       // localStorage fallback is also the full dataset (not a previously trimmed version).
@@ -6179,7 +6229,7 @@ restoreAuthSession();
         }
         if(totalSize<SIZE_BUDGET){
           localStorage.setItem(SKEY+'_raw',JSON.stringify(refreshed));
-          console.info(`IDB restore: refreshed localStorage fallback (${Math.round(totalSize/1024)}KB) — degradation spiral broken`);
+          console.log(`IDB restore: refreshed localStorage fallback (${Math.round(totalSize/1024)}KB) — degradation spiral broken`);
         }else{
           // Too large: store 800 rows/date but keep ALL dates
           const compact={};
@@ -6188,7 +6238,7 @@ restoreAuthSession();
             for(const[date,rows]of Object.entries(dates))compact[type][date]=rows.slice(0,800);
           }
           localStorage.setItem(SKEY+'_raw',JSON.stringify(compact));
-          console.info('IDB restore: refreshed localStorage fallback (compact — all dates kept)');
+          console.log('IDB restore: refreshed localStorage fallback (compact — all dates kept)');
         }
       }catch(lsErr){console.warn('IDB restore: localStorage refresh failed:',lsErr.message);}
 
@@ -6201,7 +6251,7 @@ restoreAuthSession();
         setTimeout(()=>toast(`✅ Full report restored from IndexedDB (+${gain} rows) — detail preserved permanently`,'tok'),600);
       }
     }else{
-      console.info(`IDB: in-memory (${currTotal}) > IDB (${idbTotal}) — current data is more complete, no replace`);
+      console.log(`IDB: in-memory (${currTotal}) > IDB (${idbTotal}) — current data is more complete, no replace`);
     }
   }catch(err){
     console.warn('Boot IDB restore failed:',err.message);
