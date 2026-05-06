@@ -2872,7 +2872,14 @@ function toggleDebug(){
 /* ═══════════════════════════════════════════════
    ACTIONS
 ═══════════════════════════════════════════════ */
-function onSave(){if(!requireAdmin('Save to Master'))return;if(persistM())toast('✅ Saved to master dataset','tok');}
+function onSave(){
+  if(!requireAdmin('Save to Master'))return;
+  if(persistM()){
+    toast('✅ Saved to master dataset','tok');
+    // Push updated snapshot to Sheets so re-login/Viewer Mode shows latest data
+    pushMasterSnapshot();
+  }
+}
 function onExport(){
   if(!requireAdmin('Export Backup'))return;
   try{
@@ -5941,6 +5948,9 @@ async function runSheetsPush(results){
 async function pushMasterSnapshot(){
   const url=getGsUrl();
   if(!url)return;
+  // Only push if master has actual data
+  const hasData=Object.values(master).some(arr=>arr&&arr.length>0);
+  if(!hasData)return;
   try{
     const snap=JSON.stringify(master);
     if(!snap||snap==='{}')return;
@@ -5962,7 +5972,6 @@ async function fetchMasterFromSheets(){
   const url=getGsUrl();
   if(!url)return false;
   try{
-    // Use GET with action=getMaster — Apps Script Web App (Anyone) supports CORS on GET
     const resp=await fetch(url+'?action=getMaster',{
       method:'GET',
       headers:{'Accept':'application/json'},
@@ -5972,34 +5981,67 @@ async function fetchMasterFromSheets(){
     const json=await resp.json();
     if(!json.ok||!json.master){console.log('fetchMasterFromSheets: no snapshot available');return false;}
 
-    // Parse the snapshot
     let fetched;
     try{fetched=typeof json.master==='string'?JSON.parse(json.master):json.master;}
     catch{console.warn('fetchMasterFromSheets: snapshot parse failed');return false;}
 
-    // Merge: add dates from Sheets that are not in local master
-    let merged=false;
-    const types=['forward','reverse','lmodc','forwardShort'];
-    types.forEach(type=>{
-      const fetchedArr=fetched[type]||[];
-      if(!fetchedArr.length)return;
-      const localDates=new Set((master[type]||[]).map(r=>r.date));
-      const newRecs=fetchedArr.filter(r=>!localDates.has(r.date));
-      if(newRecs.length){
-        master[type]=[...(master[type]||[]),...newRecs];
-        merged=true;
-      }
-    });
+    // Count AWBs in Sheets vs local
+    const sheetsTotal=Object.values(fetched).reduce((s,arr)=>s+(arr||[]).reduce((s2,r)=>s2+(r.count||0),0),0);
+    const localTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+r.count,0),0);
 
-    if(merged){
-      // Persist the merged master to localStorage so next load is instant
-      try{localStorage.setItem(SKEY,JSON.stringify(master));}catch{}
-      console.log('fetchMasterFromSheets: merged backend data — refreshing UI');
+    if(sheetsTotal===0){console.log('fetchMasterFromSheets: snapshot is empty');return false;}
+
+    // STRATEGY: Use Sheets data if it has equal-or-more AWBs than local.
+    // If local is empty → full replace.
+    // If Sheets has more or equal → merge by taking the superset (all dates from both).
+    // Never reduce data — always grow.
+    const types=['forward','reverse','lmodc','forwardShort'];
+    let didChange=false;
+
+    if(localTotal===0){
+      // Local master is empty — fully restore from Sheets snapshot
+      types.forEach(type=>{
+        const fetchedArr=fetched[type]||[];
+        if(fetchedArr.length){
+          master[type]=[...fetchedArr];
+          didChange=true;
+        }
+      });
+      console.log(`fetchMasterFromSheets: FULL RESTORE — ${sheetsTotal} AWBs from Sheets snapshot`);
     }else{
-      console.log('fetchMasterFromSheets: local data already up to date');
-      merged=true; // still return true so UI re-renders (counts may differ)
+      // Local has data — merge: add dates from Sheets that aren't local, update dates where Sheets has more AWBs
+      types.forEach(type=>{
+        const fetchedArr=fetched[type]||[];
+        if(!fetchedArr.length)return;
+        const localMap=new Map((master[type]||[]).map(r=>[r.date,r]));
+
+        fetchedArr.forEach(r=>{
+          const local=localMap.get(r.date);
+          if(!local){
+            // Date missing locally — add from Sheets
+            (master[type]=master[type]||[]).push(r);
+            didChange=true;
+          }else if((r.count||0)>(local.count||0)){
+            // Sheets has higher count for this date — replace local record
+            const idx=master[type].findIndex(lr=>lr.date===r.date);
+            if(idx>=0){master[type][idx]=r;didChange=true;}
+          }
+        });
+      });
+      if(didChange){
+        console.log(`fetchMasterFromSheets: MERGED — added/updated records (local: ${localTotal}, sheets: ${sheetsTotal})`);
+      }else{
+        console.log('fetchMasterFromSheets: local data up to date');
+      }
     }
-    return merged;
+
+    if(didChange||localTotal===0){
+      // Always persist merged master to localStorage for next boot
+      try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){console.warn('localStorage master write:',e.message);}
+    }
+
+    // Return true any time we got a valid response — always trigger re-render
+    return true;
   }catch(e){
     console.warn('fetchMasterFromSheets failed (non-fatal):',e.message);
     return false;
@@ -6066,51 +6108,110 @@ function enterAdminMode(username){
 }
 
 /* ── Central function: ensure dashboard has data ───────────────────
-   Called whenever the user enters the dashboard (View Mode, Admin login,
-   session restore). Checks if master is empty locally; if so, fetches
-   from Google Sheets (backend) and re-renders all sections.
-   Also refreshes when Sheets has newer data than local storage.
-   Always runs async so it never blocks the UI render.               */
+   Called whenever user enters the dashboard.
+   Priority:
+     1. Try Sheets snapshot (getMaster) → most authoritative
+     2. Try IDB directly (loadRawFromIDB+rebuild) → if Sheets fails
+     3. Use whatever is in master already (localStorage)
+   Always re-renders ALL 4 section tabs after restore.               */
 async function _ensureDashboardData(context){
   const url=getGsUrl();
   const localTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+r.count,0),0);
 
   if(!url){
-    // No Sheets URL configured — rely on local IDB/localStorage only
     if(localTotal===0){
-      toast('No data available. Configure Google Sheets or upload files (Admin Mode).','tw');
+      toast('No data. Configure Google Sheets or upload files (Admin Mode).','tw');
+    }else{
+      _renderAllTabs();
     }
     return;
   }
 
-  if(localTotal>0){
-    // Local data exists — still try to merge Sheets data silently (background sync)
-    // This catches cases where another session uploaded newer files
-    console.log(`[${context}] Local data: ${fn(localTotal)} AWBs — checking Sheets for updates…`);
+  if(localTotal===0){
+    toast('⏳ Loading dashboard data from backend…','ti');
   }else{
-    // No local data — must fetch from Sheets
-    console.log(`[${context}] No local data — fetching from Google Sheets…`);
-    toast('⏳ Loading data from backend…','ti');
+    console.log(`[${context}] Local: ${fn(localTotal)} AWBs — syncing with Sheets…`);
   }
 
   try{
-    const merged=await fetchMasterFromSheets();
-    if(merged){
-      // Re-render with fetched data
+    const restored=await fetchMasterFromSheets();
+
+    const newTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+r.count,0),0);
+
+    if(restored&&newTotal>0){
+      // Re-render ALL tabs so every chart and table is populated
       updateSummary();
-      renderTab(activeTab);
-      const newTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+r.count,0),0);
+      _renderAllTabs();
       if(newTotal>0&&localTotal===0){
-        toast(`✅ Data loaded — ${fn(newTotal)} AWBs restored from backend`,'tok');
+        setTimeout(()=>toast(`✅ Dashboard restored — ${fn(newTotal)} AWBs loaded from backend`,'tok'),400);
       }else if(newTotal>localTotal){
-        toast(`✅ Updated — ${fn(newTotal-localTotal)} new AWBs from backend`,'tok');
+        setTimeout(()=>toast(`✅ Updated — ${fn(newTotal-localTotal)} new AWBs from backend`,'tok'),400);
       }
-    }else if(localTotal===0){
-      toast('ℹ No saved data found. Upload files in Admin Mode to populate the dashboard.','tw');
+      return;
     }
+
+    // Sheets fetch failed or returned empty — try IDB as fallback
+    if(newTotal===0){
+      console.log(`[${context}] Sheets unavailable — trying IndexedDB…`);
+      try{
+        const idbData=await loadRawFromIDB();
+        const idbRows=Object.values(idbData).reduce((s,d)=>s+Object.values(d).reduce((s2,r)=>s2+r.length,0),0);
+        if(idbRows>0){
+          // IDB has rawData — rebuild master from it by re-running applyRows logic
+          Object.assign(rawData,idbData);
+          _rebuildMasterFromRawData();
+          updateSummary();
+          _renderAllTabs();
+          setTimeout(()=>toast(`✅ Dashboard restored from local cache — ${fn(idbRows)} rows`,'tok'),400);
+          return;
+        }
+      }catch(idbErr){console.warn('IDB fallback failed:',idbErr.message);}
+      toast('ℹ No saved data found. Upload files in Admin Mode.','tw');
+    }else{
+      // Had local data already — just re-render
+      updateSummary();
+      _renderAllTabs();
+    }
+
   }catch(e){
     console.warn(`[${context}] _ensureDashboardData error:`,e.message);
+    if(localTotal>0)_renderAllTabs();
   }
+}
+
+/* ── Render all 4 section tabs sequentially with small yield between each ──
+   Required after data restore so charts, tables, and graphs all populate.
+   Each tab gets its own animation frame to avoid canvas size issues.        */
+function _renderAllTabs(){
+  // Render active tab immediately, then other tabs with small delays
+  // to avoid Chart.js canvas-already-in-use errors
+  const tabCount=SECS.length; // 4 tabs
+  renderTab(activeTab);
+  const otherTabs=Array.from({length:tabCount},(_,i)=>i).filter(i=>i!==activeTab);
+  otherTabs.forEach((tabIdx,i)=>{
+    setTimeout(()=>renderTab(tabIdx), 60*(i+1));
+  });
+}
+
+/* ── Rebuild master aggregates from rawData (IDB fallback path) ──
+   When Sheets and localStorage fail but IDB has rawData, we need
+   to rebuild master counts so charts and tables can render.
+   Calls applyRows logic equivalent — reprocesses all raw rows.     */
+function _rebuildMasterFromRawData(){
+  const types=['forward','reverse','lmodc','forwardShort'];
+  types.forEach(type=>{
+    const typeData=rawData[type]||{};
+    Object.entries(typeData).forEach(([date,rows])=>{
+      const agg={};
+      rows.forEach(row=>dispatchRaw(type,row,date,agg));
+      const recs=Object.values(agg);
+      master[type]=(master[type]||[]).filter(r=>r.date!==date);
+      master[type].push(...recs);
+    });
+  });
+  // Persist rebuilt master
+  try{localStorage.setItem(SKEY,JSON.stringify(master));}catch{}
+  console.log('_rebuildMasterFromRawData: rebuilt master from rawData');
 }
 
 /* ── Logout → back to landing page ── */
