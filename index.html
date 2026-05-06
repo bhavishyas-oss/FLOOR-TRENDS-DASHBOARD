@@ -5920,6 +5920,9 @@ async function runSheetsPush(results){
 
   if(sectionCounts.length>0)await pushSectionCounts(sectionCounts);
 
+  // Push master snapshot so Viewer Mode and re-login can restore dashboard state
+  await pushMasterSnapshot();
+
   showP(false);
 
   if(pushed>0){
@@ -5927,6 +5930,79 @@ async function runSheetsPush(results){
     toast(`📊 Synced to Google Sheets — ${pushed} batches`,'ti');
   }else if(total>0){
     toast('⚠ Google Sheets sync failed — check Web App URL in 📊 Sheets','tw');
+  }
+}
+
+/* ── Push serialised master to Sheets (enables Viewer Mode + cross-session restore) ──
+   Writes the master object (aggregated counts only, ~50KB) to a MASTER SNAPSHOT tab
+   in the response sheet. No source rows — just the aggregated data needed to render
+   all charts and tables without re-uploading files.
+   Called after every upload sync so the backend always has the latest state.         */
+async function pushMasterSnapshot(){
+  const url=getGsUrl();
+  if(!url)return;
+  try{
+    const snap=JSON.stringify(master);
+    if(!snap||snap==='{}')return;
+    await fetch(url,{
+      method:'POST',mode:'no-cors',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({type:'master_snapshot',data:snap})
+    });
+    console.log('Master snapshot pushed to Sheets ('+Math.round(snap.length/1024)+'KB)');
+  }catch(e){console.warn('pushMasterSnapshot failed (non-fatal):',e.message);}
+}
+
+/* ── Fetch master snapshot from Sheets (backend-driven restore) ──
+   Called on startup (Viewer Mode + Admin re-login) when local data is absent.
+   Uses the Apps Script GET endpoint which returns the MASTER SNAPSHOT JSON.
+   On success, populates master and re-renders the UI.
+   This makes the dashboard fully backend-driven — no re-upload needed.          */
+async function fetchMasterFromSheets(){
+  const url=getGsUrl();
+  if(!url)return false;
+  try{
+    // Use GET with action=getMaster — Apps Script Web App (Anyone) supports CORS on GET
+    const resp=await fetch(url+'?action=getMaster',{
+      method:'GET',
+      headers:{'Accept':'application/json'},
+      cache:'no-cache'
+    });
+    if(!resp.ok){console.warn('fetchMasterFromSheets: HTTP',resp.status);return false;}
+    const json=await resp.json();
+    if(!json.ok||!json.master){console.log('fetchMasterFromSheets: no snapshot available');return false;}
+
+    // Parse the snapshot
+    let fetched;
+    try{fetched=typeof json.master==='string'?JSON.parse(json.master):json.master;}
+    catch{console.warn('fetchMasterFromSheets: snapshot parse failed');return false;}
+
+    // Merge: add dates from Sheets that are not in local master
+    let merged=false;
+    const types=['forward','reverse','lmodc','forwardShort'];
+    types.forEach(type=>{
+      const fetchedArr=fetched[type]||[];
+      if(!fetchedArr.length)return;
+      const localDates=new Set((master[type]||[]).map(r=>r.date));
+      const newRecs=fetchedArr.filter(r=>!localDates.has(r.date));
+      if(newRecs.length){
+        master[type]=[...(master[type]||[]),...newRecs];
+        merged=true;
+      }
+    });
+
+    if(merged){
+      // Persist the merged master to localStorage so next load is instant
+      try{localStorage.setItem(SKEY,JSON.stringify(master));}catch{}
+      console.log('fetchMasterFromSheets: merged backend data — refreshing UI');
+    }else{
+      console.log('fetchMasterFromSheets: local data already up to date');
+      merged=true; // still return true so UI re-renders (counts may differ)
+    }
+    return merged;
+  }catch(e){
+    console.warn('fetchMasterFromSheets failed (non-fatal):',e.message);
+    return false;
   }
 }
 
@@ -5971,6 +6047,8 @@ function enterViewMode(){
   sessionStorage.removeItem(AUTH_USER_KEY);
   hideLanding();
   applyRoleUI();
+  // Fetch backend data so Viewer Mode shows latest data without re-upload
+  _ensureDashboardData('View Mode');
 }
 
 /* ── Enter ADMIN MODE after successful login ── */
@@ -5983,6 +6061,56 @@ function enterAdminMode(username){
   hideLanding();
   applyRoleUI();
   toast(`✅ Logged in as ${_authUser} — Admin mode active`,'tok');
+  // Fetch backend data so re-login always shows previously uploaded data
+  _ensureDashboardData('Admin Mode');
+}
+
+/* ── Central function: ensure dashboard has data ───────────────────
+   Called whenever the user enters the dashboard (View Mode, Admin login,
+   session restore). Checks if master is empty locally; if so, fetches
+   from Google Sheets (backend) and re-renders all sections.
+   Also refreshes when Sheets has newer data than local storage.
+   Always runs async so it never blocks the UI render.               */
+async function _ensureDashboardData(context){
+  const url=getGsUrl();
+  const localTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+r.count,0),0);
+
+  if(!url){
+    // No Sheets URL configured — rely on local IDB/localStorage only
+    if(localTotal===0){
+      toast('No data available. Configure Google Sheets or upload files (Admin Mode).','tw');
+    }
+    return;
+  }
+
+  if(localTotal>0){
+    // Local data exists — still try to merge Sheets data silently (background sync)
+    // This catches cases where another session uploaded newer files
+    console.log(`[${context}] Local data: ${fn(localTotal)} AWBs — checking Sheets for updates…`);
+  }else{
+    // No local data — must fetch from Sheets
+    console.log(`[${context}] No local data — fetching from Google Sheets…`);
+    toast('⏳ Loading data from backend…','ti');
+  }
+
+  try{
+    const merged=await fetchMasterFromSheets();
+    if(merged){
+      // Re-render with fetched data
+      updateSummary();
+      renderTab(activeTab);
+      const newTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+r.count,0),0);
+      if(newTotal>0&&localTotal===0){
+        toast(`✅ Data loaded — ${fn(newTotal)} AWBs restored from backend`,'tok');
+      }else if(newTotal>localTotal){
+        toast(`✅ Updated — ${fn(newTotal-localTotal)} new AWBs from backend`,'tok');
+      }
+    }else if(localTotal===0){
+      toast('ℹ No saved data found. Upload files in Admin Mode to populate the dashboard.','tw');
+    }
+  }catch(e){
+    console.warn(`[${context}] _ensureDashboardData error:`,e.message);
+  }
 }
 
 /* ── Logout → back to landing page ── */
@@ -6148,10 +6276,13 @@ function restoreAuthSession(){
   if(savedRole==='admin'){
     _role='admin';_authUser=savedUser;
     hideLanding();applyRoleUI();
+    // Refresh data from backend in case other session uploaded new files
+    _ensureDashboardData('Admin Session Restore');
     return true;
   }else if(savedRole==='view'){
     _role='view';_authUser='';
     hideLanding();applyRoleUI();
+    _ensureDashboardData('View Session Restore');
     return true;
   }
   // No saved session → show landing page
