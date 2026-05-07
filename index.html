@@ -486,6 +486,44 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
     </div>
   </div>
 </div>
+<!--
+  LOGIN BUTTON SCRIPT — placed here immediately after the modal HTML.
+  Wires the login button BEFORE the main 7000-line script runs, so
+  clicking always works even if a JS error occurs later in the page.
+-->
+<script>
+(function(){
+  function _tryDoLogin(){
+    if(typeof doLogin==='function'){
+      doLogin();
+    }else{
+      // doLogin not yet defined — queue and retry
+      setTimeout(_tryDoLogin,100);
+    }
+  }
+  function wireModal(){
+    var btn=document.getElementById('loginBtn');
+    if(btn&&!btn._earlyWired){
+      btn._earlyWired=true;
+      btn.onclick=function(e){e.preventDefault();_tryDoLogin();};
+    }
+    var passEl=document.getElementById('loginPass');
+    if(passEl&&!passEl._earlyWired){
+      passEl._earlyWired=true;
+      passEl.addEventListener('keydown',function(e){if(e.key==='Enter')_tryDoLogin();});
+    }
+    var userEl=document.getElementById('loginUser');
+    if(userEl&&!userEl._earlyWired){
+      userEl._earlyWired=true;
+      userEl.addEventListener('keydown',function(e){if(e.key==='Enter'){
+        var p=document.getElementById('loginPass');
+        if(p)p.focus();
+      }});
+    }
+  }
+  wireModal();
+})();
+</script>
 
 <!-- ═══════════════════════════════════════════════════════════
      ROLE BADGE — shown in header when logged in as admin
@@ -7050,65 +7088,111 @@ function togglePassVis(){
 }
 
 /* ── Do Login: validate credentials ──
-   Strategy 1: check against embedded hardcoded admin list (instant, offline).
-   Strategy 2: fetch Google Sheets published CSV for dynamic credentials.
-   Both run — Sheets result overrides if it returns successfully.          */
+   Strategy 1: fetch Google Sheets published CSV (primary).
+   Strategy 2: if fetch fails (CORS, not-published, offline), show a clear
+               actionable error instead of silently blocking the user.
+   The login button is also re-wired here via addEventListener so it works
+   even if the onclick attribute fails.                                       */
 async function doLogin(){
-  const user=(document.getElementById('loginUser')?.value||'').trim();
-  const pass=(document.getElementById('loginPass')?.value||'');
-  if(!user||!pass){showLoginError('Please enter both username and password.');return;}
+  const userEl=document.getElementById('loginUser');
+  const passEl=document.getElementById('loginPass');
+  const user=(userEl?.value||'').trim();
+  const pass=(passEl?.value||'').trim();
+
+  if(!user||!pass){
+    showLoginError('Please enter both username and password.');
+    return;
+  }
 
   const btn=document.getElementById('loginBtn');
   if(btn){btn.textContent='Verifying…';btn.disabled=true;}
 
+  let validated=false;
+  let errMsg='';
+
   try{
-    // Attempt server-side validation via Google Sheets published CSV
-    const ok=await validateViaSheets(user,pass);
-    if(ok){
-      enterAdminMode(user);
-    }else{
-      showLoginError('Invalid username or password. Please try again.');
-    }
+    validated=await validateViaSheets(user,pass);
+    if(!validated)errMsg='Invalid username or password. Please try again.';
   }catch(err){
-    console.warn('Login validation error:',err);
-    showLoginError('Could not verify credentials. Check your internet connection.');
-  }finally{
-    if(btn){btn.textContent='Login → Enter Admin Mode';btn.disabled=false;}
+    console.warn('Credential fetch error:',err.message);
+    // Show a specific, actionable error message
+    if(err.message&&err.message.includes('NetworkError')||err.message.includes('Failed to fetch')){
+      errMsg='Network error — could not reach the credentials sheet.\nCheck your internet connection and try again.';
+    }else if(err.message&&(err.message.includes('403')||err.message.includes('401'))){
+      errMsg='Access denied — the credentials sheet is not published.\nGo to the sheet → File → Share → Publish to web → CSV, then try again.';
+    }else{
+      errMsg='Could not verify credentials ('+err.message+').\nIf this persists, contact your administrator.';
+    }
+  }
+
+  if(btn){btn.textContent='Login → Enter Admin Mode';btn.disabled=false;}
+
+  if(validated){
+    hideLoginModal();
+    enterAdminMode(user);
+  }else{
+    showLoginError(errMsg||'Login failed. Please try again.');
   }
 }
+
+/* Wire the login button via addEventListener so it always works regardless of
+   whether the inline onclick= attribute is parsed correctly.                  */
+(function wireLoginBtn(){
+  function tryWire(){
+    const btn=document.getElementById('loginBtn');
+    if(btn&&!btn._wired){
+      btn._wired=true;
+      btn.addEventListener('click',function(e){
+        e.preventDefault();
+        doLogin();
+      });
+    }
+    // Also wire Enter key on both fields
+    ['loginUser','loginPass'].forEach(function(id){
+      const el=document.getElementById(id);
+      if(el&&!el._wired){
+        el._wired=true;
+        el.addEventListener('keydown',function(e){if(e.key==='Enter')doLogin();});
+      }
+    });
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',tryWire);
+  }else{
+    tryWire();
+  }
+})();
 
 function showLoginError(msg){
   const e=document.getElementById('loginErr');
-  if(e){e.textContent=msg;e.style.display='block';}
+  if(e){
+    e.textContent=msg;
+    e.style.display='block';
+    e.style.whiteSpace='pre-wrap'; // allow \n line breaks in error messages
+  }
 }
 
-/* ── Validate credentials against Google Sheets ──
-   The sheet must be published as CSV: File → Share → Publish to web → CSV.
-   Row 1: header (Username, Password). Rows 2+: credentials.
-   We fetch the CSV and compare in-browser — no backend required.
-   Sheet URL pattern: https://docs.google.com/spreadsheets/d/{ID}/gviz/tq?tqx=out:csv&sheet=Sheet1 */
+/* ── Validate credentials against Google Sheets published CSV ──
+   The credentials sheet must be published: File → Share → Publish to web → CSV.
+   Row 1: header (Username, Password). Rows 2+: one credential per row.
+   Comparison is case-insensitive for username, case-sensitive for password.   */
 async function validateViaSheets(username,password){
   const csvUrl=`https://docs.google.com/spreadsheets/d/${AUTH_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Sheet1`;
-  try{
-    const resp=await fetch(csvUrl,{cache:'no-cache'});
-    if(!resp.ok)throw new Error(`HTTP ${resp.status}`);
-    const text=await resp.text();
-    // Parse CSV — simple split (usernames/passwords shouldn't have commas/quotes)
-    const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
-    // Skip header row (first line)
-    for(let i=1;i<lines.length;i++){
-      const cols=parseCSVLine(lines[i]);
-      const sheetUser=(cols[0]||'').replace(/^"|"$/g,'').trim();
-      const sheetPass=(cols[1]||'').replace(/^"|"$/g,'').trim();
-      if(sheetUser.toLowerCase()===username.toLowerCase()&&sheetPass===password){
-        return true;
-      }
+  const resp=await fetch(csvUrl,{cache:'no-cache',mode:'cors'});
+  if(!resp.ok)throw new Error(`HTTP ${resp.status}`);
+  const text=await resp.text();
+  if(!text||!text.trim())throw new Error('Empty credentials sheet');
+  const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
+  // Skip header row (index 0)
+  for(let i=1;i<lines.length;i++){
+    const cols=parseCSVLine(lines[i]);
+    const sheetUser=(cols[0]||'').replace(/^"|"$/g,'').trim();
+    const sheetPass=(cols[1]||'').replace(/^"|"$/g,'').trim();
+    if(sheetUser.toLowerCase()===username.toLowerCase()&&sheetPass===password){
+      return true;
     }
-    return false;
-  }catch(e){
-    console.warn('Sheets credential fetch failed:',e.message);
-    throw e; // propagate so caller shows appropriate error
   }
+  return false;
 }
 
 /* Simple CSV line parser that handles quoted fields */
