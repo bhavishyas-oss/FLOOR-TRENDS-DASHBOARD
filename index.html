@@ -6862,6 +6862,23 @@ const AUTH_SS_KEY='fltd_role_v1';    // sessionStorage key for role
 const AUTH_USER_KEY='fltd_user_v1';  // sessionStorage key for username
 // Credentials sheet ID — users are stored here (Username in col A, Password in col B)
 const AUTH_SHEET_ID='1L2ozPaJ8bvBAVMqxLGhLUIfy1hhv23CipSyqL3SV_1o';
+// Key where admin pastes the published CSV URL from the credentials sheet.
+// The user copies this from: Sheet → File → Share → Publish to web → CSV → copy URL
+const AUTH_CSV_URL_KEY='fltd_auth_csv_v1';
+
+/* Return the credentials CSV URL to use.
+   Priority: 1) localStorage (set by admin via the login modal "⚙ Setup" link)
+             2) /pub format with stored key (if user pasted the published URL before)
+             3) gviz/tq fallback (works when sheet is SHARED publicly, not just published) */
+function getCredsCsvUrl(){
+  const stored=localStorage.getItem(AUTH_CSV_URL_KEY);
+  if(stored&&stored.startsWith('http'))return stored;
+  // Default fallback — works when the sheet is shared publicly (anyone with link)
+  return`https://docs.google.com/spreadsheets/d/${AUTH_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Sheet1`;
+}
+function saveCredsCsvUrl(url){
+  if(url&&url.startsWith('http'))localStorage.setItem(AUTH_CSV_URL_KEY,url.trim());
+}
 
 let _role='';        // 'view' | 'admin'
 let _authUser='';    // logged-in username (empty in view mode)
@@ -7087,42 +7104,34 @@ function togglePassVis(){
   else{p.type='password';if(btn)btn.textContent='👁';}
 }
 
-/* ── Do Login: validate credentials ──
-   Strategy 1: fetch Google Sheets published CSV (primary).
-   Strategy 2: if fetch fails (CORS, not-published, offline), show a clear
-               actionable error instead of silently blocking the user.
-   The login button is also re-wired here via addEventListener so it works
-   even if the onclick attribute fails.                                       */
+/* ── Do Login ── */
 async function doLogin(){
   const userEl=document.getElementById('loginUser');
   const passEl=document.getElementById('loginPass');
   const user=(userEl?.value||'').trim();
   const pass=(passEl?.value||'').trim();
 
-  if(!user||!pass){
-    showLoginError('Please enter both username and password.');
-    return;
-  }
+  if(!user||!pass){showLoginError('Please enter both username and password.');return;}
 
   const btn=document.getElementById('loginBtn');
   if(btn){btn.textContent='Verifying…';btn.disabled=true;}
+  clearLoginError();
 
   let validated=false;
-  let errMsg='';
+  let loginErr='';
 
   try{
     validated=await validateViaSheets(user,pass);
-    if(!validated)errMsg='Invalid username or password. Please try again.';
+    if(!validated)loginErr='❌ Incorrect username or password. Please try again.';
   }catch(err){
-    console.warn('Credential fetch error:',err.message);
-    // Show a specific, actionable error message
-    if(err.message&&err.message.includes('NetworkError')||err.message.includes('Failed to fetch')){
-      errMsg='Network error — could not reach the credentials sheet.\nCheck your internet connection and try again.';
-    }else if(err.message&&(err.message.includes('403')||err.message.includes('401'))){
-      errMsg='Access denied — the credentials sheet is not published.\nGo to the sheet → File → Share → Publish to web → CSV, then try again.';
-    }else{
-      errMsg='Could not verify credentials ('+err.message+').\nIf this persists, contact your administrator.';
+    if(err.message==='ALL_URLS_FAILED'){
+      // Could not reach the credentials sheet — show setup prompt
+      loginErr='';
+      if(btn){btn.textContent='Login → Enter Admin Mode';btn.disabled=false;}
+      _showCredSetupPrompt(user,pass);
+      return;
     }
+    loginErr='⚠️ Verification error: '+err.message;
   }
 
   if(btn){btn.textContent='Login → Enter Admin Mode';btn.disabled=false;}
@@ -7131,7 +7140,65 @@ async function doLogin(){
     hideLoginModal();
     enterAdminMode(user);
   }else{
-    showLoginError(errMsg||'Login failed. Please try again.');
+    showLoginError(loginErr||'Login failed.');
+  }
+}
+
+/* Show the credentials URL setup prompt inside the login modal */
+function _showCredSetupPrompt(pendingUser,pendingPass){
+  const errEl=document.getElementById('loginErr');
+  if(!errEl)return;
+  errEl.style.display='block';
+  errEl.style.background='#fffbeb';
+  errEl.style.borderColor='#f59e0b';
+  errEl.style.color='#92400e';
+  errEl.style.fontSize='12px';
+  errEl.style.textAlign='left';
+  errEl.style.lineHeight='1.6';
+  errEl.innerHTML=`
+    <strong>⚙️ One-time setup required</strong><br>
+    Could not reach the credentials sheet. Paste the published CSV URL below:<br>
+    <small style="color:#6b7280">(From your sheet: File → Share → Publish to web → CSV → copy URL)</small><br>
+    <input id="credsCsvUrlInput" type="text" placeholder="https://docs.google.com/spreadsheets/d/e/2PACX-..." 
+      style="width:100%;margin-top:6px;padding:6px 10px;border:1.5px solid #f59e0b;border-radius:5px;font-size:11px;outline:none;box-sizing:border-box">
+    <button onclick="_saveCredUrlAndRetry('${pendingUser.replace(/'/g,"\\'")}','${pendingPass.replace(/'/g,"\\'")}');" 
+      style="margin-top:6px;padding:6px 14px;background:#1C856F;color:#fff;border:none;border-radius:5px;
+             font-size:12px;font-weight:700;cursor:pointer;width:100%">
+      ✅ Save URL &amp; Login
+    </button>`;
+  // Pre-fill if previously stored
+  const prev=localStorage.getItem(AUTH_CSV_URL_KEY);
+  const inp=document.getElementById('credsCsvUrlInput');
+  if(inp&&prev)inp.value=prev;
+}
+
+/* Save the pasted credentials URL and retry login */
+async function _saveCredUrlAndRetry(user,pass){
+  const inp=document.getElementById('credsCsvUrlInput');
+  const url=(inp?.value||'').trim();
+  if(!url||!url.startsWith('http')){
+    showLoginError('Please paste a valid URL starting with https://');
+    return;
+  }
+  saveCredsCsvUrl(url);
+  // Now retry login with the new URL
+  const btn=document.getElementById('loginBtn');
+  if(btn){btn.textContent='Verifying…';btn.disabled=true;}
+  clearLoginError();
+  let validated=false;
+  try{
+    validated=await validateViaSheets(user,pass);
+  }catch(e){
+    showLoginError('Still could not fetch credentials. Check the URL and try again.\n'+e.message);
+    if(btn){btn.textContent='Login → Enter Admin Mode';btn.disabled=false;}
+    return;
+  }
+  if(btn){btn.textContent='Login → Enter Admin Mode';btn.disabled=false;}
+  if(validated){
+    hideLoginModal();
+    enterAdminMode(user);
+  }else{
+    showLoginError('❌ Credentials URL works but username/password is incorrect.');
   }
 }
 
@@ -7172,27 +7239,58 @@ function showLoginError(msg){
   }
 }
 
-/* ── Validate credentials against Google Sheets published CSV ──
-   The credentials sheet must be published: File → Share → Publish to web → CSV.
-   Row 1: header (Username, Password). Rows 2+: one credential per row.
-   Comparison is case-insensitive for username, case-sensitive for password.   */
+/* ── Validate credentials against Google Sheets ──────────────────────────────
+   Tries 3 URL formats automatically so it works regardless of whether the sheet
+   is "published to web" or "shared publicly":
+
+   Format 1: User-configured URL (stored in localStorage via Setup link)
+             → Use when the sheet is "Published to web" as CSV
+             → URL looks like: .../spreadsheets/d/e/2PACX-.../pub?...output=csv
+
+   Format 2: /gviz/tq endpoint (automatic, no config needed)
+             → Works when sheet is "Shared: anyone with link can view"
+             → URL looks like: .../spreadsheets/d/{ID}/gviz/tq?tqx=out:csv...
+
+   Format 3: /export?format=csv endpoint (alternative for shared sheets)
+             → Works when sheet is "Shared: anyone with link can view"
+
+   If ALL three fail, login is blocked and a setup prompt appears.              */
 async function validateViaSheets(username,password){
-  const csvUrl=`https://docs.google.com/spreadsheets/d/${AUTH_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Sheet1`;
-  const resp=await fetch(csvUrl,{cache:'no-cache',mode:'cors'});
-  if(!resp.ok)throw new Error(`HTTP ${resp.status}`);
-  const text=await resp.text();
-  if(!text||!text.trim())throw new Error('Empty credentials sheet');
-  const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
-  // Skip header row (index 0)
-  for(let i=1;i<lines.length;i++){
-    const cols=parseCSVLine(lines[i]);
-    const sheetUser=(cols[0]||'').replace(/^"|"$/g,'').trim();
-    const sheetPass=(cols[1]||'').replace(/^"|"$/g,'').trim();
-    if(sheetUser.toLowerCase()===username.toLowerCase()&&sheetPass===password){
-      return true;
+  const urls=[
+    getCredsCsvUrl(),   // Format 1: configured or gviz/tq fallback
+    `https://docs.google.com/spreadsheets/d/${AUTH_SHEET_ID}/export?format=csv&sheet=Sheet1&id=${AUTH_SHEET_ID}`,
+  ];
+  // Deduplicate
+  const tried=new Set();
+  for(const url of urls){
+    if(tried.has(url))continue;
+    tried.add(url);
+    try{
+      console.log('Trying credentials URL:',url.slice(0,80)+'…');
+      const resp=await fetch(url,{cache:'no-cache',mode:'cors'});
+      if(!resp.ok){console.warn('Credentials URL returned HTTP',resp.status);continue;}
+      const text=await resp.text();
+      if(!text||text.trim().length<5){console.warn('Empty response from',url.slice(0,60));continue;}
+      // Parse CSV rows
+      const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
+      for(let i=1;i<lines.length;i++){
+        const cols=parseCSVLine(lines[i]);
+        const sheetUser=(cols[0]||'').replace(/^"|"$/g,'').trim();
+        const sheetPass=(cols[1]||'').replace(/^"|"$/g,'').trim();
+        if(sheetUser.toLowerCase()===username.toLowerCase()&&sheetPass===password){
+          console.log('Login validated via:',url.slice(0,60));
+          return true;
+        }
+      }
+      // Reached here = sheet was fetched but credentials didn't match
+      return false;
+    }catch(e){
+      console.warn('Credentials fetch failed for',url.slice(0,60),':',e.message);
+      // Try next URL
     }
   }
-  return false;
+  // All URLs failed — network error or CORS block
+  throw new Error('ALL_URLS_FAILED');
 }
 
 /* Simple CSV line parser that handles quoted fields */
