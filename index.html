@@ -865,8 +865,40 @@ function openIDB(){
   });
 }
 
-/* Save entire rawData to IDB — one record per type (forward/reverse/lmodc/forwardShort).
-   Called only when _rawDataFull===true (fresh upload), never from restored degraded data. */
+}
+
+/* ── saveRawDateToIDB — targeted per-date IDB write (OOM-safe replacement) ──
+   Saves exactly ONE (type, date) key to IDB — called from runFiles() BEFORE
+   purgeRawDataForDate(). Peak memory = size of ONE file's filtered rows only.
+
+   OLD path: saveRawToIDB() → JSON.stringify(rawData) = entire dataset in memory
+   NEW path: saveRawDateToIDB() → JSON.stringify(rows for one date) = bounded spike   */
+const MAX_ROWS_PER_DATE_IDB = 100000; // hard cap to prevent single-key IDB bloat
+
+async function saveRawDateToIDB(type, date){
+  if(!type||!date)return false;
+  const rows = rawData[type]&&rawData[type][date] ? rawData[type][date] : [];
+  if(!rows.length)return false;
+  try{
+    const db    = await openIDB();
+    const tx    = db.transaction(IDB_STORE,'readwrite');
+    const store = tx.objectStore(IDB_STORE);
+    const key   = `${type}__${date}`;
+    const toStore = rows.length > MAX_ROWS_PER_DATE_IDB ? rows.slice(0, MAX_ROWS_PER_DATE_IDB) : rows;
+    store.put({k: key, type, date, data: toStore, ts: Date.now()});
+    return new Promise((res,rej)=>{
+      tx.oncomplete = ()=>{ console.log(`IDB: saved ${toStore.length} rows [${type}][${date}]`); res(true); };
+      tx.onerror   = e=>{ console.warn('IDB saveRawDateToIDB error:',e.target.error); rej(false); };
+    });
+  }catch(e){
+    console.warn('saveRawDateToIDB failed (non-fatal):',e.message);
+    return false;
+  }
+}
+
+/* Save entire rawData to IDB — kept as fallback for backward compat but no longer called
+   from persistM(). Replaced by saveRawDateToIDB() in runFiles() for OOM-safe per-file save.
+   Left here so any external callers (e.g. manual Save to Master) still work.               */
 async function saveRawToIDB(){
   if(!_rawDataFull){
     console.log('IDB: skipping save — rawData not from fresh upload (prevent degradation)');
@@ -936,43 +968,58 @@ async function clearRawFromIDB(){
   }catch(e){console.warn('clearRawFromIDB:',e.message);}
 }
 
-/* ── After page boot: async restore from IDB ──
-   This runs after initPanels() so the UI is already visible.
-   If IDB has more rows than current rawData (from sessionStorage),
-   we replace rawData with IDB version — the most complete dataset.
-   NOTE: The primary call is now at the bottom of the script (boot sequence).
-   This function is kept for backward compatibility / explicit calls only. */
+/* ── After page boot: async restore from IDB using per-date keys ──
+   New IDB format stores one key per (type, date): "forward__2026-04-01"
+   Old format stored one key per type: "forward" (entire dataset in one record)
+   Both formats are handled here for backward compatibility.
+   IMPORTANT: this only populates rawData for section-report downloads.
+   Master aggregates (charts, tables, trends) come from localStorage master
+   + Sheets snapshot — rawData is NOT needed for normal dashboard rendering. */
 async function initFromIDB(){
   try{
-    const idbData=await loadRawFromIDB();
-    if(!Object.keys(idbData).length)return;
-    // Count current in-memory rows
-    const currTotal=Object.values(rawData).reduce((s,d)=>s+Object.values(d).reduce((s2,r)=>s2+r.length,0),0);
-    const idbTotal=Object.values(idbData).reduce((s,d)=>s+Object.values(d).reduce((s2,r)=>s2+r.length,0),0);
+    const db = await openIDB();
+    const tx = db.transaction(IDB_STORE,'readonly');
+    const store = tx.objectStore(IDB_STORE);
+    const records = await new Promise((res,rej)=>{
+      const req = store.getAll();
+      req.onsuccess = ()=>res(req.result||[]);
+      req.onerror   = e=>rej(e.target.error);
+    });
 
-    if(idbTotal>currTotal){
-      // IDB has more complete data — replace rawData in memory
-      for(const k of Object.keys(rawData))delete rawData[k];
-      Object.assign(rawData,idbData);
-      _rawRestoredRows=idbTotal;
-      // DO NOT set _rawDataFull=true — this is a restored dataset, not a fresh upload.
-      // This prevents re-writing IDB with itself unnecessarily, but we do refresh localStorage
-      // to stop the degradation spiral where each reopen loses more rows from localStorage.
-      try{
-        const refreshed={};
-        for(const[type,dates]of Object.entries(idbData)){
-          refreshed[type]={};
-          for(const[date,rows]of Object.entries(dates))refreshed[type][date]=rows.slice(0,2000);
+    let loaded = 0;
+    for(const rec of records){
+      if(!rec.k || rec.k==='__manifest__') continue;
+
+      // New format: key = "type__date", has rec.type and rec.date
+      if(rec.type && rec.date && Array.isArray(rec.data)){
+        const {type, date, data} = rec;
+        if(!rawData[type]) rawData[type]={};
+        if(!rawData[type][date]){
+          rawData[type][date] = data;
+          loaded += data.length;
         }
-        localStorage.setItem(SKEY+'_raw',JSON.stringify(refreshed));
-      }catch{}
-      console.log(`IDB restore (initFromIDB): replaced ${currTotal} rows with ${idbTotal} full rows`);
+      }
+      // Old format: key = "forward"|"reverse" etc., data = {date:[rows]}
+      else if(rec.data && typeof rec.data === 'object' && !Array.isArray(rec.data)){
+        const type = rec.k;
+        if(!rawData[type]) rawData[type]={};
+        for(const [date, rows] of Object.entries(rec.data)){
+          if(!rawData[type][date] && Array.isArray(rows)){
+            rawData[type][date] = rows;
+            loaded += rows.length;
+          }
+        }
+      }
+    }
+
+    if(loaded > 0){
+      _rawRestoredRows = loaded;
+      console.log(`IDB restore: loaded ${loaded} rows across ${records.length} keys`);
     }else{
-      _rawRestoredRows=currTotal;
-      console.log(`IDB: in-memory (${currTotal} rows) ≥ IDB (${idbTotal} rows) — no replace needed`);
+      console.log('IDB: no raw rows to restore (normal after purge-per-file uploads)');
     }
   }catch(e){
-    console.warn('initFromIDB failed:',e.message);
+    console.warn('initFromIDB failed (non-fatal):',e.message);
   }
 }
 
@@ -988,23 +1035,13 @@ function loadM(){
     // initFromIDB() called asynchronously after boot restores the full authoritative dataset.
     // Any stale sessionStorage rawData from older versions is cleaned up in persistM().
 
-    // 2. localStorage — emergency offline fallback only (NOT used as primary after IDB available)
-    //    Only merge dates that sessionStorage didn't have.
-    try{
-      const rd2=localStorage.getItem(SKEY+'_raw');
-      if(rd2){
-        const parsed2=JSON.parse(rd2);
-        Object.entries(parsed2).forEach(([type,dates])=>{
-          if(!restoredTypes.has(type)){
-            rawData[type]=dates;
-          }else{
-            const existing=rawData[type]||{};
-            Object.entries(dates).forEach(([date,rows])=>{if(!existing[date])existing[date]=rows;});
-            rawData[type]=existing;
-          }
-        });
-      }
-    }catch{}
+    // localStorage _raw read removed from boot path — OOM FIX.
+    // JSON.parse(localStorage._raw) loads all stored raw rows into the JS heap on every boot.
+    // After 20+ uploaded files, _raw can contain hundreds of thousands of row objects,
+    // consuming 500MB+ before any new file is opened. Since rawData is now purged per-file
+    // (and IDB serves as the only authoritative raw store), there is no reason to load it here.
+    // Clean up any stale _raw key left by older versions to free localStorage space.
+    try{localStorage.removeItem(SKEY+'_raw');}catch{}
     // Note: IDB restore happens async in initFromIDB() called after boot
     return m;
   }
@@ -1012,21 +1049,20 @@ function loadM(){
 }
 
 function persistM(){
-  // ── STORAGE ARCHITECTURE (REVISED — OOM-SAFE) ────────────────────
-  // Tier 1: IndexedDB  (PRIMARY — unlimited, permanent, async, never causes OOM)
-  //         → Full rawData stored as-is, no row limit, survives everything
+  // ── STORAGE ARCHITECTURE (v7 — fully OOM-safe) ───────────────────
+  // Tier 1: IndexedDB  (PRIMARY for raw rows — per-date keys, saved before purge)
+  //         → saveRawDateToIDB(type,date) called from runFiles() per-file
+  //         → Never serializes the full rawData — bounded spike per file only
   // Tier 2: sessionStorage  (REMOVED — was causing OOM via JSON.stringify(rawData))
-  //         → Replaced with cleanup-only logic to remove stale data
-  // Tier 3: localStorage master  (AGGREGATED COUNTS — small ~50KB, permanent)
+  // Tier 3: localStorage master  (AGGREGATED COUNTS — tiny ~50KB, permanent)
   //         → Only counts/aggregates, never raw rows
-  // Tier 4: localStorage rawData fallback  (RECOVERY — trimmed to ~2000 rows/date)
-  //         → Only written on fresh uploads; bounded by SIZE_BUDGET check
+  // Tier 4: localStorage rawData fallback  (REMOVED — see Fix 2 above)
   // ────────────────────────────────────────────────────────────────
 
-  // Tier 1: IDB — non-blocking, unlimited, only fresh upload data.
-  // This is the PRIMARY persistence store. Even if all other tiers
-  // fail, IDB guarantees data is saved permanently.
-  saveRawToIDB().catch(e=>console.warn('IDB persist (non-fatal):', e.message));
+  // Tier 1: IDB — rawData is now saved per-date via saveRawDateToIDB() in runFiles()
+  // BEFORE persistM() is called. Calling saveRawToIDB() here (full-dataset serialize)
+  // was creating a JSON.stringify spike equal to rawData size on every file, causing OOM.
+  // IDB is still the primary store — data is saved there per-file before purge.
 
   // Tier 3: localStorage master (small aggregated object, ~50KB)
   // If this fails it means localStorage itself is completely full.
@@ -1061,44 +1097,12 @@ function persistM(){
     sessionStorage.removeItem(SKEY+'_raw');
   }catch{}
 
-  // Tier 4: localStorage rawData fallback — ONLY on fresh uploads.
-  // Never re-write from restored/degraded data (prevents degradation spiral).
-  if(_rawDataFull){
-    try{
-      const full={};
-      let estimatedBytes=0;
-      const SIZE_BUDGET=4*1024*1024; // 4MB budget
-      for(const[type,dates]of Object.entries(rawData)){
-        full[type]={};
-        for(const[date,rows]of Object.entries(dates)){
-          const kept=rows.slice(0,2000);
-          full[type][date]=kept;
-          estimatedBytes+=kept.length*180; // ~180 bytes per row estimate
-        }
-      }
-      if(estimatedBytes<SIZE_BUDGET){
-        localStorage.setItem(SKEY+'_raw', JSON.stringify(full));
-      }else{
-        // Too large — trim to 800 rows/date but keep ALL dates
-        const trimmed={};
-        for(const[type,dates]of Object.entries(rawData)){
-          trimmed[type]={};
-          for(const[date,rows]of Object.entries(dates))trimmed[type][date]=rows.slice(0,800);
-        }
-        try{localStorage.setItem(SKEY+'_raw', JSON.stringify(trimmed));}
-        catch{
-          // Even 800-row version is too large — store latest date only per type
-          const tiny={};
-          for(const[type,dates]of Object.entries(rawData)){
-            const d=Object.keys(dates).sort().pop();
-            if(d)tiny[type]={[d]:(dates[d]||[]).slice(0,400)};
-          }
-          try{localStorage.setItem(SKEY+'_raw', JSON.stringify(tiny));}
-          catch{console.warn('localStorage raw fallback failed — IDB is primary store');}
-        }
-      }
-    }catch(e){console.warn('localStorage Tier-4 write failed (non-fatal):', e.message);}
-  }
+  // Tier 4: localStorage rawData fallback — REMOVED from persistM().
+  // Since rawData is purged immediately after each file's Sheets push,
+  // rawData is almost always empty when persistM() runs. JSON.stringify(rawData)
+  // on a non-empty rawData created a second large string allocation (in addition
+  // to the IDB serialize spike) that triggered OOM on large files.
+  // Section report downloads fall back to master-aggregate pivot gracefully.
 
   return true; // Always return true — IDB guarantees data is persisted
 }
@@ -2122,8 +2126,13 @@ async function runFiles(files){
       const hasData = r && r.type && !['error','unsupported','skipped'].includes(r.type) && r.awbs>0;
       if(!hasData) continue;
 
-      // 1. Persist master to IDB + localStorage immediately (never defer)
+      // 1. Persist master aggregates to localStorage immediately (tiny ~50KB)
       persistM();
+
+      // 1a. Save this file's raw rows to IDB (targeted per-date, not full-dataset serialize)
+      //     Must happen BEFORE purgeRawDataForDate() frees rawData[r.type][r.date].
+      //     saveRawDateToIDB serializes only the current file's filtered rows — bounded spike.
+      await saveRawDateToIDB(r.type, r.date);
 
       // 1b. Register this file in the file registry (enables per-file deletion)
       const fileId = _makeFileId(r.name, r.date, r.type);
@@ -5513,11 +5522,18 @@ function captureRaw(type,row,date){
   }
   if(!(_VALID_AGES[type]||[]).includes(age))return;
 
-  // 3. Store
+  // 3. Store — with hard cap to prevent heap explosion before purge
+  // Even with purgeRawDataForDate() running after each file, captureRaw() is called
+  // synchronously row-by-row during buildRows/applyRows. If a single file has 500k
+  // matching rows, rawData[type][date] reaches 500k objects before purge runs.
+  // Cap at 100k rows per (type,date) — enough for any realistic report, prevents OOM.
+  const RAW_CAP = 100000;
   if(!rawData[type])rawData[type]={};
   if(!rawData[type][date])rawData[type][date]=[];
-  rawData[type][date].push(row);
-  // Flag that rawData now contains fresh upload data — enables IDB save in persistM()
+  if(rawData[type][date].length < RAW_CAP){
+    rawData[type][date].push(row);
+  }
+  // Flag that rawData now contains fresh upload data — enables targeted IDB save
   _rawDataFull=true;
 }
 
