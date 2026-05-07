@@ -332,7 +332,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 
   <!-- Button group -->
   <div style="display:flex;flex-direction:column;gap:14px;width:100%;max-width:320px">
-    <button onclick="enterViewMode()" style="
+    <button id="landingViewBtn" style="
       padding:16px 28px;font-size:15px;font-weight:800;font-family:var(--sans);
       background:rgba(255,255,255,.12);color:#ffffff;border:2px solid rgba(255,255,255,.35);
       border-radius:10px;cursor:pointer;letter-spacing:.5px;text-transform:uppercase;
@@ -341,7 +341,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
       onmouseout="this.style.background='rgba(255,255,255,.12)';this.style.borderColor='rgba(255,255,255,.35)'">
       👁 View Dashboard
     </button>
-    <button onclick="showLoginModal()" style="
+    <button id="landingAdminBtn" style="
       padding:16px 28px;font-size:15px;font-weight:800;font-family:var(--sans);
       background:#E9DF43;color:#0a2520;border:2px solid #E9DF43;
       border-radius:10px;cursor:pointer;letter-spacing:.5px;text-transform:uppercase;
@@ -560,6 +560,25 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
         <span class="cc" id="hovGrandTotal" style="margin-left:auto">–</span>
         <button class="btn bg" onclick="generateHovPDF(0)" style="font-size:10px;padding:4px 9px;color:var(--brand);border-color:var(--bdr2)">📄 PDF</button>
         <button class="btn bg" onclick="downloadHovSectionImage('hovPerFileWrap','HOV_Overview.png')" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG</button>
+      </div>
+    </div>
+
+    <!-- Overall AWB Count Table + Critical Sites (auto-generated from all files) -->
+    <div id="hovOverallSection" style="display:none;flex-direction:column;gap:10px;margin-bottom:8px">
+      <div class="card">
+        <div class="chead" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <span class="ct">📊 OVERALL AWB COUNT — All Sites</span>
+          <span style="font-size:10px;color:var(--tx3);font-weight:600">Sorted by Total ↓ · TOTAL vs AVERAGE trend</span>
+          <button class="btn bg" onclick="downloadHovSectionImage('hovOverallTableWrap','HOV_Overall.png')" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG</button>
+        </div>
+        <div id="hovOverallTableWrap" style="overflow-x:auto;-webkit-overflow-scrolling:touch"></div>
+      </div>
+      <div class="card">
+        <div class="chead" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <span class="ct">🚨 CRITICAL SITES — Top 5 by Severity</span>
+          <span style="font-size:10px;color:var(--tx3);font-weight:600">Score = Total × (1 + RedCells×0.2)</span>
+        </div>
+        <div id="hovCriticalSitesWrap"></div>
       </div>
     </div>
 
@@ -4167,8 +4186,157 @@ function renderHovD15Tab(){
 }
 
 /* ── Per-file breakdown (separate per file, with donut + tables) ── */
+/* ── DD MON date formatter (HOV only — replaces "DD Apr 2026" → "06 APR") ── */
+function fmtHovDate(dateStr){
+  if(!dateStr)return'–';
+  const d=new Date(dateStr+'T00:00:00');
+  if(isNaN(d))return dateStr.slice(5)||dateStr; // fallback: strip year
+  const day=String(d.getDate()).padStart(2,'0');
+  const mon=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'][d.getMonth()];
+  return`${day} ${mon}`;
+}
+
+/* ── OVERALL AWB COUNT table — all sites, all dates, sorted by total desc ── */
+function renderHovOverall(pcs,dc){
+  const sec=document.getElementById('hovOverallSection');
+  const wrap=document.getElementById('hovOverallTableWrap');
+  if(!sec||!wrap)return;
+
+  const allHov=(master.hov||[]).filter(r=>{
+    if(r.age<2||r.age>15)return false;
+    if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
+    if(dc&&dc!=='ALL'&&r.location!==dc)return false;
+    return true;
+  });
+  if(!allHov.length){sec.style.display='none';return;}
+  sec.style.display='flex';
+
+  // Collect all unique dates sorted
+  const allDates=[...new Set(allHov.map(r=>r.date))].sort();
+  // Aggregate: site → date → count
+  const siteDate={};
+  allHov.forEach(r=>{
+    if(!siteDate[r.location])siteDate[r.location]={};
+    siteDate[r.location][r.date]=(siteDate[r.location][r.date]||0)+r.count;
+  });
+
+  // Build site totals and averages
+  const sites=Object.keys(siteDate).map(site=>{
+    const counts=allDates.map(d=>siteDate[site][d]||0);
+    const total=counts.reduce((a,b)=>a+b,0);
+    const avg=allDates.length?Math.round(total/allDates.length):0;
+    const redCells=counts.filter((v,i)=>i>0&&v>counts[i-1]).length; // "red" = increasing vs prev date
+    return{site,counts,total,avg,redCells};
+  }).sort((a,b)=>b.total-a.total); // Descending by total
+
+  // Build table HTML
+  const COMPACT='padding:3px 6px;text-align:center;font-size:11px;font-weight:700;white-space:nowrap;border:1px solid #c8dfd9;';
+  const COMPACT_L='padding:3px 6px;text-align:left;font-size:11px;font-weight:700;white-space:nowrap;border:1px solid #c8dfd9;max-width:160px;overflow:hidden;text-overflow:ellipsis;';
+
+  let html=`<table style="border-collapse:collapse;width:100%;font-family:var(--sans);font-size:11px">
+    <thead>
+      <tr style="background:#0f2b25;color:#fff">
+        <th style="${COMPACT_L}background:#0f2b25;color:#fff;min-width:110px">LOCATION</th>
+        ${allDates.map(d=>`<th style="${COMPACT}background:#0f2b25;color:#fff">${fmtHovDate(d)}</th>`).join('')}
+        <th style="${COMPACT}background:#0a4a35;color:#E9DF43;min-width:60px">TOTAL</th>
+        <th style="${COMPACT}background:#0a4a35;color:#E9DF43;min-width:60px">AVG</th>
+      </tr>
+    </thead>
+    <tbody>`;
+
+  sites.forEach((s,ri)=>{
+    const rowBg=ri%2===0?'#fff':'#f3faf7';
+    // Trend arrow: red↑ if total > avg, green↓ if total < avg
+    const arrow=s.total>s.avg
+      ?`<span style="color:#ef4444;font-size:12px;margin-left:3px">▲</span>`
+      :s.total<s.avg
+      ?`<span style="color:#059669;font-size:12px;margin-left:3px">▼</span>`
+      :``;
+    html+=`<tr style="background:${rowBg}">
+      <td style="${COMPACT_L}font-weight:700;color:#0a2520" title="${xe(s.site)}">${xe(s.site)}</td>
+      ${s.counts.map((v,ci)=>{
+        const prev=ci>0?s.counts[ci-1]:null;
+        let cellBg='',cellFg='#0a2520';
+        if(v===0){cellFg='#94a3b8';}
+        else if(prev!==null&&v>prev){cellBg='background:#ef4444;';cellFg='#fff';} // red: increasing
+        else if(prev!==null&&v<prev){cellBg='background:#dff0ea;';cellFg='#0a4a35';} // green: decreasing
+        return`<td style="${COMPACT}${cellBg}color:${cellFg}">${v===0?'–':fn(v)}</td>`;
+      }).join('')}
+      <td style="${COMPACT}background:#0a4a35;color:#E9DF43;font-size:12px">${fn(s.total)}${arrow}</td>
+      <td style="${COMPACT}background:#e8f5f1;color:#0a4a35">${fn(s.avg)}</td>
+    </tr>`;
+  });
+
+  // Footer totals row
+  const colTotals=allDates.map((_,di)=>sites.reduce((s,r)=>s+r.counts[di],0));
+  const grandTotal=sites.reduce((s,r)=>s+r.total,0);
+  const grandAvg=sites.length?Math.round(grandTotal/sites.length):0;
+  html+=`<tfoot><tr style="background:#0a2520;color:#fff">
+    <td style="${COMPACT_L}background:#0a2520;color:#fff;font-weight:900">TOTAL</td>
+    ${colTotals.map(v=>`<td style="${COMPACT}background:#0a2520;color:#fff">${fn(v)}</td>`).join('')}
+    <td style="${COMPACT}background:#0a2520;color:#E9DF43;font-weight:900">${fn(grandTotal)}</td>
+    <td style="${COMPACT}background:#0a2520;color:#dff0ea">${fn(grandAvg)}</td>
+  </tr></tfoot>`;
+  html+=`</table>`;
+  wrap.innerHTML=html;
+
+  // Render critical sites below
+  renderHovCriticalSites(sites);
+}
+
+/* ── CRITICAL SITES table — Top 5 by severity score ── */
+function renderHovCriticalSites(sites){
+  const wrap=document.getElementById('hovCriticalSitesWrap');
+  if(!wrap||!sites||!sites.length)return;
+
+  // Score = total × (1 + redCells × 0.2)
+  const scored=sites.map(s=>({
+    ...s,
+    score:Math.round(s.total*(1+s.redCells*0.2)),
+    trend:s.total>s.avg?'🔴 Rising':s.total<s.avg?'🟢 Falling':'🟡 Stable'
+  })).sort((a,b)=>b.score-a.score).slice(0,5);
+
+  if(!scored.length){wrap.innerHTML='<div style="padding:14px;color:#94a3b8;font-size:12px">No site data available yet.</div>';return;}
+
+  const COMPACT='padding:5px 10px;text-align:center;font-size:11px;font-weight:700;border:1px solid #c8dfd9;';
+  const COMPACT_L='padding:5px 10px;text-align:left;font-size:11px;font-weight:700;border:1px solid #c8dfd9;';
+
+  let html=`<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-family:var(--sans)">
+    <thead><tr style="background:#7f1d1d;color:#fff">
+      <th style="${COMPACT}">RANK</th>
+      <th style="${COMPACT_L}">SITE NAME</th>
+      <th style="${COMPACT}">TOTAL AWBs</th>
+      <th style="${COMPACT}">RED DAYS</th>
+      <th style="${COMPACT}">AVG AWBs</th>
+      <th style="${COMPACT}">SCORE</th>
+      <th style="${COMPACT}">TREND</th>
+    </tr></thead><tbody>`;
+
+  scored.forEach((s,i)=>{
+    const rank=i===0?'🥇':i===1?'🥈':i===2?'🥉':`#${i+1}`;
+    const rowBg=i===0?'#fee2e2':i===1?'#fef3c7':i===2?'#fffbeb':'#fff';
+    const scoreBg=i<2?'background:#dc2626;color:#fff;':i===2?'background:#f59e0b;color:#fff;':'';
+    html+=`<tr style="background:${rowBg}">
+      <td style="${COMPACT}font-size:14px">${rank}</td>
+      <td style="${COMPACT_L}font-weight:800;color:#7f1d1d">${xe(s.site)}</td>
+      <td style="${COMPACT}color:#dc2626;font-size:13px">${fn(s.total)}</td>
+      <td style="${COMPACT}">${s.redCells}</td>
+      <td style="${COMPACT}color:#059669">${fn(s.avg)}</td>
+      <td style="${COMPACT}${scoreBg}border-radius:4px">${fn(s.score)}</td>
+      <td style="${COMPACT}">${s.trend}</td>
+    </tr>`;
+  });
+
+  html+=`</tbody></table></div>`;
+  wrap.innerHTML=html;
+}
+
 function renderHovPerFile(pcs,dc){
   const wrap=document.getElementById('hovPerFileWrap');if(!wrap)return;
+
+  // Render the Overall AWB Count table + Critical Sites first
+  renderHovOverall(pcs,dc);
+
   const allHov=master.hov||[];
   const filtHov=allHov.filter(r=>{
     if(r.age<2||r.age>15)return false;
@@ -4287,7 +4455,7 @@ function renderHovPerFile(pcs,dc){
       <div style="background:${color};color:#fff;padding:12px 18px;display:flex;justify-content:space-between;align-items:center">
         <span style="font-size:15px;font-weight:900;letter-spacing:.6px;text-transform:uppercase">
           ${xe(TYPE_LABELS[g.fileType]||g.fileType.toUpperCase())}
-          <span style="font-size:12px;font-weight:700;opacity:.8;margin-left:8px">· ${xe(g.date)}</span>
+          <span style="font-size:12px;font-weight:700;opacity:.8;margin-left:8px">· ${fmtHovDate(g.date)}</span>
         </span>
         <span style="background:rgba(255,255,255,.22);padding:3px 12px;border-radius:14px;font-size:11px;font-weight:700">${fn(g.total)} AWBs</span>
       </div>
@@ -6964,6 +7132,40 @@ if(_tot>0)setTimeout(()=>toast(`📊 Restored ${fn(_tot)} AWBs from saved data`,
 // This runs synchronously so the landing page shows instantly if no session.
 // applyRoleUI() hides/shows admin controls based on restored role.
 restoreAuthSession();
+
+// ── LANDING BUTTON WIRING — belt-and-suspenders approach ──
+// Buttons use id-based addEventListener so they always work even if the
+// inline onclick="" attribute is blocked by a JS parse error earlier in the script.
+(function wireLandingButtons(){
+  function tryWire(){
+    const vBtn=document.getElementById('landingViewBtn');
+    const aBtn=document.getElementById('landingAdminBtn');
+    if(vBtn){
+      vBtn.onclick=function(){
+        try{enterViewMode();}
+        catch(e){
+          // Fallback: manually hide landing and show dashboard
+          const lp=document.getElementById('landingPage');
+          if(lp)lp.style.display='none';
+          console.error('enterViewMode error:',e);
+        }
+      };
+    }
+    if(aBtn){
+      aBtn.onclick=function(){
+        try{showLoginModal();}
+        catch(e){
+          console.error('showLoginModal error:',e);
+        }
+      };
+    }
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',tryWire);
+  }else{
+    tryWire();
+  }
+})();
 
 /* ══════════════════════════════════════════════════════════════════
    PERMANENT REPORT PERSISTENCE FIX
