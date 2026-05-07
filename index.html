@@ -982,8 +982,6 @@ function openIDB(){
   });
 }
 
-}
-
 /* ── saveRawDateToIDB — targeted per-date IDB write (OOM-safe replacement) ──
    Saves exactly ONE (type, date) key to IDB — called from runFiles() BEFORE
    purgeRawDataForDate(). Peak memory = size of ONE file's filtered rows only.
