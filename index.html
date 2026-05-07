@@ -352,6 +352,66 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
     </button>
   </div>
 
+  <!--
+    LANDING BUTTON SCRIPT — placed here immediately after the buttons.
+    This script runs as soon as the browser parses these two elements,
+    BEFORE the 7000-line main script below. It therefore works even if
+    any JavaScript error occurs anywhere in the main script.
+    It polls every 100ms until the main functions are available, then
+    delegates to them. The landing page is hidden immediately on click
+    so navigation feels instant even if the main script is still loading.
+  -->
+  <script>
+  (function(){
+    function _hideLanding(){
+      var lp=document.getElementById('landingPage');
+      if(lp)lp.style.display='none';
+    }
+    function _showLogin(){
+      var m=document.getElementById('loginModal');
+      if(m){m.style.display='flex';}
+      var u=document.getElementById('loginUser');
+      if(u)setTimeout(function(){u.focus();},100);
+    }
+
+    function _onViewClick(){
+      _hideLanding();
+      // Delegate to main script if available; otherwise just hide landing (View Mode)
+      if(typeof enterViewMode==='function'){
+        try{enterViewMode();}catch(e){console.warn('enterViewMode:',e);}
+      }
+    }
+    function _onAdminClick(){
+      // Show login modal immediately — no need to wait for main script
+      _showLogin();
+      if(typeof showLoginModal==='function'){
+        try{showLoginModal();}catch(e){console.warn('showLoginModal:',e);}
+      }
+    }
+
+    // Wire immediately (buttons already exist in DOM at this point)
+    var vBtn=document.getElementById('landingViewBtn');
+    var aBtn=document.getElementById('landingAdminBtn');
+    if(vBtn) vBtn.addEventListener('click',_onViewClick);
+    if(aBtn) aBtn.addEventListener('click',_onAdminClick);
+
+    // Also poll until main script functions are ready, then re-wire cleanly
+    var _pollCount=0;
+    var _poll=setInterval(function(){
+      _pollCount++;
+      if(_pollCount>100){clearInterval(_poll);return;} // give up after 10s
+      if(typeof enterViewMode==='function'&&typeof showLoginModal==='function'){
+        clearInterval(_poll);
+        // Re-attach with full main-script functions (belt-and-suspenders)
+        var v2=document.getElementById('landingViewBtn');
+        var a2=document.getElementById('landingAdminBtn');
+        if(v2){v2.onclick=function(){try{enterViewMode();}catch(e){_onViewClick();}};}
+        if(a2){a2.onclick=function(){try{showLoginModal();}catch(e){_onAdminClick();}};}
+      }
+    },100);
+  })();
+  </script>
+
   <div style="margin-top:32px;font-size:11px;color:rgba(255,255,255,.4);text-align:center">
     View mode requires no login · Admin access requires credentials
   </div>
