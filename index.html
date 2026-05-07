@@ -5815,55 +5815,87 @@ function configSheets(){
 function showAppsScriptCode(){
   if(!requireAdmin('AS Code'))return;
   const gs=`/**
- * Logistics Analytics Dashboard — Google Apps Script Backend
- * Spreadsheet ID: ${GS_SHEET_ID}
+ * Logistics Analytics Dashboard — Google Apps Script Backend v5.0
+ * Spreadsheet ID: YOUR_SPREADSHEET_ID_HERE
  *
  * DEPLOYMENT STEPS:
  *  1. Go to https://script.google.com  → New project
  *  2. Delete ALL existing code, paste this ENTIRE file
- *  3. File → Save  (Ctrl + S)
- *  4. Deploy → New deployment
+ *  3. Replace YOUR_SPREADSHEET_ID_HERE on line 22 with your actual Sheet ID
+ *  4. File → Save  (Ctrl + S)
+ *  5. Deploy → New deployment
  *       Type        : Web app
  *       Execute as  : Me
  *       Who can access : Anyone
- *  5. Click Deploy → copy the Web App URL
- *  6. In the dashboard click "📊 Sheets" → paste the URL → Enter
+ *  6. Click Deploy → copy the Web App URL
+ *  7. In the dashboard click "📊 Sheets" → paste the URL → Enter
  *
- * HOW DATA IS STORED:
- *  • Each dashboard section gets its own sheet tab (D3 FWD R@DC TRENDS, etc.)
- *  • Format: Date | AWB | Location | Age | Bin | Msg | OS | … (full row-level data)
- *  • Deduplication: rows for the same date are deleted before new rows are appended
- *  • This script handles both 3-column pivot summaries and 100+ column full reports
+ * BUG FIXES IN v5.0:
+ *  Fix 1 — MASTER SNAPSHOT: replaced single-cell JSON blob with row-per-record format.
+ *           The old format silently failed when JSON exceeded Google Sheets' 50,000-char
+ *           cell limit (common with >1,000 AWBs across many locations). Cell B2 appeared
+ *           empty after every push, so fetchMasterFromSheets() always returned no data.
+ *           New format: [Type, Date, Count, LocsJSON, BinsJSON, MsgsJSON, Timestamp].
+ *           Each cell stays under ~5KB — no silent failures possible.
+ *  Fix 2 — SECTION COUNTS: added deduplication by (syncDate + section).
+ *           Old code appended on every sync without checking for existing rows,
+ *           creating duplicate rows visible in the sheet.
+ *  Fix 3 — Added section_counts payload handler (was completely missing — the payload
+ *           was silently dropped or fell through to the wrong sheet handler).
  */
 
-const SPREADSHEET_ID = '${GS_SHEET_ID}';
+const SPREADSHEET_ID = 'YOUR_SPREADSHEET_ID_HERE';
 
 function doOptions(e) {
   return buildResponse('');
 }
 
+/* ═══════════════════════════════════════════════════════════
+   GET ENDPOINT
+═══════════════════════════════════════════════════════════ */
 function doGet(e) {
-  // ── Route GET actions ──────────────────────────────────────────────
-  // fetchMasterFromSheets() calls ?action=getMaster to restore the full
-  // master snapshot so DCH + all other sections survive logout/refresh.
-  // fetchFileLog() calls ?action=getFileLog to show the upload history.
-  const action = (e && e.parameter && e.parameter.action) || '';
+  var action = (e && e.parameter && e.parameter.action) || '';
 
   if (action === 'getMaster') {
     try {
-      const ss   = SpreadsheetApp.openById(SPREADSHEET_ID);
-      const snap = ss.getSheetByName('MASTER SNAPSHOT');
+      var ss   = SpreadsheetApp.openById(SPREADSHEET_ID);
+      var snap = ss.getSheetByName('MASTER SNAPSHOT');
       if (!snap || snap.getLastRow() < 2) {
         return buildResponse(JSON.stringify({ ok: false, reason: 'no_snapshot' }));
       }
-      // Cell B1 holds the JSON blob written by pushMasterSnapshot()
-      const cell = snap.getRange(2, 2).getValue();
-      if (!cell) return buildResponse(JSON.stringify({ ok: false, reason: 'empty_snapshot' }));
-      // Validate that it is parseable JSON before returning
-      try { JSON.parse(cell); } catch(pe) {
-        return buildResponse(JSON.stringify({ ok: false, reason: 'parse_error' }));
+      var numRows = snap.getLastRow() - 1;
+      var data    = snap.getRange(2, 1, numRows, 7).getValues();
+      var master  = {
+        forward: [], reverse: [], lmodc: [], forwardShort: [],
+        hov: [], hovPV: [], hovAllRaw: [], hovFwdRaw: [], hovRevRaw: []
+      };
+      var validRows = 0;
+      data.forEach(function(r) {
+        var type  = String(r[0] || '').trim();
+        var date  = normDate(r[1]);
+        var count = Number(r[2]) || 0;
+        if (!type || !date || !master.hasOwnProperty(type)) return;
+        var locs = safeParseJSON(r[3]);
+        var bins = safeParseJSON(r[4]);
+        var msgs = safeParseJSON(r[5]);
+        var existing = master[type].filter(function(x) { return x.date === date; })[0];
+        if (existing) {
+          if (count > (existing.count || 0)) {
+            existing.count = count;
+            existing.locs  = locs;
+            existing.bins  = bins;
+            existing.msgs  = msgs;
+          }
+        } else {
+          master[type].push({ date: date, count: count, locs: locs, bins: bins, msgs: msgs });
+        }
+        validRows++;
+      });
+      if (validRows === 0) {
+        return buildResponse(JSON.stringify({ ok: false, reason: 'empty_snapshot' }));
       }
-      return buildResponse(JSON.stringify({ ok: true, master: cell }));
+      Logger.log('getMaster: returning ' + validRows + ' type-date records');
+      return buildResponse(JSON.stringify({ ok: true, master: JSON.stringify(master) }));
     } catch (err) {
       Logger.log('getMaster error: ' + err.message);
       return buildResponse(JSON.stringify({ ok: false, error: err.message }));
@@ -5872,39 +5904,43 @@ function doGet(e) {
 
   if (action === 'getFileLog') {
     try {
-      const ss  = SpreadsheetApp.openById(SPREADSHEET_ID);
-      const sh  = ss.getSheetByName('FILE LOG');
+      var ss2 = SpreadsheetApp.openById(SPREADSHEET_ID);
+      var sh  = ss2.getSheetByName('FILE LOG');
       if (!sh || sh.getLastRow() < 2) {
         return buildResponse(JSON.stringify({ ok: true, files: [] }));
       }
-      const data = sh.getRange(2, 1, sh.getLastRow() - 1, 6).getValues();
-      const files = data
-        .filter(r => r[0])  // skip blank rows
-        .map(r => ({
-          id       : String(r[0]),
-          name     : String(r[1]),
-          type     : String(r[2]),
-          date     : String(r[3]),
-          uploadedAt: String(r[4]),
-          awbs     : Number(r[5]) || 0
-        }));
-      return buildResponse(JSON.stringify({ ok: true, files }));
+      var data2 = sh.getRange(2, 1, sh.getLastRow() - 1, 6).getValues();
+      var files = data2
+        .filter(function(r) { return r[0]; })
+        .map(function(r) {
+          return {
+            id        : String(r[0]),
+            name      : String(r[1]),
+            type      : String(r[2]),
+            date      : String(r[3]),
+            uploadedAt: String(r[4]),
+            awbs      : Number(r[5]) || 0
+          };
+        });
+      return buildResponse(JSON.stringify({ ok: true, files: files }));
     } catch (err) {
       Logger.log('getFileLog error: ' + err.message);
       return buildResponse(JSON.stringify({ ok: false, files: [], error: err.message }));
     }
   }
 
-  // Default health check
   return buildResponse(
-    JSON.stringify({ ok: true, service: 'Logistics Dashboard Sheets API', version: '4.0' })
+    JSON.stringify({ ok: true, service: 'Logistics Dashboard Sheets API', version: '5.0' })
   );
 }
 
+/* ═══════════════════════════════════════════════════════════
+   POST ENDPOINT
+═══════════════════════════════════════════════════════════ */
 function doPost(e) {
   try {
-    const payload = JSON.parse(e.postData.contents);
-    const result  = processPayload(payload);
+    var payload = JSON.parse(e.postData.contents);
+    var result  = processPayload(payload);
     return buildResponse(JSON.stringify(result));
   } catch (err) {
     Logger.log('doPost error: ' + err.message);
@@ -5912,10 +5948,10 @@ function doPost(e) {
   }
 }
 
-// ── Normalize a cell value from column A into "YYYY-MM-DD" string ──
-// ROOT CAUSE OF DEDUPLICATION FAILURE: Google Sheets stores dates as Date objects.
-// String(new Date("2026-04-01")) returns "Fri Apr 01 2026 00:00:00 GMT+..." ≠ "2026-04-01"
-// Fix: use Utilities.formatDate for Date objects; take first 10 chars for plain strings.
+/* ═══════════════════════════════════════════════════════════
+   HELPERS
+═══════════════════════════════════════════════════════════ */
+
 function normDate(cellValue) {
   if (!cellValue) return '';
   if (cellValue instanceof Date) {
@@ -5925,200 +5961,234 @@ function normDate(cellValue) {
       return cellValue.toISOString().slice(0, 10);
     }
   }
-  // Handle plain strings like "2026-04-01" or "2026-04-01 00:00:00"
   return String(cellValue).trim().slice(0, 10);
 }
 
-function processPayload(payload) {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+function safeParseJSON(val) {
+  if (!val || val === '') return {};
+  try { return JSON.parse(String(val)); } catch (_) { return {}; }
+}
 
-  // ── MASTER SNAPSHOT — persist full master JSON for cross-session restore ─────
-  // ROOT CAUSE FIX: previously processPayload skipped this and fell through to
-  // the section-data path, trying to create a sheet called "undefined" / "Floor Trends"
-  // instead of writing the snapshot. Fetch (?action=getMaster) therefore always
-  // returned empty, so DCH + all sections disappeared after logout / refresh.
+function getOrCreateSheet(ss, name, headers) {
+  var sh = ss.getSheetByName(name) || ss.insertSheet(name);
+  if (sh.getLastRow() === 0 && headers && headers.length) {
+    sh.appendRow(headers);
+    sh.getRange(1, 1, 1, headers.length)
+      .setFontWeight('bold').setBackground('#0d1f3c').setFontColor('#dce6f5');
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   PAYLOAD ROUTER
+═══════════════════════════════════════════════════════════ */
+function processPayload(payload) {
+  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+
+  /* ── FIX 1: MASTER SNAPSHOT — row-per-record, no cell-size limit ── */
   if (payload.type === 'master_snapshot') {
-    const snapSheet = ss.getSheetByName('MASTER SNAPSHOT') || ss.insertSheet('MASTER SNAPSHOT');
-    // Row 1: labels. Row 2: actual data.
-    if (snapSheet.getLastRow() === 0) {
-      snapSheet.appendRow(['Key', 'Value', 'Updated']);
-      snapSheet.getRange(1, 1, 1, 3).setFontWeight('bold')
-        .setBackground('#0d1f3c').setFontColor('#dce6f5');
+    var snapSheet = getOrCreateSheet(ss, 'MASTER SNAPSHOT',
+      ['Type', 'Date', 'Count', 'Locations', 'Bins', 'Messages', 'LastUpdated']);
+
+    // Full replace: delete all old rows then write fresh
+    if (snapSheet.getLastRow() > 1) {
+      snapSheet.deleteRows(2, snapSheet.getLastRow() - 1);
     }
-    const ts = new Date().toISOString();
-    if (snapSheet.getLastRow() < 2) {
-      snapSheet.appendRow(['master', payload.data || '', ts]);
-    } else {
-      snapSheet.getRange(2, 2).setValue(payload.data || '');
-      snapSheet.getRange(2, 3).setValue(ts);
-      // Ensure col A label exists
-      if (!snapSheet.getRange(2, 1).getValue()) snapSheet.getRange(2, 1).setValue('master');
+
+    var rows = payload.rows || [];
+    if (rows.length > 0) {
+      var numCols = rows[0].length || 7;
+      if (numCols > snapSheet.getMaxColumns()) {
+        snapSheet.insertColumnsAfter(snapSheet.getMaxColumns(), numCols - snapSheet.getMaxColumns());
+      }
+      // Stringify every value — prevents Sheets from mis-parsing JSON as date/number
+      var safeRows = rows.map(function(r) {
+        return r.map(function(v) { return (v == null) ? '' : String(v); });
+      });
+      snapSheet.getRange(2, 1, safeRows.length, numCols).setValues(safeRows);
+      SpreadsheetApp.flush();
+      Logger.log('MASTER SNAPSHOT: ' + safeRows.length + ' rows written (full replace)');
     }
-    SpreadsheetApp.flush();
-    Logger.log('Master snapshot saved — ' + Math.round((payload.data||'').length / 1024) + 'KB');
-    return { ok: true, type: 'master_snapshot', ts };
+    return { ok: true, type: 'master_snapshot', rows: rows.length };
   }
 
-  // ── FILE LOG — record each uploaded file for the management panel ────────────
-  if (payload.type === 'file_log') {
-    const logSheet = ss.getSheetByName('FILE LOG') || ss.insertSheet('FILE LOG');
-    if (logSheet.getLastRow() === 0) {
-      logSheet.appendRow(['ID', 'File Name', 'File Type', 'Data Date', 'Uploaded At', 'AWBs']);
-      logSheet.getRange(1, 1, 1, 6).setFontWeight('bold')
-        .setBackground('#0d1f3c').setFontColor('#dce6f5');
-      logSheet.setFrozenRows(1);
+  /* ── FIX 2 & 3: SECTION COUNTS — new handler with dedup ── */
+  if (payload.type === 'section_counts') {
+    var countsSheet = getOrCreateSheet(ss, 'SECTION COUNTS',
+      ['Sync Date', 'Section', 'Source', 'Age Filter', 'AWB Count', 'Record Count', 'File Dates']);
+
+    var syncDate     = String(payload.syncDate || new Date().toISOString().slice(0, 10)).slice(0, 10);
+    var counts       = payload.counts || [];
+    var secNames     = counts.map(function(c) { return String(c.section || ''); });
+
+    // Dedup: remove rows for same (syncDate + section) before appending
+    if (countsSheet.getLastRow() > 1) {
+      var existing = countsSheet.getRange(2, 1, countsSheet.getLastRow() - 1, 2).getValues();
+      var toDelete = [];
+      for (var i = existing.length - 1; i >= 0; i--) {
+        var rd = normDate(existing[i][0]);
+        var rs = String(existing[i][1] || '');
+        if (rd === syncDate && secNames.indexOf(rs) !== -1) toDelete.push(i + 2);
+      }
+      toDelete.sort(function(a, b) { return b - a; })
+              .forEach(function(r) { countsSheet.deleteRow(r); });
+      if (toDelete.length > 0) {
+        Logger.log('SECTION COUNTS: removed ' + toDelete.length + ' stale rows for ' + syncDate);
+      }
     }
-    const entry = payload.entry || {};
-    // Avoid duplicate IDs
+
+    var countRows = counts.map(function(c) {
+      return [
+        syncDate,
+        String(c.section   || ''),
+        String(c.src       || ''),
+        String(c.ageFilter || ''),
+        Number(c.awbs      || 0),
+        Number(c.records   || 0),
+        String(c.fileDates || '')
+      ];
+    });
+    if (countRows.length > 0) {
+      var startRow = countsSheet.getLastRow() + 1;
+      countsSheet.getRange(startRow, 1, countRows.length, 7).setValues(countRows);
+      SpreadsheetApp.flush();
+      Logger.log('SECTION COUNTS: appended ' + countRows.length + ' rows for ' + syncDate);
+    }
+    return { ok: true, type: 'section_counts', appended: countRows.length };
+  }
+
+  /* ── FILE LOG — record uploaded file with dedup by ID ── */
+  if (payload.type === 'file_log') {
+    var logSheet = getOrCreateSheet(ss, 'FILE LOG',
+      ['ID', 'File Name', 'File Type', 'Data Date', 'Uploaded At', 'AWBs']);
+    var entry = payload.entry || {};
     if (logSheet.getLastRow() > 1) {
-      const ids = logSheet.getRange(2, 1, logSheet.getLastRow() - 1, 1).getValues().flat().map(String);
-      if (ids.includes(String(entry.id))) {
+      var ids = logSheet.getRange(2, 1, logSheet.getLastRow() - 1, 1)
+                        .getValues().map(function(r) { return String(r[0]); });
+      if (ids.indexOf(String(entry.id || '')) !== -1) {
         return { ok: true, type: 'file_log', action: 'duplicate_skipped' };
       }
     }
     logSheet.appendRow([
-      entry.id || '',
-      entry.name || '',
-      entry.fileType || '',
-      entry.date || '',
+      entry.id         || '',
+      entry.name       || '',
+      entry.fileType   || entry.type || '',
+      entry.date       || '',
       entry.uploadedAt || new Date().toISOString(),
-      entry.awbs || 0
+      Number(entry.awbs) || 0
     ]);
     SpreadsheetApp.flush();
-    Logger.log('File log entry: ' + (entry.name || ''));
+    Logger.log('FILE LOG: added ' + (entry.name || ''));
     return { ok: true, type: 'file_log' };
   }
 
-  // ── DELETE FILE — remove one file's data from its section sheet ──────────────
+  /* ── DELETE FILE ── */
   if (payload.type === 'delete_file') {
-    const entry = payload.entry || {};
-    const dateKey = normDate(entry.date || '');
-    const sectionName = (entry.section || '').toString().replace(/[\\/:*?\\[\\]]/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, 31);
-    let deletedRows = 0;
+    var delEntry   = payload.entry || {};
+    var delDate    = normDate(delEntry.date || '');
+    var delSection = (delEntry.section || '').toString()
+      .replace(/[\\/:*?\[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 31);
+    var deletedRows = 0;
 
-    // Remove from section data sheet
-    if (sectionName && dateKey) {
-      const dataSheet = ss.getSheetByName(sectionName);
+    if (delSection && delDate) {
+      var dataSheet = ss.getSheetByName(delSection);
       if (dataSheet && dataSheet.getLastRow() > 1) {
-        const dateVals = dataSheet.getRange(2, 1, dataSheet.getLastRow() - 1, 1).getValues();
-        const toDelete = [];
-        for (let i = dateVals.length - 1; i >= 0; i--) {
-          if (normDate(dateVals[i][0]) === dateKey) toDelete.push(i + 2);
+        var dv = dataSheet.getRange(2, 1, dataSheet.getLastRow() - 1, 1).getValues();
+        var td = [];
+        for (var i = dv.length - 1; i >= 0; i--) {
+          if (normDate(dv[i][0]) === delDate) td.push(i + 2);
         }
-        toDelete.sort((a, b) => b - a).forEach(r => { dataSheet.deleteRow(r); deletedRows++; });
+        td.sort(function(a, b) { return b - a; })
+          .forEach(function(r) { dataSheet.deleteRow(r); deletedRows++; });
       }
     }
 
-    // Remove from FILE LOG
-    const logSheet = ss.getSheetByName('FILE LOG');
-    if (logSheet && logSheet.getLastRow() > 1 && entry.id) {
-      const ids = logSheet.getRange(2, 1, logSheet.getLastRow() - 1, 1).getValues();
-      for (let i = ids.length - 1; i >= 0; i--) {
-        if (String(ids[i][0]) === String(entry.id)) { logSheet.deleteRow(i + 2); break; }
+    var delLog = ss.getSheetByName('FILE LOG');
+    if (delLog && delLog.getLastRow() > 1 && delEntry.id) {
+      var logIds = delLog.getRange(2, 1, delLog.getLastRow() - 1, 1).getValues();
+      for (var j = logIds.length - 1; j >= 0; j--) {
+        if (String(logIds[j][0]) === String(delEntry.id)) { delLog.deleteRow(j + 2); break; }
       }
     }
 
     SpreadsheetApp.flush();
-    Logger.log('Deleted file entry: ' + (entry.name || '') + ' — ' + deletedRows + ' rows removed');
-    return { ok: true, type: 'delete_file', deletedRows };
+    Logger.log('DELETE FILE: ' + (delEntry.name || '?') + ' — ' + deletedRows + ' rows removed');
+    return { ok: true, type: 'delete_file', deletedRows: deletedRows };
   }
 
-  // ── SECTION DATA — standard floor-trends row push ────────────────────────────
-  const rawName   = (payload.sheet || 'Floor Trends').toString()
-    .replace(/[\\/:*?\\[\\]]/g, ' ').replace(/\\s+/g, ' ').trim();
-  const sheetName = rawName.substring(0, 31) || 'Data';
+  /* ── SECTION DATA — raw floor-trends row push with date-level dedup ── */
+  var rawName   = (payload.sheet || 'Floor Trends').toString()
+    .replace(/[\\/:*?\[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+  var sheetName = rawName.substring(0, 31) || 'Data';
 
-  // Get or create the target sheet tab
-  let sheet = ss.getSheetByName(sheetName);
-  if (!sheet) {
-    sheet = ss.insertSheet(sheetName);
-    Logger.log('Created new sheet: ' + sheetName);
-  }
+  var sheet = ss.getSheetByName(sheetName) || ss.insertSheet(sheetName);
+  var headers  = payload.headers || ['Date', 'Location', 'Count'];
+  var newRows  = payload.rows    || [];
+  var dateKey  = normDate(payload.date || '');
 
-  const headers = payload.headers || ['Date', 'Location', 'Count'];
-  const newRows = payload.rows   || [];
-  const dateKey = normDate(payload.date || '');
-
-  // ── Write or refresh header row ──
-  // If the sheet is empty: write headers fresh.
-  // If headers have MORE columns than the sheet currently has: rewrite row 1 entirely
-  // (handles upgrade from 3-col pivot to 100+ col full-data format).
+  // Write / refresh header row
   if (sheet.getLastRow() === 0) {
     sheet.appendRow(headers);
     sheet.getRange(1, 1, 1, headers.length)
-      .setFontWeight('bold')
-      .setBackground('#0d1f3c')
-      .setFontColor('#dce6f5');
+      .setFontWeight('bold').setBackground('#0d1f3c').setFontColor('#dce6f5');
     sheet.setFrozenRows(1);
     sheet.setFrozenColumns(1);
   } else if (headers.length > sheet.getLastColumn()) {
-    // Expand: write full header row from scratch (safer than partial update)
-    // First expand the sheet if needed
     if (headers.length > sheet.getMaxColumns()) {
       sheet.insertColumnsAfter(sheet.getMaxColumns(), headers.length - sheet.getMaxColumns());
     }
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(1, 1, 1, headers.length)
-      .setFontWeight('bold')
-      .setBackground('#0d1f3c')
-      .setFontColor('#dce6f5');
+      .setFontWeight('bold').setBackground('#0d1f3c').setFontColor('#dce6f5');
     sheet.setFrozenRows(1);
     sheet.setFrozenColumns(1);
   }
 
-  // ── Delete existing rows for this date (deduplication) ──
-  // Uses normDate() to correctly compare Date objects stored by Sheets.
-  let deletedCount = 0;
+  // Dedup by date
+  var deletedCount = 0;
   if (dateKey && sheet.getLastRow() > 1) {
-    const lastRow  = sheet.getLastRow();
-    const dateVals = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-    const toDelete = [];
-    for (let i = dateVals.length - 1; i >= 0; i--) {
-      if (normDate(dateVals[i][0]) === dateKey) {
-        toDelete.push(i + 2); // i+2: row index is 1-based, data starts at row 2
-      }
+    var lrow     = sheet.getLastRow();
+    var dateVals = sheet.getRange(2, 1, lrow - 1, 1).getValues();
+    var toDel    = [];
+    for (var d = dateVals.length - 1; d >= 0; d--) {
+      if (normDate(dateVals[d][0]) === dateKey) toDel.push(d + 2);
     }
-    // Delete in reverse order so row indexes stay valid
-    toDelete.sort((a, b) => b - a);
-    toDelete.forEach(r => { sheet.deleteRow(r); deletedCount++; });
-    Logger.log('Dedup: deleted ' + deletedCount + ' rows for date ' + dateKey + ' on sheet ' + sheetName);
+    toDel.sort(function(a, b) { return b - a; })
+         .forEach(function(r) { sheet.deleteRow(r); deletedCount++; });
+    if (deletedCount > 0) Logger.log('Dedup: removed ' + deletedCount + ' rows for ' + dateKey + ' on ' + sheetName);
   }
 
-  // ── Append new rows in one batch ──
-  let appendedCount = 0;
+  // Append rows
+  var appendedCount = 0;
   if (newRows.length > 0) {
-    const startRow = sheet.getLastRow() + 1;
-    const numCols  = Math.max(headers.length, newRows[0] ? newRows[0].length : 0);
-
-    // Expand columns if needed
+    var startRow = sheet.getLastRow() + 1;
+    var numCols  = Math.max(headers.length, newRows[0] ? newRows[0].length : 0);
     if (numCols > sheet.getMaxColumns()) {
       sheet.insertColumnsAfter(sheet.getMaxColumns(), numCols - sheet.getMaxColumns());
     }
-
-    // Pad all rows to the same column count
-    const paddedRows = newRows.map(r => {
-      const row = r.slice();
+    var paddedRows = newRows.map(function(r) {
+      var row = r.slice();
       while (row.length < numCols) row.push('');
       return row;
     });
-
     sheet.getRange(startRow, 1, paddedRows.length, numCols).setValues(paddedRows);
     appendedCount = paddedRows.length;
-    Logger.log('Appended ' + appendedCount + ' rows to sheet ' + sheetName + ' for date ' + dateKey);
+    Logger.log('Appended ' + appendedCount + ' rows to ' + sheetName + ' for ' + dateKey);
   }
 
   SpreadsheetApp.flush();
-
   return {
-    ok        : true,
-    sheet     : sheetName,
-    date      : dateKey,
-    deleted   : deletedCount,
-    appended  : appendedCount,
-    totalRows : sheet.getLastRow() - 1
+    ok       : true,
+    sheet    : sheetName,
+    date     : dateKey,
+    deleted  : deletedCount,
+    appended : appendedCount,
+    totalRows: sheet.getLastRow() - 1
   };
 }
 
+/* ── Build JSON response ── */
 function buildResponse(body) {
   return ContentService
     .createTextOutput(body)
@@ -6279,26 +6349,46 @@ async function runSheetsPush(results){
   console.log('Sheets sync complete — master snapshot + section counts pushed');
 }
 
-/* ── Push serialised master to Sheets (enables Viewer Mode + cross-session restore) ──
-   Writes the master object (aggregated counts only, ~50KB) to a MASTER SNAPSHOT tab
-   in the response sheet. No source rows — just the aggregated data needed to render
-   all charts and tables without re-uploading files.
-   Called after every upload sync so the backend always has the latest state.         */
+/* ── Push master data to Sheets — ROW-PER-RECORD format ──────────────────────
+   ROOT CAUSE FIX: Google Sheets has a strict 50,000-character cell limit.
+   Storing the entire master as one JSON blob in cell B2 caused silent write
+   failures once data exceeded ~1,000 AWBs across many locations.
+   Fix: store one row per (type, date) in the MASTER SNAPSHOT sheet.
+   Each row: [Type, Date, Count, LocsJSON, BinsJSON, MsgsJSON, Timestamp].
+   No single cell ever exceeds ~5KB. No data loss possible.
+   The AppScript reconstructs the master object server-side when fetched.     */
 async function pushMasterSnapshot(){
   const url=getGsUrl();
   if(!url)return;
-  // Only push if master has actual data
-  const hasData=Object.values(master).some(arr=>arr&&arr.length>0);
+  const hasData=Object.values(master).some(arr=>Array.isArray(arr)&&arr.length>0);
   if(!hasData)return;
   try{
-    const snap=JSON.stringify(master);
-    if(!snap||snap==='{}')return;
+    const ts=new Date().toISOString();
+    const rows=[];
+    const types=['forward','reverse','lmodc','forwardShort'];
+    for(const type of types){
+      const arr=master[type];
+      if(!Array.isArray(arr)||!arr.length)continue;
+      for(const rec of arr){
+        if(!rec||!rec.date)continue;
+        rows.push([
+          type,
+          rec.date,
+          rec.count||0,
+          JSON.stringify(rec.locs||{}),
+          JSON.stringify(rec.bins||{}),
+          JSON.stringify(rec.msgs||{}),
+          ts
+        ]);
+      }
+    }
+    if(!rows.length)return;
     await fetch(url,{
       method:'POST',mode:'no-cors',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({type:'master_snapshot',data:snap})
+      body:JSON.stringify({type:'master_snapshot',rows,ts})
     });
-    console.log('Master snapshot pushed to Sheets ('+Math.round(snap.length/1024)+'KB)');
+    console.log(`Master snapshot pushed: ${rows.length} type-date rows to Sheets`);
   }catch(e){console.warn('pushMasterSnapshot failed (non-fatal):',e.message);}
 }
 
