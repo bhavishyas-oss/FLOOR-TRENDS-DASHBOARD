@@ -467,6 +467,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
   <button class="btn bd" id="dbgbtn" onclick="toggleDebug()">🔍 Debug</button>
   <button class="btn bd" onclick="showAppsScriptCode()" title="Download Apps Script code for Google Sheets setup">📄 AS Code</button>
   <button class="btn bd" id="sheetsbtn" onclick="configSheets()">📊 Sheets</button>
+  <button class="btn bd" onclick="toggleFileManager()" title="View and manage uploaded files">📁 Files</button>
   <button class="btn br" onclick="onClear()">🗑 Clear All</button>
 </div>
 
@@ -815,6 +816,40 @@ const IDB_STORE='rawChunks';
 let _idb=null;
 let _rawDataFull=false; // true only when rawData was populated by fresh file upload (captureRaw)
 let _rawRestoredRows=0; // total rows currently in rawData (used to detect degradation)
+
+/* ═══════════════════════════════════════════════
+   FILE REGISTRY — persistent log of uploaded files.
+   Survives logout / refresh / View Mode via localStorage + Google Sheets FILE LOG sheet.
+   Each entry: {id, name, type, date, uploadedAt, awbs, section}
+   Used by the file management panel to allow per-file deletion.
+═══════════════════════════════════════════════ */
+const FILE_REG_KEY = SKEY + '_filereg_v1';
+let _fileRegistry = [];  // in-memory; mirrors localStorage
+
+function _loadFileRegistry(){
+  try{
+    const raw=localStorage.getItem(FILE_REG_KEY);
+    if(raw){const p=JSON.parse(raw);if(Array.isArray(p))_fileRegistry=p;}
+  }catch{}
+}
+function _saveFileRegistry(){
+  try{localStorage.setItem(FILE_REG_KEY,JSON.stringify(_fileRegistry));}catch{}
+}
+function _addFileRegistryEntry(r){
+  // r = {id,name,type,date,uploadedAt,awbs,section}
+  if(_fileRegistry.some(e=>e.id===r.id))return; // dedup
+  _fileRegistry.push(r);
+  _saveFileRegistry();
+}
+function _removeFileRegistryEntry(id){
+  _fileRegistry=_fileRegistry.filter(e=>e.id!==id);
+  _saveFileRegistry();
+}
+function _makeFileId(name,date,type){
+  return`${type}_${date}_${name.replace(/[^a-zA-Z0-9]/g,'').slice(0,20)}_${Date.now()}`;
+}
+
+_loadFileRegistry(); // load immediately on boot
 
 function openIDB(){
   if(_idb)return Promise.resolve(_idb);
@@ -1295,7 +1330,7 @@ async function applyRows(rows,type,date,hdrs){
   const agg={};
   // 12000 rows/chunk ≈ 80–120ms per chunk — stays under browser watchdog threshold.
   // Larger chunks = fewer yields = faster overall. 12k is safe even on slower hardware.
-  const CHUNK=12000;
+  const CHUNK=20000; // 20k rows/chunk — fewer yields than 12k, stays under watchdog on modern HW
   const total=rows.length;
   for(let i=0;i<total;i+=CHUNK){
     const end=Math.min(i+CHUNK,total);
@@ -1556,7 +1591,7 @@ function decompAsync(raw, isStored){
         resolve(new TextDecoder('utf-8',{fatal:false}).decode(merged));
       }catch(e){console.warn('decompAsync merge:',e);resolve('');}
     };
-    const CHUNK=128*1024; // 128KB per push — ~200 pushes for 25MB, ~10ms each
+    const CHUNK=524288; // 512KB per push — faster for large shared-strings stream
     let offset=0;
     const push=()=>{
       const end=Math.min(offset+CHUNK,raw.length);
@@ -1783,7 +1818,7 @@ async function readExcelNative(buf){
           resolveRows(rowArr);
         };
 
-        const CHUNK=65536; // 64KB — small chunks keep browser responsive
+        const CHUNK=262144; // 256KB — 4× larger than before; reduces yield overhead ~4× for speed
         let off=0;
         const push=()=>{
           const end=Math.min(off+CHUNK,compBytes.length);
@@ -2089,6 +2124,29 @@ async function runFiles(files){
 
       // 1. Persist master to IDB + localStorage immediately (never defer)
       persistM();
+
+      // 1b. Register this file in the file registry (enables per-file deletion)
+      const fileId = _makeFileId(r.name, r.date, r.type);
+      const section = SECS.find(s=>s.src===r.type);
+      const regEntry = {
+        id: fileId,
+        name: r.name,
+        type: r.type,
+        date: r.date,
+        uploadedAt: new Date().toISOString(),
+        awbs: r.awbs||0,
+        section: section ? section.title : r.type
+      };
+      _addFileRegistryEntry(regEntry);
+
+      // Push file log entry to Sheets (fire-and-forget, non-blocking)
+      if(getGsUrl()){
+        fetch(getGsUrl(),{
+          method:'POST',mode:'no-cors',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({type:'file_log',entry:regEntry})
+        }).catch(()=>{});
+      }
 
       // 2. Push this file's raw rows to Google Sheets NOW — while rawData is
       //    still populated for this date. Awaited so purge happens only after push.
@@ -2920,6 +2978,7 @@ function onClear(){
   if(!requireAdmin('Clear All'))return;
   if(!confirm('⚠️ Delete ALL master data?\n\nExport first if needed.'))return;
   master=emptyM();pending={};dlog=[];
+  _fileRegistry=[];_saveFileRegistry();
   for(const k of Object.keys(rawData))delete rawData[k];
   _rawDataFull=false;
   _rawRestoredRows=0;
@@ -2936,6 +2995,118 @@ function onClear(){
   clearRawFromIDB();
   q('#brow').innerHTML='<span style="color:#94a3b8;font-size:11px">Cleared</span>';
   updateSummary();renderTab(activeTab);toast('🗑 Cleared','tw');
+}
+
+/* ═══════════════════════════════════════════════
+   FILE MANAGEMENT — per-file deletion
+   Allows admin to delete one uploaded file's data
+   without clearing everything else.
+═══════════════════════════════════════════════ */
+
+/* Delete a single file's contribution from master + Sheets */
+async function deleteFileEntry(id){
+  if(!requireAdmin('Delete File'))return;
+  const entry=_fileRegistry.find(e=>e.id===id);
+  if(!entry){toast('File entry not found','tw');return;}
+  if(!confirm(`⚠️ Delete data for:\n${entry.name} (${entry.date})?\n\nThis cannot be undone.`))return;
+
+  // 1. Remove from master (filter out records matching this date+type)
+  if(master[entry.type]){
+    master[entry.type]=master[entry.type].filter(r=>r.date!==entry.date);
+  }
+  // 2. Remove from registry
+  _removeFileRegistryEntry(id);
+  // 3. Persist updated master
+  persistM();
+  pushMasterSnapshot();
+  // 4. Push delete to Sheets (fire-and-forget)
+  const url=getGsUrl();
+  if(url){
+    const section=SECS.find(s=>s.src===entry.type);
+    const sheetName=section?section.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().slice(0,31):entry.type;
+    fetch(url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({type:'delete_file',entry:{...entry,section:sheetName}})
+    }).catch(()=>{});
+  }
+  // 5. Re-render
+  updateSummary();renderTab(activeTab);
+  renderFileManager();
+  toast(`🗑 Deleted: ${entry.name}`,'tw');
+}
+
+/* Delete multiple selected file entries */
+async function deleteSelectedFiles(){
+  if(!requireAdmin('Delete Selected'))return;
+  const checks=[...document.querySelectorAll('#fmgr-list input[type=checkbox]:checked')];
+  if(!checks.length){toast('No files selected','tw');return;}
+  const ids=checks.map(c=>c.dataset.id);
+  if(!confirm(`⚠️ Delete ${ids.length} file(s)?\n\nThis cannot be undone.`))return;
+  for(const id of ids)await deleteFileEntry(id);
+}
+
+/* Render the file manager panel inside #fmgr-wrap (injected into toolbar area) */
+function renderFileManager(){
+  const wrap=document.getElementById('fmgr-wrap');
+  if(!wrap)return;
+  if(!_fileRegistry.length){
+    wrap.innerHTML='<span style="color:#94a3b8;font-size:11px;padding:6px 0;display:block">No uploaded file records found.</span>';
+    return;
+  }
+  const BT={forward:'📦 FWD',reverse:'🔄 REV',lmodc:'🏷 LM',forwardShort:'⚡ DCH'};
+  const rows=[..._fileRegistry].reverse().map(e=>{
+    const ts=e.uploadedAt?new Date(e.uploadedAt).toLocaleString('en-IN',{dateStyle:'short',timeStyle:'short'}):'—';
+    return`<tr>
+      <td style="padding:4px 6px"><input type="checkbox" data-id="${xe(e.id)}"></td>
+      <td style="padding:4px 6px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${xe(e.name)}">${xe(e.name)}</td>
+      <td style="padding:4px 6px">${BT[e.type]||e.type}</td>
+      <td style="padding:4px 6px">${xe(e.date||'—')}</td>
+      <td style="padding:4px 6px">${ts}</td>
+      <td style="padding:4px 6px;text-align:right">${fn(e.awbs||0)}</td>
+      <td style="padding:4px 6px">
+        <button onclick="deleteFileEntry('${xe(e.id)}')" style="font-size:10px;padding:2px 8px;background:#dc2626;color:#fff;border:none;border-radius:4px;cursor:pointer" title="Delete this file's data">🗑</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML=`
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <strong style="font-size:11px;color:var(--tx2)">📁 Uploaded Files (${_fileRegistry.length})</strong>
+      <div style="display:flex;gap:6px">
+        <button onclick="deleteSelectedFiles()" style="font-size:10px;padding:3px 10px;background:var(--red);color:#fff;border:none;border-radius:4px;cursor:pointer">🗑 Delete Selected</button>
+        <button onclick="document.getElementById('fmgr-wrap').style.display='none'" style="font-size:10px;padding:3px 8px;background:var(--sur2);border:1px solid var(--bdr);border-radius:4px;cursor:pointer">✕ Close</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto;max-height:260px;overflow-y:auto;border:1px solid var(--bdr);border-radius:6px">
+      <table style="width:100%;border-collapse:collapse;font-size:11px">
+        <thead><tr style="background:var(--navy);color:#fff;position:sticky;top:0">
+          <th style="padding:5px 6px;width:28px"><input type="checkbox" onchange="[...document.querySelectorAll('#fmgr-list input[type=checkbox]')].forEach(c=>c.checked=this.checked)"></th>
+          <th style="padding:5px 6px;text-align:left">File Name</th>
+          <th style="padding:5px 6px;text-align:left">Type</th>
+          <th style="padding:5px 6px;text-align:left">Date</th>
+          <th style="padding:5px 6px;text-align:left">Uploaded At</th>
+          <th style="padding:5px 6px;text-align:right">AWBs</th>
+          <th style="padding:5px 6px">Action</th>
+        </tr></thead>
+        <tbody id="fmgr-list">${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+/* Toggle file manager panel visibility */
+function toggleFileManager(){
+  if(!requireAdmin('File Manager'))return;
+  let wrap=document.getElementById('fmgr-wrap');
+  if(!wrap){
+    // Create panel below toolbar
+    wrap=document.createElement('div');
+    wrap.id='fmgr-wrap';
+    wrap.style.cssText='background:var(--sur);border:1px solid var(--bdr);border-radius:8px;padding:10px 14px;margin:6px 0;';
+    const tbar=document.getElementById('tbar');
+    if(tbar&&tbar.parentNode)tbar.parentNode.insertBefore(wrap,tbar.nextSibling);
+  }
+  const visible=wrap.style.display!=='none';
+  wrap.style.display=visible?'none':'block';
+  if(!visible)renderFileManager();
 }
 
 /* ═══════════════════════════════════════════════
@@ -5672,8 +5843,61 @@ function doOptions(e) {
 }
 
 function doGet(e) {
+  // ── Route GET actions ──────────────────────────────────────────────
+  // fetchMasterFromSheets() calls ?action=getMaster to restore the full
+  // master snapshot so DCH + all other sections survive logout/refresh.
+  // fetchFileLog() calls ?action=getFileLog to show the upload history.
+  const action = (e && e.parameter && e.parameter.action) || '';
+
+  if (action === 'getMaster') {
+    try {
+      const ss   = SpreadsheetApp.openById(SPREADSHEET_ID);
+      const snap = ss.getSheetByName('MASTER SNAPSHOT');
+      if (!snap || snap.getLastRow() < 2) {
+        return buildResponse(JSON.stringify({ ok: false, reason: 'no_snapshot' }));
+      }
+      // Cell B1 holds the JSON blob written by pushMasterSnapshot()
+      const cell = snap.getRange(2, 2).getValue();
+      if (!cell) return buildResponse(JSON.stringify({ ok: false, reason: 'empty_snapshot' }));
+      // Validate that it is parseable JSON before returning
+      try { JSON.parse(cell); } catch(pe) {
+        return buildResponse(JSON.stringify({ ok: false, reason: 'parse_error' }));
+      }
+      return buildResponse(JSON.stringify({ ok: true, master: cell }));
+    } catch (err) {
+      Logger.log('getMaster error: ' + err.message);
+      return buildResponse(JSON.stringify({ ok: false, error: err.message }));
+    }
+  }
+
+  if (action === 'getFileLog') {
+    try {
+      const ss  = SpreadsheetApp.openById(SPREADSHEET_ID);
+      const sh  = ss.getSheetByName('FILE LOG');
+      if (!sh || sh.getLastRow() < 2) {
+        return buildResponse(JSON.stringify({ ok: true, files: [] }));
+      }
+      const data = sh.getRange(2, 1, sh.getLastRow() - 1, 6).getValues();
+      const files = data
+        .filter(r => r[0])  // skip blank rows
+        .map(r => ({
+          id       : String(r[0]),
+          name     : String(r[1]),
+          type     : String(r[2]),
+          date     : String(r[3]),
+          uploadedAt: String(r[4]),
+          awbs     : Number(r[5]) || 0
+        }));
+      return buildResponse(JSON.stringify({ ok: true, files }));
+    } catch (err) {
+      Logger.log('getFileLog error: ' + err.message);
+      return buildResponse(JSON.stringify({ ok: false, files: [], error: err.message }));
+    }
+  }
+
+  // Default health check
   return buildResponse(
-    JSON.stringify({ ok: true, service: 'Logistics Dashboard Sheets API', version: '3.0' })
+    JSON.stringify({ ok: true, service: 'Logistics Dashboard Sheets API', version: '4.0' })
   );
 }
 
@@ -5706,7 +5930,100 @@ function normDate(cellValue) {
 }
 
 function processPayload(payload) {
-  const ss        = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+
+  // ── MASTER SNAPSHOT — persist full master JSON for cross-session restore ─────
+  // ROOT CAUSE FIX: previously processPayload skipped this and fell through to
+  // the section-data path, trying to create a sheet called "undefined" / "Floor Trends"
+  // instead of writing the snapshot. Fetch (?action=getMaster) therefore always
+  // returned empty, so DCH + all sections disappeared after logout / refresh.
+  if (payload.type === 'master_snapshot') {
+    const snapSheet = ss.getSheetByName('MASTER SNAPSHOT') || ss.insertSheet('MASTER SNAPSHOT');
+    // Row 1: labels. Row 2: actual data.
+    if (snapSheet.getLastRow() === 0) {
+      snapSheet.appendRow(['Key', 'Value', 'Updated']);
+      snapSheet.getRange(1, 1, 1, 3).setFontWeight('bold')
+        .setBackground('#0d1f3c').setFontColor('#dce6f5');
+    }
+    const ts = new Date().toISOString();
+    if (snapSheet.getLastRow() < 2) {
+      snapSheet.appendRow(['master', payload.data || '', ts]);
+    } else {
+      snapSheet.getRange(2, 2).setValue(payload.data || '');
+      snapSheet.getRange(2, 3).setValue(ts);
+      // Ensure col A label exists
+      if (!snapSheet.getRange(2, 1).getValue()) snapSheet.getRange(2, 1).setValue('master');
+    }
+    SpreadsheetApp.flush();
+    Logger.log('Master snapshot saved — ' + Math.round((payload.data||'').length / 1024) + 'KB');
+    return { ok: true, type: 'master_snapshot', ts };
+  }
+
+  // ── FILE LOG — record each uploaded file for the management panel ────────────
+  if (payload.type === 'file_log') {
+    const logSheet = ss.getSheetByName('FILE LOG') || ss.insertSheet('FILE LOG');
+    if (logSheet.getLastRow() === 0) {
+      logSheet.appendRow(['ID', 'File Name', 'File Type', 'Data Date', 'Uploaded At', 'AWBs']);
+      logSheet.getRange(1, 1, 1, 6).setFontWeight('bold')
+        .setBackground('#0d1f3c').setFontColor('#dce6f5');
+      logSheet.setFrozenRows(1);
+    }
+    const entry = payload.entry || {};
+    // Avoid duplicate IDs
+    if (logSheet.getLastRow() > 1) {
+      const ids = logSheet.getRange(2, 1, logSheet.getLastRow() - 1, 1).getValues().flat().map(String);
+      if (ids.includes(String(entry.id))) {
+        return { ok: true, type: 'file_log', action: 'duplicate_skipped' };
+      }
+    }
+    logSheet.appendRow([
+      entry.id || '',
+      entry.name || '',
+      entry.fileType || '',
+      entry.date || '',
+      entry.uploadedAt || new Date().toISOString(),
+      entry.awbs || 0
+    ]);
+    SpreadsheetApp.flush();
+    Logger.log('File log entry: ' + (entry.name || ''));
+    return { ok: true, type: 'file_log' };
+  }
+
+  // ── DELETE FILE — remove one file's data from its section sheet ──────────────
+  if (payload.type === 'delete_file') {
+    const entry = payload.entry || {};
+    const dateKey = normDate(entry.date || '');
+    const sectionName = (entry.section || '').toString().replace(/[\\/:*?\\[\\]]/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, 31);
+    let deletedRows = 0;
+
+    // Remove from section data sheet
+    if (sectionName && dateKey) {
+      const dataSheet = ss.getSheetByName(sectionName);
+      if (dataSheet && dataSheet.getLastRow() > 1) {
+        const dateVals = dataSheet.getRange(2, 1, dataSheet.getLastRow() - 1, 1).getValues();
+        const toDelete = [];
+        for (let i = dateVals.length - 1; i >= 0; i--) {
+          if (normDate(dateVals[i][0]) === dateKey) toDelete.push(i + 2);
+        }
+        toDelete.sort((a, b) => b - a).forEach(r => { dataSheet.deleteRow(r); deletedRows++; });
+      }
+    }
+
+    // Remove from FILE LOG
+    const logSheet = ss.getSheetByName('FILE LOG');
+    if (logSheet && logSheet.getLastRow() > 1 && entry.id) {
+      const ids = logSheet.getRange(2, 1, logSheet.getLastRow() - 1, 1).getValues();
+      for (let i = ids.length - 1; i >= 0; i--) {
+        if (String(ids[i][0]) === String(entry.id)) { logSheet.deleteRow(i + 2); break; }
+      }
+    }
+
+    SpreadsheetApp.flush();
+    Logger.log('Deleted file entry: ' + (entry.name || '') + ' — ' + deletedRows + ' rows removed');
+    return { ok: true, type: 'delete_file', deletedRows };
+  }
+
+  // ── SECTION DATA — standard floor-trends row push ────────────────────────────
   const rawName   = (payload.sheet || 'Floor Trends').toString()
     .replace(/[\\/:*?\\[\\]]/g, ' ').replace(/\\s+/g, ' ').trim();
   const sheetName = rawName.substring(0, 31) || 'Data';
@@ -5837,8 +6154,8 @@ async function pushSectionDate(sheetName,headers,rows,date){
 
   if(!safeRows.length)return true; // nothing to write
 
-  // 150 rows per chunk — unlimited cols, stays under 6MB Apps Script POST limit
-  const CHUNK=150;
+  // 300 rows per chunk — 2× fewer round trips vs 150-row chunks; stays under 6MB Apps Script POST limit
+  const CHUNK=300;
   let allOk=true;
   for(let i=0;i<safeRows.length;i+=CHUNK){
     const chunk=safeRows.slice(i,i+CHUNK);
@@ -5857,7 +6174,7 @@ async function pushSectionDate(sheetName,headers,rows,date){
       console.warn('Sheets push error:',sheetName,'chunk',i,err.message);
       allOk=false;
     }
-    if(i+CHUNK<safeRows.length)await new Promise(r=>setTimeout(r,80));
+    if(i+CHUNK<safeRows.length)await new Promise(r=>setTimeout(r,40));
   }
   return allOk;
 }
@@ -5929,9 +6246,11 @@ async function pushOneFileToSheets(fileResult){
 }
 
 /* ── Push all Floor Trends sections to Sheets after every upload ──
-   PRIMARY  : rawData cache → full AWB-level rows, all source columns.
-   FALLBACK : rawData unavailable → aggregated pivot (Date/Location/Count).
-   COUNTS   : always pushes section-wise totals to SECTION COUNTS sheet. */
+   SPEED FIX: raw row-level data is now pushed per-file (pushOneFileToSheets).
+   This end-of-batch function only handles:
+     • Master snapshot (restores dashboard on re-login / View Mode)
+     • Section counts (SECTION COUNTS sheet)
+   No raw row re-push — avoids duplicating work done per-file.             */
 async function runSheetsPush(results){
   const url=getGsUrl();
   if(!url)return;
@@ -5941,90 +6260,23 @@ async function runSheetsPush(results){
   );
   if(!hasData)return;
 
-  setP(true,'📊  Syncing to Google Sheets…');
-  let pushed=0,total=0;
-  const sectionCounts=[];
-
-  for(let i=0;i<SECS.length;i++){
-    const sec=SECS[i];
-    // Safe sheet name — max 31 chars
-    const sheetName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().slice(0,31);
-
-    /* PRIMARY: full row-level data from rawData (includes DCH/forwardShort) */
-    const rawRows=filterRawForSection(sec,i);
-
-    if(rawRows.length>0){
-      const colSet=new Set();
-      rawRows.forEach(r=>Object.keys(r).forEach(k=>{if(k!=='_date')colSet.add(k);}));
-      const allCols=['Date',...colSet];
-
-      const byDate={};
-      rawRows.forEach(r=>{
-        const d=r._date;
-        if(!byDate[d])byDate[d]=[];
-        // Only push rows with at least one non-empty value beyond Date
-        const rowArr=allCols.map(c=>{
-          if(c==='Date')return d;
-          const v=r[c];
-          return(v!==undefined&&v!==null&&v!=='')?String(v):'';
-        });
-        if(rowArr.slice(1).some(v=>v!==''))byDate[d].push(rowArr);
-      });
-
-      for(const[date,rows] of Object.entries(byDate)){
-        if(!rows.length)continue;
-        total++;
-        let ok=await pushSectionDate(sheetName,allCols,rows,date);
-        if(!ok){
-          // Retry once after brief pause
-          await new Promise(r=>setTimeout(r,600));
-          ok=await pushSectionDate(sheetName,allCols,rows,date);
-        }
-        if(ok)pushed++;
-        await new Promise(r=>setTimeout(r,60));
-      }
-
-      const f=SEC_FILTERS[i]||{age:sec.ageOpts?.[0]||3};
-      // Collect actual file dates for this section
-      const fileDates=Object.keys(byDate).sort().join(', ');
-      sectionCounts.push({section:sec.title,src:sec.src,ageFilter:`D${f.age}`,awbs:rawRows.length,records:rawRows.length,fileDates});
-
-    }else{
-      /* FALLBACK: rawData unavailable — push aggregated pivot counts */
-      const piv=buildPivot(sec,i);
-      if(!piv.locs.length)continue;
-      const headers=['Date','Location','Count'];
-      for(const date of piv.dates){
-        const rows=[];
-        piv.locs.forEach(loc=>{
-          const count=(piv.grid[loc]&&piv.grid[loc][date])||0;
-          if(count>0)rows.push([date,loc,String(count)]);
-        });
-        if(!rows.length)continue;
-        total++;
-        const ok=await pushSectionDate(sheetName,headers,rows,date);
-        if(ok)pushed++;
-        await new Promise(r=>setTimeout(r,60));
-      }
-      const totAWBs=piv.locs.reduce((s,l)=>s+(piv.rowTotals[l]||0),0);
-      const fileDates2=piv.dates.join(', ');
-      sectionCounts.push({section:sec.title,src:sec.src,ageFilter:'aggregated',awbs:totAWBs,records:piv.locs.length,fileDates:fileDates2});
-    }
-  }
-
-  if(sectionCounts.length>0)await pushSectionCounts(sectionCounts);
-
-  // Push master snapshot so Viewer Mode and re-login can restore dashboard state
+  // Push master snapshot so View Mode and re-login can restore dashboard state
   await pushMasterSnapshot();
 
-  showP(false);
-
-  if(pushed>0){
-    console.log(`Google Sheets: ${pushed}/${total} batches synced — all sections including DCH`);
-    toast(`📊 Synced to Google Sheets — ${pushed} batches`,'ti');
-  }else if(total>0){
-    toast('⚠ Google Sheets sync failed — check Web App URL in 📊 Sheets','tw');
+  // Push section-level aggregate counts only (small payload, fast)
+  const sectionCounts=[];
+  for(let i=0;i<SECS.length;i++){
+    const sec=SECS[i];
+    const f=SEC_FILTERS[i]||{age:sec.ageOpts?.[0]||3};
+    const piv=buildPivot(sec,i);
+    if(!piv.locs.length)continue;
+    const totAWBs=piv.locs.reduce((s,l)=>s+(piv.rowTotals[l]||0),0);
+    const fileDates=piv.dates.join(', ');
+    sectionCounts.push({section:sec.title,src:sec.src,ageFilter:`D${f.age}`,awbs:totAWBs,records:piv.locs.length,fileDates});
   }
+  if(sectionCounts.length>0)await pushSectionCounts(sectionCounts);
+
+  console.log('Sheets sync complete — master snapshot + section counts pushed');
 }
 
 /* ── Push serialised master to Sheets (enables Viewer Mode + cross-session restore) ──
@@ -6229,6 +6481,8 @@ async function _ensureDashboardData(context){
       // Re-render ALL tabs so every chart and table is populated
       updateSummary();
       _renderAllTabs();
+      // Also fetch file log from Sheets to populate the file manager panel
+      _fetchAndMergeFileLog();
       if(newTotal>0&&localTotal===0){
         setTimeout(()=>toast(`✅ Dashboard restored — ${fn(newTotal)} AWBs loaded from backend`,'tok'),400);
       }else if(newTotal>localTotal){
@@ -6264,6 +6518,31 @@ async function _ensureDashboardData(context){
     console.warn(`[${context}] _ensureDashboardData error:`,e.message);
     if(localTotal>0)_renderAllTabs();
   }
+}
+
+/* ── Fetch file log from Sheets and merge into local registry ─────────────
+   Called after every successful master restore so the file manager panel
+   always shows the full upload history from the backend.                  */
+async function _fetchAndMergeFileLog(){
+  const url=getGsUrl();
+  if(!url)return;
+  try{
+    const resp=await fetch(url+'?action=getFileLog',{method:'GET',headers:{'Accept':'application/json'},cache:'no-cache'});
+    if(!resp.ok)return;
+    const json=await resp.json();
+    if(!json.ok||!Array.isArray(json.files))return;
+    json.files.forEach(f=>{
+      if(!_fileRegistry.some(e=>e.id===f.id)){
+        _fileRegistry.push({
+          id:f.id,name:f.name,type:f.type,date:f.date,
+          uploadedAt:f.uploadedAt,awbs:f.awbs||0,
+          section:SECS.find(s=>s.src===f.type)?.title||f.type
+        });
+      }
+    });
+    _saveFileRegistry();
+    console.log(`File log synced: ${json.files.length} entries from Sheets`);
+  }catch(e){console.warn('_fetchAndMergeFileLog (non-fatal):',e.message);}
 }
 
 /* ── Render all 4 section tabs sequentially with small yield between each ──
