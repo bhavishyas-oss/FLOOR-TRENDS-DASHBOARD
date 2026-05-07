@@ -431,7 +431,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
      ROLE BADGE — shown in header when logged in as admin
 ═══════════════════════════════════════════════════════════ -->
 <div id="roleBadge" style="display:none;position:fixed;top:10px;right:16px;z-index:8000;
-  display:none;align-items:center;gap:8px;background:rgba(15,43,37,.9);
+  align-items:center;gap:8px;background:rgba(15,43,37,.9);
   border:1px solid #1C856F;border-radius:20px;padding:5px 14px 5px 10px;
   font-family:var(--sans);font-size:11px;font-weight:700;color:#E9DF43;
   box-shadow:0 2px 12px rgba(0,0,0,.3)">
@@ -2067,6 +2067,12 @@ async function runFiles(files){
   const results=new Array(files.length);
   const total=files.length;
 
+  // Drain any previously failed Sheets pushes before starting new uploads
+  if(_syncQueue.length>0){
+    setP(2,`🔄 Retrying ${_syncQueue.length} previously failed sync(s)…`);
+    await _drainSyncQueue();
+  }
+
   // ── SEQUENTIAL PROCESSING (OOM FIX) ─────────────────────────────
   // ROOT CAUSE FIX: concurrent batch processing (BATCH=5/8/12) kept multiple
   // large ArrayBuffers alive simultaneously in Promise.all().
@@ -2148,13 +2154,9 @@ async function runFiles(files){
       };
       _addFileRegistryEntry(regEntry);
 
-      // Push file log entry to Sheets (fire-and-forget, non-blocking)
+      // Push file log entry to Sheets (fire-and-forget via _sheetsFetch)
       if(getGsUrl()){
-        fetch(getGsUrl(),{
-          method:'POST',mode:'no-cors',
-          headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({type:'file_log',entry:regEntry})
-        }).catch(()=>{});
+        _sheetsFetch(getGsUrl(),{type:'file_log',entry:regEntry}).catch(()=>{});
       }
 
       // 2. Push this file's raw rows to Google Sheets NOW — while rawData is
@@ -3033,9 +3035,7 @@ async function deleteFileEntry(id){
   if(url){
     const section=SECS.find(s=>s.src===entry.type);
     const sheetName=section?section.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().slice(0,31):entry.type;
-    fetch(url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({type:'delete_file',entry:{...entry,section:sheetName}})
-    }).catch(()=>{});
+    _sheetsFetch(url,{type:'delete_file',entry:{...entry,section:sheetName}}).catch(()=>{});
   }
   // 5. Re-render
   updateSummary();renderTab(activeTab);
@@ -5862,8 +5862,11 @@ function showAppsScriptCode(){
 
 const SPREADSHEET_ID = 'YOUR_SPREADSHEET_ID_HERE';
 
+/* ── CORS preflight — allows browsers to send CORS POST without blocking ── */
 function doOptions(e) {
-  return buildResponse('');
+  return ContentService
+    .createTextOutput('')
+    .setMimeType(ContentService.MimeType.TEXT);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -5952,14 +5955,19 @@ function doGet(e) {
 
 /* ═══════════════════════════════════════════════════════════
    POST ENDPOINT
+   Accepts Content-Type: text/plain (no preflight) and application/json.
+   The dashboard sends text/plain to avoid CORS OPTIONS preflight issues.
 ═══════════════════════════════════════════════════════════ */
 function doPost(e) {
   try {
-    var payload = JSON.parse(e.postData.contents);
+    var raw = (e && e.postData && e.postData.contents) ? e.postData.contents : '{}';
+    var payload = JSON.parse(raw);
+    Logger.log('doPost type=' + (payload.type || payload.sheet || 'section_data'));
     var result  = processPayload(payload);
     return buildResponse(JSON.stringify(result));
   } catch (err) {
-    Logger.log('doPost error: ' + err.message);
+    Logger.log('doPost error: ' + err.message + ' | raw snippet: ' +
+      ((e && e.postData && e.postData.contents) ? e.postData.contents.slice(0,200) : 'none'));
     return buildResponse(JSON.stringify({ ok: false, error: err.message }));
   }
 }
@@ -6220,44 +6228,128 @@ function buildResponse(body) {
   toast('📄 Apps Script downloaded — follow the steps inside the file','ti');
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   SHEETS SYNC ENGINE — reliable retry + failure queue
+   ROOT CAUSE FIX: All previous fetch calls used mode:'no-cors'.
+   In no-cors mode the browser produces an "opaque" response —
+   status is always 0 and body is always empty. This means:
+     • You CANNOT tell if the request succeeded or failed
+     • A wrong/expired URL looks identical to a good one
+     • Network errors are silently swallowed
+   Fix: use mode:'cors' without custom headers (avoids preflight).
+   Apps Script deployed as "Anyone" handles this correctly.
+   If CORS fails (mixed content, etc.), fall back to no-cors with
+   a queue so data is retried on next upload.
+═══════════════════════════════════════════════════════════════ */
+
+/* Pending sync queue — items added here when push fails; retried on next upload */
+let _syncQueue=[];
+const _SYNC_QUEUE_KEY=SKEY+'_syncq_v1';
+function _loadSyncQueue(){
+  try{const s=localStorage.getItem(_SYNC_QUEUE_KEY);if(s)_syncQueue=JSON.parse(s);}catch{}
+}
+function _saveSyncQueue(){
+  try{localStorage.setItem(_SYNC_QUEUE_KEY,JSON.stringify(_syncQueue.slice(-200)));}catch{}
+}
+function _enqueueSyncItem(payload){
+  _syncQueue.push({payload,ts:Date.now(),retries:0});
+  _saveSyncQueue();
+}
+_loadSyncQueue();
+
+/* Core fetch wrapper — tries CORS first, falls back to no-cors.
+   Returns {ok, status, body} so callers can verify the write.     */
+async function _sheetsFetch(url, payload, timeoutMs=25000){
+  const body = JSON.stringify(payload);
+  // Strategy 1: CORS mode — can read response and verify success
+  try{
+    const ctrl  = new AbortController();
+    const timer = setTimeout(()=>ctrl.abort(), timeoutMs);
+    const resp  = await fetch(url, {
+      method:'POST', signal:ctrl.signal,
+      headers:{'Content-Type':'text/plain;charset=utf-8'}, // avoids preflight OPTIONS
+      body
+    });
+    clearTimeout(timer);
+    if(resp.ok){
+      try{
+        const json=await resp.json();
+        return {ok: json.ok!==false, status:resp.status, body:json};
+      }catch{
+        return {ok:true, status:resp.status, body:{}};
+      }
+    }
+    console.warn(`Sheets fetch HTTP ${resp.status} for type=${payload.type||payload.sheet}`);
+    return {ok:false, status:resp.status, body:{}};
+  }catch(corsErr){
+    // Strategy 2: no-cors fallback (opaque response — can't verify, but data may reach server)
+    console.warn('CORS fetch failed, using no-cors fallback:', corsErr.message);
+    try{
+      await fetch(url, {method:'POST', mode:'no-cors',
+        headers:{'Content-Type':'application/json'}, body});
+      return {ok:null, status:0, body:{}}; // null = "sent but unverifiable"
+    }catch(e2){
+      console.error('no-cors fallback also failed:', e2.message);
+      return {ok:false, status:-1, body:{}};
+    }
+  }
+}
+
+/* Drain the sync queue — called at start of every upload batch */
+async function _drainSyncQueue(){
+  if(!_syncQueue.length) return;
+  const url=getGsUrl();
+  if(!url) return;
+  const toRetry=[..._syncQueue];
+  _syncQueue=[];
+  _saveSyncQueue();
+  let recovered=0, failed=0;
+  for(const item of toRetry){
+    const r = await _sheetsFetch(url, item.payload);
+    if(r.ok || r.ok===null){ recovered++; }
+    else{
+      item.retries=(item.retries||0)+1;
+      if(item.retries<5){ _syncQueue.push(item); failed++; } // give up after 5 retries
+    }
+    await new Promise(r=>setTimeout(r,80));
+  }
+  _saveSyncQueue();
+  if(recovered>0) console.log(`Sync queue: recovered ${recovered} items`);
+  if(failed>0)    console.warn(`Sync queue: ${failed} items still pending (will retry next upload)`);
+}
+
 /* ── POST one section/date batch to the deployed web app ── */
-/* ── Push one batch (≤200 rows, ≤50 cols) to Sheets ───────────────────
-   Apps Script setValues() silently fails when:
-   - The payload JSON exceeds ~6MB (100+ cols × many rows)
-   - Any cell value is null/undefined (causes a type error on the server)
-   - Column count exceeds sheet's allocated columns
-   Fix: cap at 50 cols max, stringify everything, chunk rows.              */
+/* ── Push one batch (≤300 rows) to Sheets ─────────────────────────────*/
 async function pushSectionDate(sheetName,headers,rows,date){
   const url=getGsUrl();
   if(!url||!rows.length)return false;
 
-  // No column cap — send ALL source columns.
-  // Stringify every value; skip entirely empty rows.
   const safeHdrs=headers.map(h=>(h==null)?'':String(h));
   const safeRows=rows
     .filter(r=>Array.isArray(r)&&r.some(v=>v!==null&&v!==undefined&&v!==''))
     .map(r=>r.map(v=>(v==null)?'':String(v)));
+  if(!safeRows.length)return true;
 
-  if(!safeRows.length)return true; // nothing to write
-
-  // 300 rows per chunk — 2× fewer round trips vs 150-row chunks; stays under 6MB Apps Script POST limit
   const CHUNK=300;
   let allOk=true;
   for(let i=0;i<safeRows.length;i+=CHUNK){
     const chunk=safeRows.slice(i,i+CHUNK);
-    try{
-      await fetch(url,{
-        method:'POST',mode:'no-cors',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({
-          sheet:sheetName,
-          headers:i===0?safeHdrs:[],  // headers only on first chunk
-          rows:chunk,
-          date:i===0?date:''           // dedup only on first chunk
-        })
-      });
-    }catch(err){
-      console.warn('Sheets push error:',sheetName,'chunk',i,err.message);
+    const payload={
+      sheet:sheetName,
+      headers:i===0?safeHdrs:[],
+      rows:chunk,
+      date:i===0?date:''
+    };
+    // Try up to 3 times with _sheetsFetch (CORS-first, no-cors fallback)
+    let ok=false;
+    for(let attempt=0;attempt<3;attempt++){
+      const r=await _sheetsFetch(url, payload);
+      if(r.ok||r.ok===null){ok=true;break;} // null = no-cors sent (unverifiable but delivered)
+      await new Promise(res=>setTimeout(res, 400*(attempt+1)));
+    }
+    if(!ok){
+      console.warn(`pushSectionDate: failed after 3 attempts for ${sheetName} chunk ${i} — queuing`);
+      _enqueueSyncItem(payload);
       allOk=false;
     }
     if(i+CHUNK<safeRows.length)await new Promise(r=>setTimeout(r,40));
@@ -6270,14 +6362,12 @@ async function pushSectionCounts(counts){
   const url=getGsUrl();
   if(!url||!counts.length)return;
   const syncDate=new Date().toISOString().slice(0,10);
-  try{
-    await fetch(url,{
-      method:'POST',
-      mode:'no-cors',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({type:'section_counts',counts,syncDate})
-    });
-  }catch(e){console.warn('Section counts push failed:',e.message);}
+  const payload={type:'section_counts',counts,syncDate};
+  const r=await _sheetsFetch(url,payload);
+  if(!r.ok&&r.ok!==null){
+    console.warn('Section counts push failed — queuing for retry');
+    _enqueueSyncItem(payload);
+  }
 }
 
 /* ── Immediately push one file's raw rows to Sheets right after processing ─────
@@ -6399,12 +6489,14 @@ async function pushMasterSnapshot(){
       }
     }
     if(!rows.length)return;
-    await fetch(url,{
-      method:'POST',mode:'no-cors',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({type:'master_snapshot',rows,ts})
-    });
-    console.log(`Master snapshot pushed: ${rows.length} type-date rows to Sheets`);
+    const payload={type:'master_snapshot',rows,ts};
+    const r=await _sheetsFetch(url,payload);
+    if(r.ok||r.ok===null){
+      console.log(`Master snapshot pushed: ${rows.length} rows`);
+    }else{
+      console.warn('pushMasterSnapshot failed — queuing for retry');
+      _enqueueSyncItem(payload);
+    }
   }catch(e){console.warn('pushMasterSnapshot failed (non-fatal):',e.message);}
 }
 
