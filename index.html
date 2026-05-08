@@ -6313,31 +6313,65 @@ function getGsUrl(){
 function configSheets(){
   if(!requireAdmin('Sheets Configuration'))return;
   const cur=getGsUrl();
-  const hint=cur?`\nCurrent URL: ${cur.slice(0,55)}…`:'';
+  const hint=cur?`\nCurrent URL: ${cur.slice(0,60)}…`:'';
   const url=prompt(
     `Paste your Google Apps Script Web App URL below.${hint}\n\n`+
     `How to get it:\n`+
     `  1. Click "📄 AS Code" → download the .gs file\n`+
     `  2. Open script.google.com → New project\n`+
-    `  3. Paste the code, Save (Ctrl+S)\n`+
-    `  4. Deploy → New deployment → Web App\n`+
+    `  3. Paste the code → replace YOUR_SPREADSHEET_ID_HERE with your Sheet ID\n`+
+    `  4. File → Save (Ctrl+S)\n`+
+    `  5. Deploy → New deployment → Web App\n`+
     `       Execute as : Me\n`+
     `       Who can access : Anyone\n`+
-    `  5. Copy the Web App URL and paste here\n\n`+
+    `  6. Copy the Web App URL and paste here\n\n`+
+    `IMPORTANT: After pasting, click OK then use "📊 Sheets → 🔍 Test" to verify.\n`+
     `Leave blank to disable sync.`,
     cur||''
   );
-  if(url===null)return; // cancelled
+  if(url===null)return;
   const trimmed=url.trim();
   if(trimmed){
     localStorage.setItem(GS_URL_KEY,trimmed);
-    toast('✅ Google Sheets URL saved — data will sync on next upload','tok');
+    const btn=document.getElementById('sheetsbtn');
+    if(btn)btn.textContent='📊 Sheets ✓';
+    toast('✅ URL saved — testing connection…','tok');
+    // Auto-test after saving
+    setTimeout(()=>testSheetsConnection(trimmed),400);
   }else{
     localStorage.removeItem(GS_URL_KEY);
+    const btn=document.getElementById('sheetsbtn');
+    if(btn)btn.textContent='📊 Sheets';
     toast('Google Sheets sync disabled','tw');
   }
-  const btn=document.getElementById('sheetsbtn');
-  if(btn)btn.textContent=trimmed?'📊 Sheets ✓':'📊 Sheets';
+}
+
+/* ── Live connection test ── */
+async function testSheetsConnection(urlOverride){
+  const url=urlOverride||getGsUrl();
+  if(!url){toast('No Sheets URL configured. Click 📊 Sheets to set one.','tw');return;}
+  toast('🔍 Testing Sheets connection…','ti');
+  try{
+    // GET request — works with CORS for Apps Script deployed as "Anyone"
+    const resp=await fetch(url+'?action=ping',{method:'GET',cache:'no-cache'});
+    const text=await resp.text();
+    if(text&&text.trim().startsWith('{')){
+      const json=JSON.parse(text);
+      if(json.ok!==false){
+        toast('✅ Sheets connection OK — Apps Script is reachable and responding','tok');
+        return;
+      }
+      toast(`⚠ Apps Script error: ${json.error||JSON.stringify(json)} — check Spreadsheet ID in the .gs code`,'tw');
+      return;
+    }
+    if(text&&(text.includes('<html')||text.includes('<!DOCTYPE'))){
+      toast('❌ Apps Script returned HTML — the URL may be wrong or the script is not deployed correctly','tw');
+      return;
+    }
+    toast('⚠ Unexpected response from Apps Script — check deployment settings','tw');
+  }catch(e){
+    toast(`❌ Cannot reach Apps Script: ${e.message} — check the URL and try again`,'tw');
+  }
 }
 
 /* ── Download the Apps Script .gs file ── */
@@ -6462,25 +6496,46 @@ function doGet(e) {
   }
 
   return buildResponse(
-    JSON.stringify({ ok: true, service: 'Logistics Dashboard Sheets API', version: '5.0' })
+    JSON.stringify({ ok: true, service: 'Logistics Dashboard Sheets API', version: '5.1',
+      spreadsheetId: SPREADSHEET_ID })
   );
 }
 
 /* ═══════════════════════════════════════════════════════════
    POST ENDPOINT
-   Accepts Content-Type: text/plain (no preflight) and application/json.
-   The dashboard sends text/plain to avoid CORS OPTIONS preflight issues.
+   Handles two formats:
+   1. application/x-www-form-urlencoded with 'payload' field (PREFERRED — avoids CORS redirect)
+   2. application/json or text/plain with raw JSON body (legacy fallback)
+   3. e.postData.contents for any content-type
 ═══════════════════════════════════════════════════════════ */
 function doPost(e) {
   try {
-    var raw = (e && e.postData && e.postData.contents) ? e.postData.contents : '{}';
+    var raw = '';
+
+    // Format 1: form-urlencoded — dashboard sends payload= field (most reliable for CORS)
+    if (e && e.parameter && e.parameter.payload) {
+      raw = e.parameter.payload;
+      Logger.log('doPost: received form-urlencoded payload, length=' + raw.length);
+    }
+    // Format 2: raw body (JSON/text/plain)
+    else if (e && e.postData && e.postData.contents) {
+      raw = e.postData.contents;
+      Logger.log('doPost: received raw body, contentType=' + (e.postData.type||'unknown') + ', length=' + raw.length);
+    }
+    else {
+      Logger.log('doPost: WARNING — no payload found in request');
+      return buildResponse(JSON.stringify({ ok: false, error: 'no_payload' }));
+    }
+
     var payload = JSON.parse(raw);
-    Logger.log('doPost type=' + (payload.type || payload.sheet || 'section_data'));
+    Logger.log('doPost: type=' + (payload.type || payload.sheet || 'section_data'));
     var result  = processPayload(payload);
+    Logger.log('doPost: result=' + JSON.stringify(result).slice(0, 200));
     return buildResponse(JSON.stringify(result));
+
   } catch (err) {
-    Logger.log('doPost error: ' + err.message + ' | raw snippet: ' +
-      ((e && e.postData && e.postData.contents) ? e.postData.contents.slice(0,200) : 'none'));
+    Logger.log('doPost ERROR: ' + err.message + '\nStack: ' + (err.stack||'') +
+      '\nRaw (200): ' + String(raw||'').slice(0, 200));
     return buildResponse(JSON.stringify({ ok: false, error: err.message }));
   }
 }
@@ -6770,41 +6825,68 @@ function _enqueueSyncItem(payload){
 }
 _loadSyncQueue();
 
-/* Core fetch wrapper — tries CORS first, falls back to no-cors.
-   Returns {ok, status, body} so callers can verify the write.     */
-async function _sheetsFetch(url, payload, timeoutMs=12000){
-  const body = JSON.stringify(payload);
-  // Strategy 1: CORS mode — can read response and verify success
+/* ── Sheets fetch — form-encoded POST (most reliable for Apps Script) ────────
+   Google Apps Script Web Apps have a quirk: CORS POST requests are redirected
+   (302) to a different URL, which browsers refuse to follow in CORS mode.
+   This causes every CORS POST to fail with TypeError, silently falling back to
+   no-cors (opaque response — can't detect server errors).
+
+   Fix: use application/x-www-form-urlencoded with the data in a 'payload' field.
+   This IS a "simple" content type that avoids CORS preflight. Apps Script receives
+   it via e.parameter.payload. We read the response to detect actual failures.
+
+   The Apps Script doPost MUST handle e.parameter.payload (added in AppScript fix).
+   Fallback: if form-encoded fails, try no-cors as last resort.               */
+async function _sheetsFetch(url, payloadObj, timeoutMs=20000){
+  const bodyStr = JSON.stringify(payloadObj);
+
+  // Strategy A: form-urlencoded — simple content-type, no preflight, response readable
   try{
     const ctrl  = new AbortController();
     const timer = setTimeout(()=>ctrl.abort(), timeoutMs);
     const resp  = await fetch(url, {
-      method:'POST', signal:ctrl.signal,
-      headers:{'Content-Type':'text/plain;charset=utf-8'}, // avoids preflight OPTIONS
-      body
+      method:'POST',
+      signal: ctrl.signal,
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body: 'payload=' + encodeURIComponent(bodyStr)
     });
     clearTimeout(timer);
-    if(resp.ok){
-      try{
-        const json=await resp.json();
-        return {ok: json.ok!==false, status:resp.status, body:json};
-      }catch{
-        return {ok:true, status:resp.status, body:{}};
-      }
-    }
-    console.warn(`Sheets fetch HTTP ${resp.status} for type=${payload.type||payload.sheet}`);
-    return {ok:false, status:resp.status, body:{}};
-  }catch(corsErr){
-    // Strategy 2: no-cors fallback (opaque response — can't verify, but data may reach server)
-    console.warn('CORS fetch failed, using no-cors fallback:', corsErr.message);
+    // Apps Script returns 200 even for errors — check the JSON body
     try{
-      await fetch(url, {method:'POST', mode:'no-cors',
-        headers:{'Content-Type':'application/json'}, body});
-      return {ok:null, status:0, body:{}}; // null = "sent but unverifiable"
-    }catch(e2){
-      console.error('no-cors fallback also failed:', e2.message);
-      return {ok:false, status:-1, body:{}};
+      const text = await resp.text();
+      // Apps Script success: response contains JSON
+      if(text && text.trim().startsWith('{')){
+        const json = JSON.parse(text);
+        if(json.ok === false){
+          console.warn(`Sheets error for ${payloadObj.type||payloadObj.sheet}:`, json.error||'unknown');
+          return {ok:false, status:resp.status, body:json};
+        }
+        return {ok:true, status:resp.status, body:json};
+      }
+      // If Apps Script returned HTML (error page), it's a config problem
+      if(text && (text.includes('<html') || text.includes('<!DOCTYPE'))){
+        console.warn('Sheets: Apps Script returned HTML — check deployment URL and Spreadsheet ID');
+        return {ok:false, status:resp.status, body:{error:'html_response'}};
+      }
+      return {ok:true, status:resp.status, body:{}};
+    }catch{
+      return {ok:true, status:resp.status, body:{}};
     }
+  }catch(errA){
+    console.warn('Sheets form-POST failed:', errA.message, '— trying no-cors fallback');
+  }
+
+  // Strategy B: no-cors — opaque, can't verify, but data may still reach server
+  try{
+    await fetch(url, {
+      method:'POST',
+      mode:'no-cors',
+      body: 'payload=' + encodeURIComponent(bodyStr)
+    });
+    return {ok:null, status:0, body:{}};
+  }catch(errB){
+    console.error('All Sheets fetch strategies failed:', errB.message);
+    return {ok:false, status:-1, body:{}};
   }
 }
 
