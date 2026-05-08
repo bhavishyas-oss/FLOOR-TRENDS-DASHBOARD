@@ -6360,25 +6360,32 @@ async function testSheetsConnection(urlOverride){
   if(!url){toast('No Sheets URL configured. Click 📊 Sheets to set one.','tw');return;}
   toast('🔍 Testing Sheets connection…','ti');
   try{
-    // GET request — works with CORS for Apps Script deployed as "Anyone"
-    const resp=await fetch(url+'?action=ping',{method:'GET',cache:'no-cache'});
+    const resp=await fetch(url+'?action=test',{method:'GET',cache:'no-cache'});
     const text=await resp.text();
     if(text&&text.trim().startsWith('{')){
       const json=JSON.parse(text);
-      if(json.ok!==false){
-        toast('✅ Sheets connection OK — Apps Script is reachable and responding','tok');
+      if(json.ok===true){
+        const msg=`✅ Connected to: "${json.spreadsheetName||'?'}"\nTabs: ${json.existingTabs||'none yet'}\nID: ${json.spreadsheetId||'?'}`;
+        alert(msg);
+        toast(`✅ Sheets OK — "${json.spreadsheetName}"`, 'tok');
         return;
       }
-      toast(`⚠ Apps Script error: ${json.error||JSON.stringify(json)} — check Spreadsheet ID in the .gs code`,'tw');
-      return;
+      if(json.ok===false){
+        const errMsg=`❌ Apps Script error:\n${json.error||JSON.stringify(json)}\n\nMost common cause: script was created from script.google.com instead of from WITHIN the spreadsheet (Extensions → Apps Script).`;
+        alert(errMsg);
+        toast('❌ Sheets error — see popup for details','tw');
+        return;
+      }
     }
     if(text&&(text.includes('<html')||text.includes('<!DOCTYPE'))){
-      toast('❌ Apps Script returned HTML — the URL may be wrong or the script is not deployed correctly','tw');
+      alert('❌ Got an HTML page instead of JSON.\n\nThis usually means:\n1. The URL is a SPREADSHEET link (docs.google.com) instead of an Apps Script URL (script.google.com/macros/s/...)\n2. OR the Apps Script was never deployed\n\nThe correct URL looks like:\nhttps://script.google.com/macros/s/AKfycb.../exec');
+      toast('❌ Wrong URL — see popup','tw');
       return;
     }
-    toast('⚠ Unexpected response from Apps Script — check deployment settings','tw');
+    toast('⚠ Unexpected response — check browser console','tw');
   }catch(e){
-    toast(`❌ Cannot reach Apps Script: ${e.message} — check the URL and try again`,'tw');
+    alert(`❌ Cannot reach Apps Script:\n${e.message}\n\nCheck that the URL is correct and you have internet access.`);
+    toast('❌ Connection failed — see popup','tw');
   }
 }
 
@@ -6386,419 +6393,250 @@ async function testSheetsConnection(urlOverride){
 function showAppsScriptCode(){
   if(!requireAdmin('AS Code'))return;
   const gs=`/**
- * Logistics Analytics Dashboard — Google Apps Script Backend v5.0
- * Spreadsheet ID: YOUR_SPREADSHEET_ID_HERE
+ * Logistics Analytics Dashboard — Google Apps Script Backend v6.0
  *
- * DEPLOYMENT STEPS:
- *  1. Go to https://script.google.com  → New project
- *  2. Delete ALL existing code, paste this ENTIRE file
- *  3. Replace YOUR_SPREADSHEET_ID_HERE on line 22 with your actual Sheet ID
- *  4. File → Save  (Ctrl + S)
- *  5. Deploy → New deployment
- *       Type        : Web app
- *       Execute as  : Me
- *       Who can access : Anyone
- *  6. Click Deploy → copy the Web App URL
- *  7. In the dashboard click "📊 Sheets" → paste the URL → Enter
+ * ════════════════════════════════════════════════════════════════
+ *  HOW TO DEPLOY — READ CAREFULLY
+ * ════════════════════════════════════════════════════════════════
  *
- * BUG FIXES IN v5.0:
- *  Fix 1 — MASTER SNAPSHOT: replaced single-cell JSON blob with row-per-record format.
- *           The old format silently failed when JSON exceeded Google Sheets' 50,000-char
- *           cell limit (common with >1,000 AWBs across many locations). Cell B2 appeared
- *           empty after every push, so fetchMasterFromSheets() always returned no data.
- *           New format: [Type, Date, Count, LocsJSON, BinsJSON, MsgsJSON, Timestamp].
- *           Each cell stays under ~5KB — no silent failures possible.
- *  Fix 2 — SECTION COUNTS: added deduplication by (syncDate + section).
- *           Old code appended on every sync without checking for existing rows,
- *           creating duplicate rows visible in the sheet.
- *  Fix 3 — Added section_counts payload handler (was completely missing — the payload
- *           was silently dropped or fell through to the wrong sheet handler).
+ *  STEP 1 → Open your FLOOR TRENDS DATA Google Spreadsheet
+ *  STEP 2 → Click:  Extensions  →  Apps Script
+ *           !! Do NOT go to script.google.com directly !!
+ *           !! That creates a STANDALONE script that can't find your sheet !!
+ *           Opening from Extensions creates a CONTAINER-BOUND script which
+ *           automatically links to your spreadsheet — no ID needed.
+ *  STEP 3 → Delete ALL existing code in the editor
+ *  STEP 4 → Paste this ENTIRE file
+ *  STEP 5 → File → Save  (Ctrl + S)
+ *  STEP 6 → Deploy → New deployment
+ *              Type           : Web app
+ *              Execute as     : Me
+ *              Who can access : Anyone
+ *  STEP 7 → Copy the Web App URL
+ *           (format: https://script.google.com/macros/s/AKfycb.../exec)
+ *  STEP 8 → In the dashboard: click "Sheets" → paste URL → Enter
+ *  STEP 9 → Click "Sheets" again → click "Test" to verify
+ *
+ * WHY THIS WORKS:
+ *  Old approach required replacing YOUR_SPREADSHEET_ID_HERE in the code.
+ *  If missed, every write silently failed with "Cannot find spreadsheet".
+ *  This version uses getActiveSpreadsheet() — no ID needed, always works.
  */
 
-const SPREADSHEET_ID = 'YOUR_SPREADSHEET_ID_HERE';
-
-/* ── CORS preflight — allows browsers to send CORS POST without blocking ── */
-function doOptions(e) {
-  return ContentService
-    .createTextOutput('')
-    .setMimeType(ContentService.MimeType.TEXT);
+/* ── Get the spreadsheet — no ID needed when script is container-bound ── */
+function getSS() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) throw new Error(
+    'No spreadsheet found. Open the script from within your spreadsheet: ' +
+    'Extensions → Apps Script. Do NOT use script.google.com directly.'
+  );
+  return ss;
 }
 
-/* ═══════════════════════════════════════════════════════════
-   GET ENDPOINT
-═══════════════════════════════════════════════════════════ */
+function doOptions(e) {
+  return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
+}
+
 function doGet(e) {
   var action = (e && e.parameter && e.parameter.action) || '';
 
-  if (action === 'getMaster') {
+  if (action === 'test' || action === 'ping') {
     try {
-      var ss   = SpreadsheetApp.openById(SPREADSHEET_ID);
-      var snap = ss.getSheetByName('MASTER SNAPSHOT');
-      if (!snap || snap.getLastRow() < 2) {
-        return buildResponse(JSON.stringify({ ok: false, reason: 'no_snapshot' }));
-      }
-      var numRows = snap.getLastRow() - 1;
-      var data    = snap.getRange(2, 1, numRows, 7).getValues();
-      var master  = {
-        forward: [], reverse: [], lmodc: [], forwardShort: [],
-        hov: [], hovPV: [], hovAllRaw: [], hovFwdRaw: [], hovRevRaw: []
-      };
-      var validRows = 0;
-      data.forEach(function(r) {
-        var type  = String(r[0] || '').trim();
-        var date  = normDate(r[1]);
-        var count = Number(r[2]) || 0;
-        if (!type || !date || !master.hasOwnProperty(type)) return;
-        var locs = safeParseJSON(r[3]);
-        var bins = safeParseJSON(r[4]);
-        var msgs = safeParseJSON(r[5]);
-        var existing = master[type].filter(function(x) { return x.date === date; })[0];
-        if (existing) {
-          if (count > (existing.count || 0)) {
-            existing.count = count;
-            existing.locs  = locs;
-            existing.bins  = bins;
-            existing.msgs  = msgs;
-          }
-        } else {
-          master[type].push({ date: date, count: count, locs: locs, bins: bins, msgs: msgs });
-        }
-        validRows++;
-      });
-      if (validRows === 0) {
-        return buildResponse(JSON.stringify({ ok: false, reason: 'empty_snapshot' }));
-      }
-      Logger.log('getMaster: returning ' + validRows + ' type-date records');
-      return buildResponse(JSON.stringify({ ok: true, master: JSON.stringify(master) }));
+      var ss   = getSS();
+      var name = ss.getName();
+      var id   = ss.getId();
+      var tabs = ss.getSheets().map(function(s){ return s.getName(); }).join(', ');
+      Logger.log('TEST OK: ' + name + ' [' + id + ']');
+      return buildResponse(JSON.stringify({
+        ok: true, spreadsheetName: name, spreadsheetId: id,
+        existingTabs: tabs,
+        message: 'Connection verified — spreadsheet is accessible'
+      }));
     } catch (err) {
-      Logger.log('getMaster error: ' + err.message);
+      Logger.log('TEST FAILED: ' + err.message);
       return buildResponse(JSON.stringify({ ok: false, error: err.message }));
     }
   }
 
-  if (action === 'getFileLog') {
+  if (action === 'getMaster') {
     try {
-      var ss2 = SpreadsheetApp.openById(SPREADSHEET_ID);
-      var sh  = ss2.getSheetByName('FILE LOG');
-      if (!sh || sh.getLastRow() < 2) {
-        return buildResponse(JSON.stringify({ ok: true, files: [] }));
-      }
-      var data2 = sh.getRange(2, 1, sh.getLastRow() - 1, 6).getValues();
-      var files = data2
-        .filter(function(r) { return r[0]; })
-        .map(function(r) {
-          return {
-            id        : String(r[0]),
-            name      : String(r[1]),
-            type      : String(r[2]),
-            date      : String(r[3]),
-            uploadedAt: String(r[4]),
-            awbs      : Number(r[5]) || 0
-          };
-        });
-      return buildResponse(JSON.stringify({ ok: true, files: files }));
-    } catch (err) {
-      Logger.log('getFileLog error: ' + err.message);
-      return buildResponse(JSON.stringify({ ok: false, files: [], error: err.message }));
-    }
+      var ss   = getSS();
+      var snap = ss.getSheetByName('MASTER SNAPSHOT');
+      if (!snap || snap.getLastRow() < 2)
+        return buildResponse(JSON.stringify({ ok: false, reason: 'no_snapshot' }));
+      var numRows = snap.getLastRow() - 1;
+      var data    = snap.getRange(2, 1, numRows, 7).getValues();
+      var master  = { forward:[], reverse:[], lmodc:[], forwardShort:[],
+                      hov:[], hovPV:[], hovAllRaw:[], hovFwdRaw:[], hovRevRaw:[] };
+      var validRows = 0;
+      data.forEach(function(r) {
+        var type=String(r[0]||'').trim(), date=normDate(r[1]), count=Number(r[2])||0;
+        if (!type||!date||!master.hasOwnProperty(type)) return;
+        var existing=master[type].filter(function(x){return x.date===date;})[0];
+        if (existing) { if(count>(existing.count||0)){existing.count=count;existing.locs=safeParseJSON(r[3]);existing.bins=safeParseJSON(r[4]);existing.msgs=safeParseJSON(r[5]);} }
+        else { master[type].push({date:date,count:count,locs:safeParseJSON(r[3]),bins:safeParseJSON(r[4]),msgs:safeParseJSON(r[5])}); }
+        validRows++;
+      });
+      if (validRows===0) return buildResponse(JSON.stringify({ok:false,reason:'empty_snapshot'}));
+      return buildResponse(JSON.stringify({ok:true,master:JSON.stringify(master)}));
+    } catch(err){ return buildResponse(JSON.stringify({ok:false,error:err.message})); }
   }
 
-  return buildResponse(
-    JSON.stringify({ ok: true, service: 'Logistics Dashboard Sheets API', version: '5.1',
-      spreadsheetId: SPREADSHEET_ID })
-  );
+  if (action === 'getFileLog') {
+    try {
+      var ss=getSS(), sh=ss.getSheetByName('FILE LOG');
+      if(!sh||sh.getLastRow()<2) return buildResponse(JSON.stringify({ok:true,files:[]}));
+      var files=sh.getRange(2,1,sh.getLastRow()-1,6).getValues()
+        .filter(function(r){return r[0];})
+        .map(function(r){return{id:String(r[0]),name:String(r[1]),type:String(r[2]),
+          date:String(r[3]),uploadedAt:String(r[4]),awbs:Number(r[5])||0};});
+      return buildResponse(JSON.stringify({ok:true,files:files}));
+    } catch(err){ return buildResponse(JSON.stringify({ok:false,files:[],error:err.message})); }
+  }
+
+  return buildResponse(JSON.stringify({
+    ok:true, service:'Logistics Dashboard v6.0',
+    hint:'Use ?action=test to verify spreadsheet access'
+  }));
 }
 
-/* ═══════════════════════════════════════════════════════════
-   POST ENDPOINT
-   Handles all Content-Type formats from the dashboard:
-   PRIMARY  : text/plain body → e.postData.contents (JSON string)
-   SECONDARY: form-urlencoded → e.parameter.payload (JSON string)
-   FALLBACK : any other postData.contents
-═══════════════════════════════════════════════════════════ */
 function doPost(e) {
   var raw = '';
   try {
-    // Primary: text/plain or application/json body — most common, most reliable
-    if (e && e.postData && e.postData.contents && e.postData.contents.trim().startsWith('{')) {
+    if (e && e.postData && e.postData.contents && e.postData.contents.trim().length > 0) {
       raw = e.postData.contents;
-      Logger.log('doPost: text/plain body, length=' + raw.length);
-    }
-    // Secondary: form-urlencoded with payload= field
-    else if (e && e.parameter && e.parameter.payload) {
+      Logger.log('doPost: body len=' + raw.length + ' ct=' + (e.postData.type||'?'));
+    } else if (e && e.parameter && e.parameter.payload) {
       raw = e.parameter.payload;
-      Logger.log('doPost: form-urlencoded payload, length=' + raw.length);
+      Logger.log('doPost: form-payload len=' + raw.length);
+    } else {
+      Logger.log('doPost: NO PAYLOAD — params=' + JSON.stringify(Object.keys((e&&e.parameter)||{})));
+      return buildResponse(JSON.stringify({ok:false,error:'no_payload'}));
     }
-    // Fallback: raw postData regardless of Content-Type
-    else if (e && e.postData && e.postData.contents) {
-      raw = e.postData.contents;
-      Logger.log('doPost: raw postData fallback, length=' + raw.length);
-    }
-    else {
-      Logger.log('doPost WARNING: no payload found — e.parameter keys: ' +
-        JSON.stringify(Object.keys((e&&e.parameter)||{})));
-      return buildResponse(JSON.stringify({ ok: false, error: 'no_payload' }));
-    }
-
     var payload = JSON.parse(raw);
-    Logger.log('doPost: type=' + (payload.type || payload.sheet || 'section_data') +
-      ' rows=' + ((payload.rows && payload.rows.length) || 0));
     var result  = processPayload(payload);
-    Logger.log('doPost: OK result=' + JSON.stringify(result).slice(0, 150));
+    Logger.log('doPost OK: type=' + (payload.type||payload.sheet) + ' result=' + JSON.stringify(result).slice(0,150));
     return buildResponse(JSON.stringify(result));
-
-  } catch (err) {
-    Logger.log('doPost ERROR: ' + err.message +
-      '\nRaw (first 200): ' + String(raw||'').slice(0, 200));
-    return buildResponse(JSON.stringify({ ok: false, error: err.message }));
+  } catch(err) {
+    Logger.log('doPost ERROR: ' + err.message + '\nRaw[0:300]=' + String(raw).slice(0,300));
+    return buildResponse(JSON.stringify({ok:false,error:err.message}));
   }
 }
 
-/* ═══════════════════════════════════════════════════════════
-   HELPERS
-═══════════════════════════════════════════════════════════ */
-
-function normDate(cellValue) {
-  if (!cellValue) return '';
-  if (cellValue instanceof Date) {
-    try {
-      return Utilities.formatDate(cellValue, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-    } catch (_) {
-      return cellValue.toISOString().slice(0, 10);
-    }
-  }
-  return String(cellValue).trim().slice(0, 10);
+function normDate(v) {
+  if (!v) return '';
+  if (v instanceof Date) { try{return Utilities.formatDate(v,Session.getScriptTimeZone(),'yyyy-MM-dd');}catch(_){return v.toISOString().slice(0,10);} }
+  return String(v).trim().slice(0,10);
 }
-
-function safeParseJSON(val) {
-  if (!val || val === '') return {};
-  try { return JSON.parse(String(val)); } catch (_) { return {}; }
-}
-
+function safeParseJSON(v) { try{return JSON.parse(String(v||'{}'));}catch(_){return {};} }
 function getOrCreateSheet(ss, name, headers) {
   var sh = ss.getSheetByName(name) || ss.insertSheet(name);
-  if (sh.getLastRow() === 0 && headers && headers.length) {
+  if (sh.getLastRow()===0 && headers&&headers.length) {
     sh.appendRow(headers);
-    sh.getRange(1, 1, 1, headers.length)
-      .setFontWeight('bold').setBackground('#0d1f3c').setFontColor('#dce6f5');
+    sh.getRange(1,1,1,headers.length).setFontWeight('bold').setBackground('#0d1f3c').setFontColor('#dce6f5');
     sh.setFrozenRows(1);
   }
   return sh;
 }
 
-/* ═══════════════════════════════════════════════════════════
-   PAYLOAD ROUTER
-═══════════════════════════════════════════════════════════ */
 function processPayload(payload) {
-  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  var ss = getSS();
 
-  /* ── FIX 1: MASTER SNAPSHOT — row-per-record, no cell-size limit ── */
   if (payload.type === 'master_snapshot') {
-    var snapSheet = getOrCreateSheet(ss, 'MASTER SNAPSHOT',
-      ['Type', 'Date', 'Count', 'Locations', 'Bins', 'Messages', 'LastUpdated']);
-
-    // Full replace: delete all old rows then write fresh
-    if (snapSheet.getLastRow() > 1) {
-      snapSheet.deleteRows(2, snapSheet.getLastRow() - 1);
-    }
-
-    var rows = payload.rows || [];
-    if (rows.length > 0) {
-      var numCols = rows[0].length || 7;
-      if (numCols > snapSheet.getMaxColumns()) {
-        snapSheet.insertColumnsAfter(snapSheet.getMaxColumns(), numCols - snapSheet.getMaxColumns());
-      }
-      // Stringify every value — prevents Sheets from mis-parsing JSON as date/number
-      var safeRows = rows.map(function(r) {
-        return r.map(function(v) { return (v == null) ? '' : String(v); });
-      });
-      snapSheet.getRange(2, 1, safeRows.length, numCols).setValues(safeRows);
+    var sh = getOrCreateSheet(ss,'MASTER SNAPSHOT',['Type','Date','Count','Locations','Bins','Messages','LastUpdated']);
+    if (sh.getLastRow()>1) sh.deleteRows(2, sh.getLastRow()-1);
+    var rows=payload.rows||[];
+    if (rows.length>0) {
+      var nc=rows[0].length||7;
+      if(nc>sh.getMaxColumns()) sh.insertColumnsAfter(sh.getMaxColumns(),nc-sh.getMaxColumns());
+      sh.getRange(2,1,rows.length,nc).setValues(rows.map(function(r){return r.map(function(v){return v==null?'':String(v);});}));
       SpreadsheetApp.flush();
-      Logger.log('MASTER SNAPSHOT: ' + safeRows.length + ' rows written (full replace)');
     }
-    return { ok: true, type: 'master_snapshot', rows: rows.length };
+    return {ok:true,type:'master_snapshot',rows:rows.length};
   }
 
-  /* ── FIX 2 & 3: SECTION COUNTS — new handler with dedup ── */
   if (payload.type === 'section_counts') {
-    var countsSheet = getOrCreateSheet(ss, 'SECTION COUNTS',
-      ['Sync Date', 'Section', 'Source', 'Age Filter', 'AWB Count', 'Record Count', 'File Dates']);
-
-    var syncDate     = String(payload.syncDate || new Date().toISOString().slice(0, 10)).slice(0, 10);
-    var counts       = payload.counts || [];
-    var secNames     = counts.map(function(c) { return String(c.section || ''); });
-
-    // Dedup: remove rows for same (syncDate + section) before appending
-    if (countsSheet.getLastRow() > 1) {
-      var existing = countsSheet.getRange(2, 1, countsSheet.getLastRow() - 1, 2).getValues();
-      var toDelete = [];
-      for (var i = existing.length - 1; i >= 0; i--) {
-        var rd = normDate(existing[i][0]);
-        var rs = String(existing[i][1] || '');
-        if (rd === syncDate && secNames.indexOf(rs) !== -1) toDelete.push(i + 2);
-      }
-      toDelete.sort(function(a, b) { return b - a; })
-              .forEach(function(r) { countsSheet.deleteRow(r); });
-      if (toDelete.length > 0) {
-        Logger.log('SECTION COUNTS: removed ' + toDelete.length + ' stale rows for ' + syncDate);
-      }
+    var sh=getOrCreateSheet(ss,'SECTION COUNTS',['Sync Date','Section','Source','Age Filter','AWB Count','Record Count','File Dates']);
+    var syncDate=String(payload.syncDate||new Date().toISOString().slice(0,10)).slice(0,10);
+    var counts=payload.counts||[];
+    var secNames=counts.map(function(c){return String(c.section||'');});
+    if(sh.getLastRow()>1){
+      var ex=sh.getRange(2,1,sh.getLastRow()-1,2).getValues(),td=[];
+      for(var i=ex.length-1;i>=0;i--){if(normDate(ex[i][0])===syncDate&&secNames.indexOf(String(ex[i][1]||''))!==-1)td.push(i+2);}
+      td.sort(function(a,b){return b-a;}).forEach(function(r){sh.deleteRow(r);});
     }
-
-    var countRows = counts.map(function(c) {
-      return [
-        syncDate,
-        String(c.section   || ''),
-        String(c.src       || ''),
-        String(c.ageFilter || ''),
-        Number(c.awbs      || 0),
-        Number(c.records   || 0),
-        String(c.fileDates || '')
-      ];
-    });
-    if (countRows.length > 0) {
-      var startRow = countsSheet.getLastRow() + 1;
-      countsSheet.getRange(startRow, 1, countRows.length, 7).setValues(countRows);
-      SpreadsheetApp.flush();
-      Logger.log('SECTION COUNTS: appended ' + countRows.length + ' rows for ' + syncDate);
-    }
-    return { ok: true, type: 'section_counts', appended: countRows.length };
+    var cr=counts.map(function(c){return[syncDate,String(c.section||''),String(c.src||''),String(c.ageFilter||''),Number(c.awbs||0),Number(c.records||0),String(c.fileDates||'')];});
+    if(cr.length>0){sh.getRange(sh.getLastRow()+1,1,cr.length,7).setValues(cr);SpreadsheetApp.flush();}
+    return {ok:true,type:'section_counts',appended:cr.length};
   }
 
-  /* ── FILE LOG — record uploaded file with dedup by ID ── */
   if (payload.type === 'file_log') {
-    var logSheet = getOrCreateSheet(ss, 'FILE LOG',
-      ['ID', 'File Name', 'File Type', 'Data Date', 'Uploaded At', 'AWBs']);
-    var entry = payload.entry || {};
-    if (logSheet.getLastRow() > 1) {
-      var ids = logSheet.getRange(2, 1, logSheet.getLastRow() - 1, 1)
-                        .getValues().map(function(r) { return String(r[0]); });
-      if (ids.indexOf(String(entry.id || '')) !== -1) {
-        return { ok: true, type: 'file_log', action: 'duplicate_skipped' };
-      }
+    var sh=getOrCreateSheet(ss,'FILE LOG',['ID','File Name','File Type','Data Date','Uploaded At','AWBs']);
+    var entry=payload.entry||{};
+    if(sh.getLastRow()>1){
+      var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues().map(function(r){return String(r[0]);});
+      if(ids.indexOf(String(entry.id||''))!==-1) return {ok:true,type:'file_log',action:'duplicate_skipped'};
     }
-    logSheet.appendRow([
-      entry.id         || '',
-      entry.name       || '',
-      entry.fileType   || entry.type || '',
-      entry.date       || '',
-      entry.uploadedAt || new Date().toISOString(),
-      Number(entry.awbs) || 0
-    ]);
+    sh.appendRow([entry.id||'',entry.name||'',entry.fileType||entry.type||'',entry.date||'',entry.uploadedAt||new Date().toISOString(),Number(entry.awbs)||0]);
     SpreadsheetApp.flush();
-    Logger.log('FILE LOG: added ' + (entry.name || ''));
-    return { ok: true, type: 'file_log' };
+    return {ok:true,type:'file_log'};
   }
 
-  /* ── DELETE FILE ── */
   if (payload.type === 'delete_file') {
-    var delEntry   = payload.entry || {};
-    var delDate    = normDate(delEntry.date || '');
-    var delSection = (delEntry.section || '').toString()
-      .replace(/[\\/:*?\[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 31);
-    var deletedRows = 0;
-
-    if (delSection && delDate) {
-      var dataSheet = ss.getSheetByName(delSection);
-      if (dataSheet && dataSheet.getLastRow() > 1) {
-        var dv = dataSheet.getRange(2, 1, dataSheet.getLastRow() - 1, 1).getValues();
-        var td = [];
-        for (var i = dv.length - 1; i >= 0; i--) {
-          if (normDate(dv[i][0]) === delDate) td.push(i + 2);
-        }
-        td.sort(function(a, b) { return b - a; })
-          .forEach(function(r) { dataSheet.deleteRow(r); deletedRows++; });
-      }
-    }
-
-    var delLog = ss.getSheetByName('FILE LOG');
-    if (delLog && delLog.getLastRow() > 1 && delEntry.id) {
-      var logIds = delLog.getRange(2, 1, delLog.getLastRow() - 1, 1).getValues();
-      for (var j = logIds.length - 1; j >= 0; j--) {
-        if (String(logIds[j][0]) === String(delEntry.id)) { delLog.deleteRow(j + 2); break; }
-      }
-    }
-
+    var delEntry=payload.entry||{},delDate=normDate(delEntry.date||'');
+    var delSection=(delEntry.section||'').toString().replace(/[\\/:*?\[\]]/g,' ').replace(/\s+/g,' ').trim().slice(0,31);
+    var deletedRows=0;
+    if(delSection&&delDate){var ds=ss.getSheetByName(delSection);if(ds&&ds.getLastRow()>1){var dv=ds.getRange(2,1,ds.getLastRow()-1,1).getValues(),td=[];for(var i=dv.length-1;i>=0;i--){if(normDate(dv[i][0])===delDate)td.push(i+2);}td.sort(function(a,b){return b-a;}).forEach(function(r){ds.deleteRow(r);deletedRows++;});}}
+    var dl=ss.getSheetByName('FILE LOG');if(dl&&dl.getLastRow()>1&&delEntry.id){var li=dl.getRange(2,1,dl.getLastRow()-1,1).getValues();for(var j=li.length-1;j>=0;j--){if(String(li[j][0])===String(delEntry.id)){dl.deleteRow(j+2);break;}}}
     SpreadsheetApp.flush();
-    Logger.log('DELETE FILE: ' + (delEntry.name || '?') + ' — ' + deletedRows + ' rows removed');
-    return { ok: true, type: 'delete_file', deletedRows: deletedRows };
+    return {ok:true,type:'delete_file',deletedRows:deletedRows};
   }
 
-  /* ── SECTION DATA — raw floor-trends row push with date-level dedup ── */
-  var rawName   = (payload.sheet || 'Floor Trends').toString()
-    .replace(/[\\/:*?\[\]]/g, ' ').replace(/\s+/g, ' ').trim();
-  var sheetName = rawName.substring(0, 31) || 'Data';
+  /* ── SECTION DATA (Forward R@DC / Reverse R@DC / LMODC / DCH) ── */
+  var rawName=(payload.sheet||'Floor Trends').toString().replace(/[\\/:*?\[\]]/g,' ').replace(/\s+/g,' ').trim();
+  var sheetName=rawName.substring(0,31)||'Data';
+  Logger.log('Section: sheet="'+sheetName+'" date='+(payload.date||'?')+' rows='+((payload.rows&&payload.rows.length)||0));
 
-  var sheet = ss.getSheetByName(sheetName) || ss.insertSheet(sheetName);
-  var headers  = payload.headers || ['Date', 'Location', 'Count'];
-  var newRows  = payload.rows    || [];
-  var dateKey  = normDate(payload.date || '');
+  var sheet=ss.getSheetByName(sheetName)||ss.insertSheet(sheetName);
+  var headers=payload.headers||['Date','Location','Count'];
+  var newRows=payload.rows||[];
+  var dateKey=normDate(payload.date||'');
 
-  // Write / refresh header row
-  if (sheet.getLastRow() === 0) {
+  if(sheet.getLastRow()===0){
     sheet.appendRow(headers);
-    sheet.getRange(1, 1, 1, headers.length)
-      .setFontWeight('bold').setBackground('#0d1f3c').setFontColor('#dce6f5');
-    sheet.setFrozenRows(1);
-    sheet.setFrozenColumns(1);
-  } else if (headers.length > sheet.getLastColumn()) {
-    if (headers.length > sheet.getMaxColumns()) {
-      sheet.insertColumnsAfter(sheet.getMaxColumns(), headers.length - sheet.getMaxColumns());
-    }
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    sheet.getRange(1, 1, 1, headers.length)
-      .setFontWeight('bold').setBackground('#0d1f3c').setFontColor('#dce6f5');
-    sheet.setFrozenRows(1);
-    sheet.setFrozenColumns(1);
+    sheet.getRange(1,1,1,headers.length).setFontWeight('bold').setBackground('#0d1f3c').setFontColor('#dce6f5');
+    sheet.setFrozenRows(1);sheet.setFrozenColumns(1);
+    Logger.log('Created sheet "'+sheetName+'" with '+headers.length+' columns');
+  } else if(headers.length>sheet.getLastColumn()){
+    if(headers.length>sheet.getMaxColumns()) sheet.insertColumnsAfter(sheet.getMaxColumns(),headers.length-sheet.getMaxColumns());
+    sheet.getRange(1,1,1,headers.length).setValues([headers]).setFontWeight('bold').setBackground('#0d1f3c').setFontColor('#dce6f5');
   }
 
-  // Dedup by date
-  var deletedCount = 0;
-  if (dateKey && sheet.getLastRow() > 1) {
-    var lrow     = sheet.getLastRow();
-    var dateVals = sheet.getRange(2, 1, lrow - 1, 1).getValues();
-    var toDel    = [];
-    for (var d = dateVals.length - 1; d >= 0; d--) {
-      if (normDate(dateVals[d][0]) === dateKey) toDel.push(d + 2);
-    }
-    toDel.sort(function(a, b) { return b - a; })
-         .forEach(function(r) { sheet.deleteRow(r); deletedCount++; });
-    if (deletedCount > 0) Logger.log('Dedup: removed ' + deletedCount + ' rows for ' + dateKey + ' on ' + sheetName);
+  var deletedCount=0;
+  if(dateKey&&sheet.getLastRow()>1){
+    var lrow=sheet.getLastRow(),dv=sheet.getRange(2,1,lrow-1,1).getValues(),td=[];
+    for(var d=dv.length-1;d>=0;d--){if(normDate(dv[d][0])===dateKey)td.push(d+2);}
+    td.sort(function(a,b){return b-a;}).forEach(function(r){sheet.deleteRow(r);deletedCount++;});
+    if(deletedCount>0) Logger.log('Dedup: removed '+deletedCount+' rows for '+dateKey+' in '+sheetName);
   }
 
-  // Append rows
-  var appendedCount = 0;
-  if (newRows.length > 0) {
-    var startRow = sheet.getLastRow() + 1;
-    var numCols  = Math.max(headers.length, newRows[0] ? newRows[0].length : 0);
-    if (numCols > sheet.getMaxColumns()) {
-      sheet.insertColumnsAfter(sheet.getMaxColumns(), numCols - sheet.getMaxColumns());
-    }
-    var paddedRows = newRows.map(function(r) {
-      var row = r.slice();
-      while (row.length < numCols) row.push('');
-      return row;
-    });
-    sheet.getRange(startRow, 1, paddedRows.length, numCols).setValues(paddedRows);
-    appendedCount = paddedRows.length;
-    Logger.log('Appended ' + appendedCount + ' rows to ' + sheetName + ' for ' + dateKey);
+  var appendedCount=0;
+  if(newRows.length>0){
+    var startRow=sheet.getLastRow()+1;
+    var numCols=Math.max(headers.length,newRows[0]?newRows[0].length:0);
+    if(numCols>sheet.getMaxColumns()) sheet.insertColumnsAfter(sheet.getMaxColumns(),numCols-sheet.getMaxColumns());
+    var paddedRows=newRows.map(function(r){var row=r.slice();while(row.length<numCols)row.push('');return row;});
+    sheet.getRange(startRow,1,paddedRows.length,numCols).setValues(paddedRows);
+    appendedCount=paddedRows.length;
+    Logger.log('Appended '+appendedCount+' rows to "'+sheetName+'" for '+dateKey);
   }
 
   SpreadsheetApp.flush();
-  return {
-    ok       : true,
-    sheet    : sheetName,
-    date     : dateKey,
-    deleted  : deletedCount,
-    appended : appendedCount,
-    totalRows: sheet.getLastRow() - 1
-  };
+  return {ok:true,sheet:sheetName,date:dateKey,deleted:deletedCount,appended:appendedCount,totalRows:sheet.getLastRow()-1};
 }
 
-/* ── Build JSON response ── */
 function buildResponse(body) {
-  return ContentService
-    .createTextOutput(body)
-    .setMimeType(ContentService.MimeType.JSON);
+  return ContentService.createTextOutput(body).setMimeType(ContentService.MimeType.JSON);
 }
 `;
 
