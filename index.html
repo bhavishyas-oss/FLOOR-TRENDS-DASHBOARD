@@ -2293,36 +2293,44 @@ async function runFiles(files){
         _sheetsFetch(getGsUrl(),{type:'file_log',entry:regEntry}).catch(()=>{});
       }
 
-      // 2. Build the Sheets payload NOW while rawData is guaranteed to be populated.
-      //    ROOT CAUSE FIX: the previous "fire-and-forget + 4s purge delay" meant:
-      //      • pushOneFileToSheets() started at t=200ms
-      //      • rawData purge fired at t=4000ms
-      //      • For 8550 rows ÷ 300/chunk = 29 chunks × 1-3s each = 29-87s total push time
-      //      • rawData was deleted at t=4s while push was still on chunk 3
-      //      • filterRawForSection returned [] for all remaining chunks → no data in Sheet
-      //    Fix: snapshot ALL rows into a plain JS array RIGHT NOW (before any async),
-      //    then pass that snapshot to the background push. Purge rawData immediately after
-      //    snapshot — memory is freed, push uses its own copy, no race condition possible.
-      const sheetsPayloadsBySec=[]; // array of {sheetName, headers, rowArrs, date}
+      // 2. Snapshot ALL raw rows for this type+date directly from rawData.
+      //    ROOT CAUSE FIX (Issue 1 & 2):
+      //    The previous code called filterRawForSection(sec, si) which filters by
+      //    SEC_FILTERS[si].age — the CURRENTLY SELECTED age in the UI dropdown.
+      //    Example: UI shows Age=3, file has age=3,6,10 rows → only age=3 rows
+      //    went to Sheets. Age=6 and Age=10 rows were silently dropped.
+      //    For LMODC (ageOpts=[3,6,10]) this meant 2/3 of data was never recorded.
+      //    For DCH (ageOpts=[3,6,10]) same issue. For Reverse (ageOpts=[3,10]) same.
+      //
+      //    Fix: snapshot rawData[type][date] DIRECTLY — all ages, all rows.
+      //    The AppScript deduplicates by date, so no double-writes.
+      //    One unified payload per section (not one per age) → simpler + complete.
+      const sheetsPayloadsBySec=[];
       if(getGsUrl()){
-        for(let si=0;si<SECS.length;si++){
-          const sec=SECS[si];
-          if(sec.src!==r.type)continue;
-          const sheetName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().slice(0,31);
-          const allRaw=filterRawForSection(sec,si); // reads rawData NOW while it's populated
-          const thisDate=allRaw.filter(row=>row._date===r.date);
-          if(!thisDate.length)continue;
-          const colSet=new Set();
-          thisDate.forEach(row=>Object.keys(row).forEach(k=>{if(k!=='_date')colSet.add(k);}));
-          const allCols=['Date',...colSet];
-          const rowArrs=thisDate
-            .map(row=>allCols.map(c=>{
-              if(c==='Date')return row._date;
-              const v=row[c];
-              return(v!==undefined&&v!==null&&v!=='')?String(v):'';
-            }))
-            .filter(arr=>arr.slice(1).some(v=>v!==''));
-          if(rowArrs.length)sheetsPayloadsBySec.push({sheetName,headers:allCols,rowArrs,date:r.date});
+        const rawDateRows=(rawData[r.type]&&rawData[r.type][r.date])||[];
+        if(rawDateRows.length>0){
+          // Find all SECS that match this file type
+          for(let si=0;si<SECS.length;si++){
+            const sec=SECS[si];
+            if(sec.src!==r.type)continue;
+            const sheetName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().slice(0,31);
+            // Build column list from the actual rows (all fields present)
+            const colSet=new Set(['Date']);
+            rawDateRows.forEach(row=>Object.keys(row).forEach(k=>{colSet.add(k);}));
+            const allCols=[...colSet];
+            // Build row arrays — Date first, then all other fields
+            const rowArrs=rawDateRows
+              .map(row=>allCols.map(c=>{
+                if(c==='Date')return r.date;
+                const v=row[c];
+                return(v!==undefined&&v!==null&&v!=='')?String(v):'';
+              }))
+              .filter(arr=>arr.slice(1).some(v=>v!==''));
+            if(rowArrs.length){
+              sheetsPayloadsBySec.push({sheetName,headers:allCols,rowArrs,date:r.date});
+              break; // One payload per file — section title just names the sheet tab
+            }
+          }
         }
       }
 
@@ -6503,39 +6511,45 @@ function doGet(e) {
 
 /* ═══════════════════════════════════════════════════════════
    POST ENDPOINT
-   Handles two formats:
-   1. application/x-www-form-urlencoded with 'payload' field (PREFERRED — avoids CORS redirect)
-   2. application/json or text/plain with raw JSON body (legacy fallback)
-   3. e.postData.contents for any content-type
+   Handles all Content-Type formats from the dashboard:
+   PRIMARY  : text/plain body → e.postData.contents (JSON string)
+   SECONDARY: form-urlencoded → e.parameter.payload (JSON string)
+   FALLBACK : any other postData.contents
 ═══════════════════════════════════════════════════════════ */
 function doPost(e) {
+  var raw = '';
   try {
-    var raw = '';
-
-    // Format 1: form-urlencoded — dashboard sends payload= field (most reliable for CORS)
-    if (e && e.parameter && e.parameter.payload) {
-      raw = e.parameter.payload;
-      Logger.log('doPost: received form-urlencoded payload, length=' + raw.length);
+    // Primary: text/plain or application/json body — most common, most reliable
+    if (e && e.postData && e.postData.contents && e.postData.contents.trim().startsWith('{')) {
+      raw = e.postData.contents;
+      Logger.log('doPost: text/plain body, length=' + raw.length);
     }
-    // Format 2: raw body (JSON/text/plain)
+    // Secondary: form-urlencoded with payload= field
+    else if (e && e.parameter && e.parameter.payload) {
+      raw = e.parameter.payload;
+      Logger.log('doPost: form-urlencoded payload, length=' + raw.length);
+    }
+    // Fallback: raw postData regardless of Content-Type
     else if (e && e.postData && e.postData.contents) {
       raw = e.postData.contents;
-      Logger.log('doPost: received raw body, contentType=' + (e.postData.type||'unknown') + ', length=' + raw.length);
+      Logger.log('doPost: raw postData fallback, length=' + raw.length);
     }
     else {
-      Logger.log('doPost: WARNING — no payload found in request');
+      Logger.log('doPost WARNING: no payload found — e.parameter keys: ' +
+        JSON.stringify(Object.keys((e&&e.parameter)||{})));
       return buildResponse(JSON.stringify({ ok: false, error: 'no_payload' }));
     }
 
     var payload = JSON.parse(raw);
-    Logger.log('doPost: type=' + (payload.type || payload.sheet || 'section_data'));
+    Logger.log('doPost: type=' + (payload.type || payload.sheet || 'section_data') +
+      ' rows=' + ((payload.rows && payload.rows.length) || 0));
     var result  = processPayload(payload);
-    Logger.log('doPost: result=' + JSON.stringify(result).slice(0, 200));
+    Logger.log('doPost: OK result=' + JSON.stringify(result).slice(0, 150));
     return buildResponse(JSON.stringify(result));
 
   } catch (err) {
-    Logger.log('doPost ERROR: ' + err.message + '\nStack: ' + (err.stack||'') +
-      '\nRaw (200): ' + String(raw||'').slice(0, 200));
+    Logger.log('doPost ERROR: ' + err.message +
+      '\nRaw (first 200): ' + String(raw||'').slice(0, 200));
     return buildResponse(JSON.stringify({ ok: false, error: err.message }));
   }
 }
@@ -6825,67 +6839,71 @@ function _enqueueSyncItem(payload){
 }
 _loadSyncQueue();
 
-/* ── Sheets fetch — form-encoded POST (most reliable for Apps Script) ────────
-   Google Apps Script Web Apps have a quirk: CORS POST requests are redirected
-   (302) to a different URL, which browsers refuse to follow in CORS mode.
-   This causes every CORS POST to fail with TypeError, silently falling back to
-   no-cors (opaque response — can't detect server errors).
+/* ── Sheets fetch — dual-strategy POST ────────────────────────────────────────
+   STRATEGY A (Primary): CORS POST with Content-Type: text/plain
+     • text/plain IS a "simple" header — no CORS preflight needed
+     • Apps Script receives body as e.postData.contents (JSON string)
+     • Response is readable → server errors surface
+     • If Apps Script returns a 302 redirect, browser follows it in CORS mode
+       only if the redirect is same-origin (usually not) → falls to Strategy B
 
-   Fix: use application/x-www-form-urlencoded with the data in a 'payload' field.
-   This IS a "simple" content type that avoids CORS preflight. Apps Script receives
-   it via e.parameter.payload. We read the response to detect actual failures.
-
-   The Apps Script doPost MUST handle e.parameter.payload (added in AppScript fix).
-   Fallback: if form-encoded fails, try no-cors as last resort.               */
+   STRATEGY B (Fallback): no-cors POST with Content-Type: text/plain
+     • text/plain is a simple header → browser ALLOWS it in no-cors mode
+       (unlike application/json which is dropped, or application/x-www-form-urlencoded
+       which bloats payload 3× via encodeURIComponent)
+     • Apps Script receives body as e.postData.contents (JSON string)
+     • Response is opaque (ok=null) but data reliably reaches server
+     • This is the most compatible path for all Apps Script deployments  */
 async function _sheetsFetch(url, payloadObj, timeoutMs=20000){
-  const bodyStr = JSON.stringify(payloadObj);
+  const body = JSON.stringify(payloadObj);
 
-  // Strategy A: form-urlencoded — simple content-type, no preflight, response readable
+  // Strategy A: CORS text/plain — readable response, catches server errors
   try{
     const ctrl  = new AbortController();
     const timer = setTimeout(()=>ctrl.abort(), timeoutMs);
     const resp  = await fetch(url, {
-      method:'POST',
+      method: 'POST',
       signal: ctrl.signal,
-      headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      body: 'payload=' + encodeURIComponent(bodyStr)
+      headers: {'Content-Type': 'text/plain;charset=utf-8'},
+      body
     });
     clearTimeout(timer);
-    // Apps Script returns 200 even for errors — check the JSON body
     try{
       const text = await resp.text();
-      // Apps Script success: response contains JSON
-      if(text && text.trim().startsWith('{')){
+      if(text&&text.trim().startsWith('{')){
         const json = JSON.parse(text);
-        if(json.ok === false){
-          console.warn(`Sheets error for ${payloadObj.type||payloadObj.sheet}:`, json.error||'unknown');
+        if(json.ok===false){
+          console.warn(`Sheets A: server error for ${payloadObj.type||payloadObj.sheet}:`, json.error);
           return {ok:false, status:resp.status, body:json};
         }
         return {ok:true, status:resp.status, body:json};
       }
-      // If Apps Script returned HTML (error page), it's a config problem
-      if(text && (text.includes('<html') || text.includes('<!DOCTYPE'))){
-        console.warn('Sheets: Apps Script returned HTML — check deployment URL and Spreadsheet ID');
-        return {ok:false, status:resp.status, body:{error:'html_response'}};
+      // HTML response = wrong URL or undeployed script
+      if(text&&(text.includes('<html')||text.includes('<!DOCTYPE'))){
+        console.warn('Sheets A: got HTML response — URL may be wrong or script not deployed');
+        // Fall through to no-cors which may still work
+      }else{
+        return {ok:true, status:resp.status, body:{}};
       }
-      return {ok:true, status:resp.status, body:{}};
-    }catch{
-      return {ok:true, status:resp.status, body:{}};
-    }
+    }catch{return {ok:true, status:resp.status, body:{}};}
   }catch(errA){
-    console.warn('Sheets form-POST failed:', errA.message, '— trying no-cors fallback');
+    // CORS blocked (redirect to different origin) — expected for most Apps Script deployments
+    if(!errA.message.includes('abort')) console.log('Sheets A (CORS) blocked, using no-cors:', errA.message);
   }
 
-  // Strategy B: no-cors — opaque, can't verify, but data may still reach server
+  // Strategy B: no-cors text/plain — opaque response, body reliably delivered
+  // text/plain is a "simple" Content-Type: browser allows it in no-cors mode
+  // Apps Script receives: e.postData.contents = the JSON body string
   try{
     await fetch(url, {
-      method:'POST',
-      mode:'no-cors',
-      body: 'payload=' + encodeURIComponent(bodyStr)
+      method: 'POST',
+      mode:   'no-cors',
+      headers: {'Content-Type': 'text/plain;charset=utf-8'},
+      body
     });
     return {ok:null, status:0, body:{}};
   }catch(errB){
-    console.error('All Sheets fetch strategies failed:', errB.message);
+    console.error('Sheets B (no-cors) also failed:', errB.message);
     return {ok:false, status:-1, body:{}};
   }
 }
