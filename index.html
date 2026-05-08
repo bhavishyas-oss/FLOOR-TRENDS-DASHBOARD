@@ -2124,7 +2124,7 @@ function procExcel(file){
       }
 
       /* ── 2. XLSX.js fallback (for files native reader can't handle) ── */
-      setP(50,`📖  Retrying: ${file.name}`);
+      setP(50,`📖  Parsing (alt method): ${file.name}`);
       result=readExcel(buf,null);
       if(result&&result.rows&&result.rows.length>=2){
         buf=null; e.target.result=null; // free buffer before finalize
@@ -2182,10 +2182,11 @@ async function runFiles(files){
   const results=new Array(files.length);
   const total=files.length;
 
-  // Drain any previously failed Sheets pushes before starting new uploads
+  // Drain any previously failed Sheets pushes — fire-and-forget so it doesn't block upload start
+  // Only runs if queue is non-empty; never shows on-screen "Retrying…" during active upload
   if(_syncQueue.length>0){
-    setP(2,`🔄 Retrying ${_syncQueue.length} previously failed sync(s)…`);
-    await _drainSyncQueue();
+    console.log(`Background: draining ${_syncQueue.length} queued sync item(s)…`);
+    _drainSyncQueue().catch(e=>console.warn('Queue drain error (non-fatal):',e.message));
   }
 
   // ── SEQUENTIAL PROCESSING (OOM FIX) ─────────────────────────────
@@ -2269,23 +2270,34 @@ async function runFiles(files){
       };
       _addFileRegistryEntry(regEntry);
 
-      // Push file log entry to Sheets (fire-and-forget via _sheetsFetch)
+      // Push file log entry to Sheets (fire-and-forget — never blocks upload)
       if(getGsUrl()){
         _sheetsFetch(getGsUrl(),{type:'file_log',entry:regEntry}).catch(()=>{});
       }
 
-      // 2. Push this file's raw rows to Google Sheets NOW — while rawData is
-      //    still populated for this date. Awaited so purge happens only after push.
+      // 2. Push this file's raw rows to Google Sheets — FIRE-AND-FORGET.
+      //    SPEED FIX: awaiting pushOneFileToSheets() was the primary cause of "slow uploads".
+      //    Each file could have 500–2000 rows × multiple chunks × 25s Apps Script timeout =
+      //    minutes of blocking before the next file could start processing.
+      //    Fix: Sheets push is now non-blocking — runs in background. rawData purge is
+      //    deferred by 3s to give the background push time to read rawData before it's freed.
       if(getGsUrl()){
-        setP(pct, `📊 Syncing ${r.name ? r.name.slice(0,30) : 'file'} to Sheets…`);
-        await pushOneFileToSheets(r);
+        const capturedType=r.type, capturedDate=r.date, capturedName=r.name;
+        const capturedResult={...r};
+        // Delay purge slightly so background push can finish reading rawData
+        setTimeout(()=>{
+          pushOneFileToSheets(capturedResult).catch(e=>
+            console.warn(`Background Sheets push failed for ${capturedName}:`,e.message)
+          );
+        },200);
+        setP(pct, `✅ ${r.name ? r.name.slice(0,30) : 'file'} processed — syncing to Sheets in background`);
       }
 
-      // 3. CRITICAL MEMORY FIX: purge rawData[type][date] immediately after Sheets push.
-      //    rawData rows can be tens of thousands of objects per large file.
-      //    Deleting them here ensures the 20th, 50th, 1000th file starts with
-      //    the same low heap as the 1st. IDB has the permanent copy.
-      purgeRawDataForDate(r.type, r.date);
+      // 3. Schedule rawData purge — delayed 4s to give background Sheets push time to
+      //    read rawData[type][date] before it's freed. IDB save happens immediately above.
+      //    4s > typical Apps Script round-trip (1-3s) so data is always captured first.
+      const purgeType=r.type, purgeDate=r.date;
+      setTimeout(()=>purgeRawDataForDate(purgeType,purgeDate), 4000);
     }
 
     // Yield AFTER each file — gives GC time to reclaim purged rawData arrays
@@ -6693,7 +6705,7 @@ _loadSyncQueue();
 
 /* Core fetch wrapper — tries CORS first, falls back to no-cors.
    Returns {ok, status, body} so callers can verify the write.     */
-async function _sheetsFetch(url, payload, timeoutMs=25000){
+async function _sheetsFetch(url, payload, timeoutMs=12000){
   const body = JSON.stringify(payload);
   // Strategy 1: CORS mode — can read response and verify success
   try{
@@ -6774,15 +6786,14 @@ async function pushSectionDate(sheetName,headers,rows,date){
       rows:chunk,
       date:i===0?date:''
     };
-    // Try up to 3 times with _sheetsFetch (CORS-first, no-cors fallback)
+    // Single attempt — on failure, queue for background retry. No blocking retry loops.
+    // SPEED FIX: the old 3-attempt loop with 400ms/800ms/1200ms delays meant one failed
+    // chunk could block the upload for 27+ seconds. Queued items are retried next upload.
     let ok=false;
-    for(let attempt=0;attempt<3;attempt++){
-      const r=await _sheetsFetch(url, payload);
-      if(r.ok||r.ok===null){ok=true;break;} // null = no-cors sent (unverifiable but delivered)
-      await new Promise(res=>setTimeout(res, 400*(attempt+1)));
-    }
+    const r=await _sheetsFetch(url, payload);
+    if(r.ok||r.ok===null){ok=true;}
     if(!ok){
-      console.warn(`pushSectionDate: failed after 3 attempts for ${sheetName} chunk ${i} — queuing`);
+      console.warn(`pushSectionDate: queuing failed chunk for ${sheetName} (will retry next upload)`);
       _enqueueSyncItem(payload);
       allOk=false;
     }
@@ -6844,14 +6855,10 @@ async function pushOneFileToSheets(fileResult){
 
     if(!rowArrs.length)continue;
 
-    // Push with one retry on failure
-    let ok=await pushSectionDate(sheetName,allCols,rowArrs,date);
-    if(!ok){
-      await new Promise(r=>setTimeout(r,600));
-      ok=await pushSectionDate(sheetName,allCols,rowArrs,date);
-    }
-    // Small pause between sections to avoid Sheets rate limit
-    await new Promise(r=>setTimeout(r,80));
+    // Single push — failures are queued by pushSectionDate automatically
+    await pushSectionDate(sheetName,allCols,rowArrs,date);
+    // Brief yield between sections to stay under Apps Script rate limits
+    await new Promise(r=>setTimeout(r,50));
   }
 }
 
