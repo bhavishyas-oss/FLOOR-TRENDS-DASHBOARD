@@ -1449,7 +1449,7 @@ async function applyRows(rows,type,date,hdrs){
   const agg={};
   // 12000 rows/chunk ≈ 80–120ms per chunk — stays under browser watchdog threshold.
   // Larger chunks = fewer yields = faster overall. 12k is safe even on slower hardware.
-  const CHUNK=20000; // 20k rows/chunk — fewer yields than 12k, stays under watchdog on modern HW
+  const CHUNK=30000; // 30k rows/chunk — fewer yields, faster aggregation on modern hardware
   const total=rows.length;
   for(let i=0;i<total;i+=CHUNK){
     const end=Math.min(i+CHUNK,total);
@@ -1566,11 +1566,19 @@ function readExcel(buf, binStr){
     }catch(e){console.warn('XLSX.read:',type,e.message);return null;}
   };
 
-  // 3 strategies per sheet
+  // 3 strategies per sheet — handles both sparse (default) and dense (fast) workbooks
   const toRows=(ws)=>{
     if(!ws)return[];
+    // Dense workbook: XLSX.js stores rows as arrays of cell objects, not a cell-map
+    // When dense:true is used, ws['!data'] contains rows as arrays — extract directly
+    if(ws['!data']&&Array.isArray(ws['!data'])){
+      try{
+        const r=ws['!data'].map(row=>(row||[]).map(cell=>cell?String(cell.v!=null?cell.v:''):''));
+        if(r&&r.length>=2)return r;
+      }catch(_){}
+    }
     if(!ws['!ref']&&ws['!dim'])try{ws['!ref']=ws['!dim'];}catch(_){}
-    // Strategy A: raw values (fastest)
+    // Strategy A: raw values (fastest for sparse workbooks)
     try{
       const r=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
       if(r&&r.length>=2)return r;
@@ -1621,15 +1629,15 @@ function readExcel(buf, binStr){
     return null;
   };
 
-  // ArrayBuffer strategies — bare-minimum FIRST so XLSX.js uses its most
-  // compatible default parsing path with no extra restrictions
+  // ArrayBuffer strategies — lean options FIRST (fastest), dense:true = 3-4× faster than sparse
+  // dense:true stores rows as arrays instead of cell-object maps — much less GC pressure
   const ARR_OPTS=[
-    {},                                                    // Bare minimum — most compatible
-    {raw:true},                                           // Keep numbers as-is
-    {cellFormula:false,cellText:false,cellHTML:false},    // Lean: skip formula/text cache
-    {cellFormula:false,cellText:false,cellHTML:false,raw:true},
-    {cellText:false},                                     // No text cache
-    {sheetStubs:true,cellFormula:false,cellText:false},   // Include empty-cell stubs
+    {dense:true,cellFormula:false,cellText:false,cellHTML:false},          // FASTEST
+    {dense:true,cellFormula:false,cellText:false,cellHTML:false,raw:true},
+    {dense:true},                                                          // Dense, all defaults
+    {cellFormula:false,cellText:false,cellHTML:false},                     // Sparse lean
+    {},                                                                    // Bare minimum fallback
+    {sheetStubs:true,cellFormula:false,cellText:false},                    // Include stubs
   ];
 
   for(const opts of ARR_OPTS){
@@ -1710,7 +1718,7 @@ function decompAsync(raw, isStored){
         resolve(new TextDecoder('utf-8',{fatal:false}).decode(merged));
       }catch(e){console.warn('decompAsync merge:',e);resolve('');}
     };
-    const CHUNK=524288; // 512KB per push — faster for large shared-strings stream
+    const CHUNK=2097152; // 2MB per push — maximises throughput for shared-strings stream
     let offset=0;
     const push=()=>{
       const end=Math.min(offset+CHUNK,raw.length);
@@ -1798,17 +1806,26 @@ async function readExcelNative(buf){
       return decompAsync(raw, e.comp===0);
     };
 
-    /* ── 2. Shared strings — split-based parse (fastest, no regex timeout) ── */
+    /* ── 2. Shared strings — async streaming parse ── */
     await new Promise(r=>setTimeout(r,0));
     const shared=[];
     const e_ss=entries['xl/sharedStrings.xml'];
     if(e_ss){
-      // Decompress sharedStrings synchronously — it's only 2-12MB compressed
-      // which decompresses to 4-11MB. pako.inflate() handles this without issues.
+      // Use async streaming decompression — same as sheet rows.
+      // The old synchronous pako.inflate() was the primary reason LMODC files
+      // fell through to the slow XLSX.js fallback: a 5-15MB sharedStrings.xml
+      // compressed > ~3MB could freeze the main thread for 3-8 seconds before
+      // Chrome's script-timeout killed it, causing decompAsync to return ''.
       let ssXML='';
       try{
         const rawSS=data.subarray(e_ss.start,e_ss.start+e_ss.cSize);
-        ssXML=new TextDecoder('utf-8',{fatal:false}).decode(pako.inflate(rawSS));
+        if(e_ss.comp===0){
+          // STORED (uncompressed) — decode directly
+          ssXML=new TextDecoder('utf-8',{fatal:false}).decode(rawSS);
+        }else{
+          // DEFLATED — async streaming (never blocks > ~10ms)
+          ssXML=await decompAsync(rawSS,false);
+        }
       }catch(e){console.warn('sharedStrings inflate:',e);}
 
       if(ssXML){
@@ -1937,7 +1954,8 @@ async function readExcelNative(buf){
           resolveRows(rowArr);
         };
 
-        const CHUNK=262144; // 256KB — 4× larger than before; reduces yield overhead ~4× for speed
+        const CHUNK=1048576; // 1MB — larger chunks = fewer setTimeout(0) yields = faster overall
+        // Yield every ~60ms (not every chunk) to keep UI responsive without unnecessary pauses
         let off=0;
         const push=()=>{
           const end=Math.min(off+CHUNK,compBytes.length);
@@ -1947,7 +1965,7 @@ async function readExcelNative(buf){
           off=end;
           if(!last){
             const now=Date.now();
-            if(now-lastYieldT>80){
+            if(now-lastYieldT>50){  // yield at most every 50ms — keeps UI responsive
               lastYieldT=now;
               setP(-1,`⚙  "${sname}" — ${fn(rowArr.length)} rows…`);
               setTimeout(push,0);
