@@ -1877,16 +1877,12 @@ async function readExcelNative(buf){
       setP(20,`📖  Reading: "${sname}"…`);
       await new Promise(r=>setTimeout(r,0));
 
-      /* ── STREAMING decompress + parse ──────────────────────────────────
-         Root cause of 76MB Reverse file failure:
-         decomp(sf) tries to hold the full ~500MB uncompressed sheet XML
-         as a single JS string → Chrome silently kills the allocation →
-         decompAsync returns '' → sheetXML.length<100 → sheet skipped.
-
-         Fix: parse rows WHILE pako decompresses each 64KB chunk.
-         Buffer contains only the current incomplete row (~1KB max).
-         Total memory: ~1MB instead of ~500MB.
-      ─────────────────────────────────────────────────────────────────── */
+        /* ── STREAMING decompress + parse ──────────────────────────────────
+           Handles both DEFLATED (comp=8) and STORED (comp=0) entries.
+           LMODC files often use STORED compression for the sheet XML — pushing
+           raw bytes to pako.Inflate (which expects DEFLATE) caused pako to throw,
+           returning 0 rows and falling through to the slow XLSX.js path.
+           Fix: detect comp===0 and decode directly without pako.             */
       const e2=entries[sf];
       if(!e2)continue;
       const compBytes=data.subarray(e2.start,e2.start+e2.cSize);
@@ -1929,7 +1925,10 @@ async function readExcelNative(buf){
 
               let val='';
               if(t==='s'){const si=parseInt(v);val=isNaN(si)?'':(shared[si]||'');}
-              else if(t==='inlineStr'){const m2=cs.match(/<t[^>]*>([^<]*)<\/t>/);val=m2?m2[1]:'';}
+              else if(t==='inlineStr'||t==='str'){
+                // inlineStr: value is in <is><t>…</t></is>
+                const m2=cs.match(/<(?:is>)?t[^>]*>([^<]*)<\/t>/);val=m2?m2[1]:'';
+              }
               else if(v&&!v.startsWith('#')){val=v;}
 
               if(val){cellMap[colI]=val;if(colI>maxIdx)maxIdx=colI;}
@@ -1943,6 +1942,30 @@ async function readExcelNative(buf){
           }
         };
 
+        // ── STORED (comp=0): decode raw bytes directly — no pako needed ──
+        if(e2.comp===0){
+          const CHUNK=1048576;
+          let off=0;
+          const pushStored=()=>{
+            const end=Math.min(off+CHUNK,compBytes.length);
+            buf+=dec.decode(compBytes.subarray(off,end),{stream:end<compBytes.length});
+            flush();
+            off=end;
+            if(off<compBytes.length){
+              const now=Date.now();
+              if(now-lastYieldT>50){lastYieldT=now;setP(-1,`⚙  "${sname}" — ${fn(rowArr.length)} rows…`);setTimeout(pushStored,0);}
+              else pushStored();
+            }else{
+              try{buf+=dec.decode(new Uint8Array(0),{stream:false});}catch(_){}
+              flush();
+              resolveRows(rowArr);
+            }
+          };
+          pushStored();
+          return; // exit the Promise constructor body — pushStored resolves async
+        }
+
+        // ── DEFLATED (comp=8): pako streaming inflate ──
         const inflator=new pako.Inflate();
         inflator.onData=ch=>{
           buf+=dec.decode(ch,{stream:true});
@@ -2723,7 +2746,6 @@ function renderTable(el,piv,sec,idx){
   // ── CRITICAL SITES table (top 5 by score, uses trend vs historical avg) ──
   const scored=[...siteStats].map(s=>({
     ...s,
-    // Score: higher total × boost if latest is rising above average
     score:Math.round(s.rt*(1+s.redCells*0.15)*(s.trend==='RISING'?1.2:s.trend==='FALLING'?0.9:1)),
     trendLabel:s.trend==='RISING'?'🔴 Rising':s.trend==='FALLING'?'🟢 Falling':'🟡 Stable'
   })).sort((a,b)=>b.score-a.score).slice(0,5);
@@ -2731,10 +2753,11 @@ function renderTable(el,piv,sec,idx){
   const CS='padding:5px 8px;text-align:center;font-size:11px;font-weight:700;border:1px solid #fca5a5;';
   const CSL='padding:5px 8px;text-align:left;font-size:11px;font-weight:700;border:1px solid #fca5a5;';
 
-  html+=`<div style="margin-top:14px">
-    <div style="font-size:12px;font-weight:900;color:#7f1d1d;letter-spacing:.5px;text-transform:uppercase;margin-bottom:6px;padding:0 2px">
+  // Critical Sites is rendered in its own div (below bar chart) — not inside the pivot table
+  const critHtml=scored.length?`<div style="padding:12px 12px 10px;background:#fff;border:1px solid #e2e8f0;border-radius:8px">
+    <div style="font-size:12px;font-weight:900;color:#7f1d1d;letter-spacing:.5px;text-transform:uppercase;margin-bottom:8px">
       🚨 CRITICAL SITES — Top 5 by Severity
-      <span style="font-size:10px;font-weight:600;color:#94a3b8;text-transform:none;letter-spacing:0"> · Score = Total × RedDays × Trend Multiplier · Arrow = Latest vs Avg</span>
+      <span style="font-size:10px;font-weight:600;color:#94a3b8;text-transform:none;letter-spacing:0"> · Score = Total × RedDays × Trend Multiplier</span>
     </div>
     <div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-family:var(--sans)">
       <thead><tr style="background:#7f1d1d;color:#fff">
@@ -2749,14 +2772,14 @@ function renderTable(el,piv,sec,idx){
       </tr></thead>
       <tbody>
       ${scored.map((s,i)=>{
-        const rank=i===0?'🥇':i===1?'🥈':i===2?'🥉':`#${i+1}`;
+        const rank=`#${i+1}`;
         const rowBg=i===0?'#fee2e2':i===1?'#fef3c7':i===2?'#fffbeb':'#fff';
         const scoreBg=i<2?'background:#dc2626;color:#fff;':i===2?'background:#f59e0b;color:#fff;':'';
         const latestArrow=s.trend==='RISING'
           ?`<span style="color:#ef4444">▲</span>`
           :s.trend==='FALLING'?`<span style="color:#059669">▼</span>`:'';
         return`<tr style="background:${rowBg}">
-          <td style="${CS}font-size:14px">${rank}</td>
+          <td style="${CS}font-weight:900;color:#7f1d1d">${rank}</td>
           <td style="${CSL}font-weight:800;color:#7f1d1d">${xe(s.loc)}</td>
           <td style="${CS}font-size:13px;color:#dc2626">${fn(s.latestCount)} ${latestArrow}</td>
           <td style="${CS}color:#059669">${fn(s.historicalAvg)}</td>
@@ -2767,10 +2790,10 @@ function renderTable(el,piv,sec,idx){
         </tr>`;
       }).join('')}
       </tbody>
-    </table></div></div>`;
+    </table></div></div>`:'';
 
   el.innerHTML=html;
-  return{grand,siteStats};
+  return{grand,siteStats,critHtml};
 }
 
 /* ═══════════════════════════════════════════════
@@ -2951,40 +2974,96 @@ function generateSectionPDF(idx){
   const bCanvas=document.getElementById(`ch${idx}`);
   const bImgSrc=bCanvas?bCanvas.toDataURL('image/png',0.92):'';
 
-  // Build full pivot table HTML
-  const grand=piv.locs.reduce((s,l)=>s+(piv.rowTotals[l]||0),0);
-  let tableHTML=`<table style="width:100%;border-collapse:collapse;font-size:10px;margin-bottom:12px">
+  // Build full pivot table HTML for PDF — with AVG/DAY column + trend arrows
+  const nDatesPdf=piv.dates.length;
+  const sortedLocsPdf=[...piv.locs].sort((a,b)=>(piv.rowTotals[b]||0)-(piv.rowTotals[a]||0));
+  const latestDatePdf=piv.dates[nDatesPdf-1];
+  const grand=sortedLocsPdf.reduce((s,l)=>s+(piv.rowTotals[l]||0),0);
+
+  // Build Critical Sites data for PDF
+  const critSitesPdf=sortedLocsPdf.map(loc=>{
+    const rt=piv.rowTotals[loc]||0;
+    const avg=nDatesPdf>0?Math.round(rt/nDatesPdf):0;
+    const latest=(piv.grid[loc]&&piv.grid[loc][latestDatePdf])||0;
+    let redCells=0;
+    piv.dates.forEach((d,di)=>{const v=piv.grid[loc][d]||0;const prev=di>0?piv.grid[loc][piv.dates[di-1]]||0:null;if(prev!==null&&v>prev)redCells++;});
+    const trend=latest>avg?'RISING':latest<avg&&latest>0?'FALLING':'STABLE';
+    const score=Math.round(rt*(1+redCells*0.15)*(trend==='RISING'?1.2:trend==='FALLING'?0.9:1));
+    return{loc,rt,avg,latest,redCells,trend,score};
+  }).sort((a,b)=>b.score-a.score).slice(0,5);
+
+  let tableHTML=`<table style="width:100%;border-collapse:collapse;font-size:9px;margin-bottom:12px">
     <thead><tr style="background:#0f2b25;color:#fff">
-      <th style="padding:6px 8px;text-align:left;border-right:1px solid #1a5045">LOCATION</th>
-      ${piv.dates.map(d=>`<th style="padding:6px 8px;text-align:center;border-right:1px solid #1a5045">${fmtD(d)}</th>`).join('')}
-      <th style="padding:6px 8px;text-align:center">TOTAL</th>
+      <th style="padding:5px 7px;text-align:left;border-right:1px solid #1a5045">LOCATION</th>
+      ${piv.dates.map((d,di)=>{const isL=di===nDatesPdf-1;return`<th style="padding:5px 7px;text-align:center;border-right:1px solid #1a5045;color:${isL?'#E9DF43':'#fff'}">${fmtD(d)}${isL?' ★':''}</th>`}).join('')}
+      <th style="padding:5px 7px;text-align:center;color:#E9DF43">TOTAL</th>
+      <th style="padding:5px 7px;text-align:center;color:#E9DF43">AVG/DAY</th>
     </tr></thead><tbody>`;
 
-  piv.locs.forEach((loc,ri)=>{
+  sortedLocsPdf.forEach((loc,ri)=>{
     const bg=ri%2===0?'#fff':'#f3faf7';
     const rt=piv.rowTotals[loc]||0;
+    const avg=nDatesPdf>0?Math.round(rt/nDatesPdf):0;
+    const latestCount=(piv.grid[loc]&&piv.grid[loc][latestDatePdf])||0;
+    const arrow=latestCount>avg?'▲':latestCount<avg&&latestCount>0?'▼':'';
+    const arrowColor=latestCount>avg?'#ef4444':'#059669';
     tableHTML+=`<tr>
-      <td style="padding:5px 8px;background:${bg};font-weight:700;border-bottom:1px solid #c8dfd9;border-right:2px solid #a8d4c9">${xe(loc)}</td>`;
+      <td style="padding:4px 7px;background:${bg};font-weight:700;border-bottom:1px solid #c8dfd9;border-right:2px solid #a8d4c9">${xe(loc)}</td>`;
     piv.dates.forEach((d,di)=>{
       const val=piv.grid[loc][d]||0;
       const prev=di>0?piv.dates[di-1]:null;
       const pval=prev!==null?(piv.grid[loc][prev]||0):null;
-      let cellStyle=`padding:5px 8px;text-align:center;border-bottom:1px solid #c8dfd9;border-right:1px solid #daeee9;font-weight:700;`;
+      const isLatest=di===nDatesPdf-1;
+      let cellStyle=`padding:4px 7px;text-align:center;border-bottom:1px solid #c8dfd9;border-right:1px solid #daeee9;font-weight:700;${isLatest?'border-left:2px solid #E9DF43;border-right:2px solid #E9DF43;':''}`;
       if(val===0)cellStyle+='color:#94a3b8;';
       else if(pval!==null&&val>pval)cellStyle+='background:#ef4444;color:#fff;';
       else if(pval!==null&&val<pval)cellStyle+='background:#dff0ea;color:#0a4a35;';
       else cellStyle+=`background:${bg};`;
-      tableHTML+=`<td style="${cellStyle}">${val===0?'–':fn(val)}</td>`;
+      const cellArrow=isLatest&&arrow?`<span style="color:${arrowColor};font-size:10px"> ${arrow}</span>`:'';
+      tableHTML+=`<td style="${cellStyle}">${val===0?'–':fn(val)}${cellArrow}</td>`;
     });
-    tableHTML+=`<td style="padding:5px 8px;text-align:center;font-weight:900;background:#eaf6f2;border-bottom:1px solid #c8dfd9">${fn(rt)}</td></tr>`;
+    tableHTML+=`<td style="padding:4px 7px;text-align:center;font-weight:900;background:#eaf6f2;border-bottom:1px solid #c8dfd9">${fn(rt)}</td>
+      <td style="padding:4px 7px;text-align:center;background:#e8f5f1;border-bottom:1px solid #c8dfd9;color:#0a4a35">${fn(avg)}</td></tr>`;
   });
-
-  // Footer totals
   tableHTML+=`<tr style="background:#0f2b25;color:#fff">
-    <td style="padding:6px 8px;font-weight:900;text-align:left">TOTAL</td>
-    ${piv.dates.map(d=>`<td style="padding:6px 8px;text-align:center;font-weight:900">${fn(piv.colTotals[d]||0)}</td>`).join('')}
-    <td style="padding:6px 8px;text-align:center;font-weight:900">${fn(grand)}</td>
+    <td style="padding:5px 7px;font-weight:900;text-align:left">TOTAL</td>
+    ${piv.dates.map(d=>`<td style="padding:5px 7px;text-align:center;font-weight:900">${fn(piv.colTotals[d]||0)}</td>`).join('')}
+    <td style="padding:5px 7px;text-align:center;font-weight:900;color:#E9DF43">${fn(grand)}</td>
+    <td style="padding:5px 7px;text-align:center"></td>
   </tr></tbody></table>`;
+
+  // Critical Sites HTML for PDF
+  let critSitesPdfHtml='';
+  if(critSitesPdf.length){
+    critSitesPdfHtml=`<h2 style="color:#7f1d1d;border-left-color:#dc2626">🚨 Critical Sites — Top 5 by Severity</h2>
+    <table style="width:100%;border-collapse:collapse;font-size:9px;margin-bottom:12px">
+      <thead><tr style="background:#7f1d1d;color:#fff">
+        <th style="padding:5px 7px">RANK</th><th style="padding:5px 7px;text-align:left">SITE NAME</th>
+        <th style="padding:5px 7px;text-align:center">LATEST COUNT</th>
+        <th style="padding:5px 7px;text-align:center">HIST. AVG/DAY</th>
+        <th style="padding:5px 7px;text-align:center">TOTAL AWBs</th>
+        <th style="padding:5px 7px;text-align:center">RED DAYS</th>
+        <th style="padding:5px 7px;text-align:center">SCORE</th>
+        <th style="padding:5px 7px;text-align:center">TREND</th>
+      </tr></thead><tbody>
+      ${critSitesPdf.map((s,i)=>{
+        const rowBg=i===0?'#fee2e2':i===1?'#fef3c7':i===2?'#fffbeb':'#fff';
+        const scoreBg=i<2?'background:#dc2626;color:#fff':'background:#f59e0b;color:#fff';
+        const arrow=s.trend==='RISING'?'▲':s.trend==='FALLING'?'▼':'';
+        const arrowColor=s.trend==='RISING'?'#ef4444':'#059669';
+        return`<tr style="background:${rowBg}">
+          <td style="padding:4px 7px;text-align:center;font-weight:900;color:#7f1d1d">#${i+1}</td>
+          <td style="padding:4px 7px;font-weight:800;color:#7f1d1d">${xe(s.loc)}</td>
+          <td style="padding:4px 7px;text-align:center;color:#dc2626;font-weight:900">${fn(s.latest)} <span style="color:${arrowColor}">${arrow}</span></td>
+          <td style="padding:4px 7px;text-align:center;color:#059669;font-weight:700">${fn(s.avg)}</td>
+          <td style="padding:4px 7px;text-align:center;font-weight:700">${fn(s.rt)}</td>
+          <td style="padding:4px 7px;text-align:center">${s.redCells}</td>
+          <td style="padding:4px 7px;text-align:center;${i<3?scoreBg:''};border-radius:3px;font-weight:800">${fn(s.score)}</td>
+          <td style="padding:4px 7px;text-align:center">${s.trend==='RISING'?'🔴 Rising':s.trend==='FALLING'?'🟢 Falling':'🟡 Stable'}</td>
+        </tr>`;
+      }).join('')}
+      </tbody></table>`;
+  } // end if(critSitesPdf.length)
 
   // Build filter summary
   const filterSummary=`Age: D${f.age}${f.bins&&f.bins.length?' · Bin: '+f.bins.join(','):''}${f.msgs&&f.msgs.length?' · Msg: '+f.msgs.join(','):''}`;
@@ -3035,11 +3114,14 @@ function generateSectionPDF(idx){
     <h2>📋 Full Pivot Table — ${xe(sec.title)}</h2>
     ${tableHTML}
     <div class="legend">
-      <div class="lc"><div class="lb lu"></div>▲ Higher than previous date (pendency increased)</div>
-      <div class="lc"><div class="lb ld"></div>▼ Lower than previous date (improving)</div>
+      <div class="lc"><div class="lb lu"></div>▲ Red = risen vs prior date</div>
+      <div class="lc"><div class="lb ld"></div>▼ Green = improved vs prior date</div>
+      <div class="lc" style="font-size:10px">★ LATEST col: ▲▼ = latest count vs historical avg</div>
     </div>
 
     ${bImgSrc?`<h2>📈 Location Breakdown Chart</h2><img src="${bImgSrc}" alt="Breakdown chart">`:``}
+
+    ${critSitesPdfHtml}
 
     <div style="margin-top:16px;padding:10px;background:#f0f9f7;border-radius:6px;font-size:10px;color:#64748b;border:1px solid #c8dfd9">
       Floor Trends Dashboard — Collated Report &nbsp;|&nbsp; ${xe(sec.title)} &nbsp;|&nbsp; ${filterSummary} &nbsp;|&nbsp; ${fn(piv.locs.length)} locations &nbsp;|&nbsp; ${piv.dates.length} dates
@@ -3094,6 +3176,9 @@ function initPanels(){
           </div>
           <div class="cwrap"><canvas id="ch${i}"></canvas></div>
         </div>
+
+        <!-- 4. Critical Sites table (below bar chart) -->
+        <div id="critSites${i}" style="margin-top:0"></div>
 
       </div>
     </div>`).join('');
@@ -3283,10 +3368,13 @@ function renderTab(idx){
     return;
   }
 
-  const{grand:g,siteStats}=renderTable(document.getElementById(`tbl${idx}`),piv,SECS[idx],idx);
+  const{grand:g,siteStats,critHtml}=renderTable(document.getElementById(`tbl${idx}`),piv,SECS[idx],idx);
   renderTrendChart(`tchrt${idx}`,SECS[idx],idx);
   populateDCDropdown(idx,piv);
   renderChart(`ch${idx}`,piv,idx);
+  // Inject Critical Sites below the bar chart
+  const critEl=document.getElementById(`critSites${idx}`);
+  if(critEl)critEl.innerHTML=critHtml||'';
   const el=document.getElementById(`cnt${idx}`);
   if(el){
     // show count for the LATEST uploaded date only
@@ -6207,39 +6295,11 @@ function filterRawForSection(sec,idx){
                   still produces date-wise rows (no fallback message ever shown).  */
 function downloadSectionReport(idx){
   const sec=SECS[idx];
-  const rawRows=filterRawForSection(sec,idx);
-
-  /* ── PRIMARY: full source-column report ── */
-  if(rawRows.length>0){
-    const colSet=new Set();
-    rawRows.forEach(r=>{Object.keys(r).forEach(k=>{if(k!=='_date')colSet.add(k);});});
-    const sourceCols=[...colSet];
-    const allCols=['Date',...sourceCols];
-
-    const wsRows=[allCols];
-    rawRows.forEach(r=>{
-      wsRows.push(allCols.map(c=>{
-        if(c==='Date')return r._date;
-        const v=r[c];
-        return(v===undefined||v===null||v==='')?'':String(v);
-      }));
-    });
-
-    const ws=XLSX.utils.aoa_to_sheet(wsRows);
-    ws['!cols']=allCols.map(c=>({wch:Math.min(38,Math.max(8,c.length+3))}));
-    const wb=XLSX.utils.book_new();
-    const safeTitle=sec.title.replace(/[^\w\s]/g,'_').trim().slice(0,31);
-    XLSX.utils.book_append_sheet(wb,ws,safeTitle);
-    XLSX.writeFile(wb,`${safeTitle}_${new Date().toISOString().slice(0,10)}.xlsx`);
-    toast(`⬇ ${fn(rawRows.length)} rows · ${allCols.length} columns downloaded`,'tok');
-    return;
-  }
-
-  /* ── RECOVERY: rawData not available (too large to cache or first load).
-     Rebuild from master aggregates — date-wise rows with all stored fields.
-     This NEVER shows the "aggregated counts only" fallback message.            */
   const f=SEC_FILTERS[idx]||{age:sec.ageOpts?.[0]||3,bins:[],msgs:[]};
   const isForward=sec.src==='forward';
+
+  // Always rebuild from master (authoritative, always up-to-date, never stale cache)
+  // rawData is purged per-file after push, so it may be empty — master is the reliable source
   const all=(master[sec.src]||[]).filter(r=>{
     if(r.age!==f.age)return false;
     if(isForward&&f.bins.length>0&&!f.bins.includes(r.bin))return false;
@@ -6256,28 +6316,59 @@ function downloadSectionReport(idx){
   // Sort by date then location
   all.sort((a,b)=>a.date.localeCompare(b.date)||(a.location||a.destination||'').localeCompare(b.location||b.destination||''));
 
+  // Compute per-site historical averages from pivot
+  const piv=buildPivot(sec,idx);
+  const nDates=piv.dates.length;
+  const latestDate=piv.dates[nDates-1];
+
   // Build dynamic column set from all records
+  const priority=['date','location','destination','age','bin','msg','os','client','count'];
   const fieldSet=new Set();
   all.forEach(r=>Object.keys(r).forEach(k=>fieldSet.add(k)));
-  const priority=['date','location','destination','age','bin','msg','os','client','count'];
-  const orderedFields=['Date',...priority.filter(f2=>fieldSet.has(f2)),...[...fieldSet].filter(f2=>!priority.includes(f2))];
+  const orderedFields=['Date',...priority.filter(f2=>fieldSet.has(f2)),...[...fieldSet].filter(f2=>!priority.includes(f2)),'Hist Avg/Day','Latest Count','Trend'];
 
   const wsRows=[orderedFields];
   all.forEach(r=>{
+    const loc=r.location||r.destination||'';
+    const rt=piv.rowTotals[loc]||0;
+    const histAvg=nDates>0?Math.round(rt/nDates):0;
+    const latestCount=(piv.grid[loc]&&piv.grid[loc][latestDate])||0;
+    const trend=latestCount>histAvg?'RISING':latestCount<histAvg&&latestCount>0?'FALLING':'STABLE';
     wsRows.push(orderedFields.map(col=>{
       if(col==='Date')return r.date||'';
+      if(col==='Hist Avg/Day')return histAvg;
+      if(col==='Latest Count')return latestCount;
+      if(col==='Trend')return trend;
       const v=r[col];
       return(v===undefined||v===null)?'':String(v);
     }));
   });
 
+  // Sheet 2: Critical Sites summary
+  const critRows=[['Rank','Site Name','Latest Count','Hist Avg/Day','Total AWBs','Red Days','Score','Trend']];
+  const scored=[...piv.locs].map(loc=>{
+    const rt=piv.rowTotals[loc]||0;
+    const avg=nDates>0?Math.round(rt/nDates):0;
+    const latest=(piv.grid[loc]&&piv.grid[loc][latestDate])||0;
+    let redCells=0;
+    piv.dates.forEach((d,di)=>{const v=piv.grid[loc][d]||0;const prev=di>0?piv.grid[loc][piv.dates[di-1]]||0:null;if(prev!==null&&v>prev)redCells++;});
+    const trend=latest>avg?'RISING':latest<avg&&latest>0?'FALLING':'STABLE';
+    const score=Math.round(rt*(1+redCells*0.15)*(trend==='RISING'?1.2:trend==='FALLING'?0.9:1));
+    return{loc,rt,avg,latest,redCells,trend,score};
+  }).sort((a,b)=>b.score-a.score).slice(0,5);
+  scored.forEach((s,i)=>critRows.push([`#${i+1}`,s.loc,s.latest,s.avg,s.rt,s.redCells,s.score,s.trend]));
+
   const ws=XLSX.utils.aoa_to_sheet(wsRows);
   ws['!cols']=orderedFields.map(c=>({wch:Math.min(38,Math.max(8,c.length+3))}));
+  const wsCrit=XLSX.utils.aoa_to_sheet(critRows);
+  wsCrit['!cols']=critRows[0].map(c=>({wch:Math.max(12,String(c).length+2)}));
+
   const wb=XLSX.utils.book_new();
-  const safeTitle=sec.title.replace(/[^\w\s]/g,'_').trim().slice(0,31);
+  const safeTitle=sec.title.replace(/[^\w\s]/g,'_').trim().slice(0,28);
   XLSX.utils.book_append_sheet(wb,ws,safeTitle);
+  XLSX.utils.book_append_sheet(wb,wsCrit,'Critical Sites');
   XLSX.writeFile(wb,`${safeTitle}_${new Date().toISOString().slice(0,10)}.xlsx`);
-  toast(`⬇ ${fn(all.length)} records · ${orderedFields.length} columns downloaded`,'tok');
+  toast(`⬇ ${fn(all.length)} records · ${orderedFields.length} cols · Critical Sites included`,'tok');
 }
 
 /* ═══════════════════════════════════════════════
