@@ -6323,7 +6323,18 @@ document.getElementById('hovFi').addEventListener('change',async e=>{
    Only ages relevant to sections are kept.
    Used exclusively by downloadSectionReport().
 ═══════════════════════════════════════════════ */
-const _VALID_AGES={forward:[3,6],reverse:[3,10],lmodc:[3,6,10],forwardShort:[3,6,10]};
+// _VALID_AGES controls which age values captureRaw stores in rawData for Sheets push.
+// REVERSE FIX: old [3,10] meant only age-3 and age-10 Reverse rows were captured.
+// When a file had mostly age-6+ rows (common for Reverse files), rawData was empty →
+// sheetsPayloadsBySec.rowArrs was empty → nothing pushed to the Google Sheet.
+// Fix: use a broad range [1..30] for Reverse so ALL rows are captured for the push.
+// The section age-filter dropdown still controls what's shown in the dashboard table.
+const _VALID_AGES={
+  forward:     [3,6],
+  reverse:     [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30],
+  lmodc:       [3,6,10],
+  forwardShort:[3,6,10]
+};
 
 function captureRaw(type,row,date){
   // 1. Apply base filter (mirrors each type's processor)
@@ -6429,33 +6440,92 @@ function filterRawForSection(sec,idx){
   return out;
 }
 
-/* SECTION EXCEL REPORT — Date-wise append, full detailed source data.
-   Priority 1: rawData cache (full original source columns)
-   Priority 2: IDB restore → rawData (async, then re-download)
-   Priority 3: master aggregates (all stored aggregate fields)               */
-function downloadSectionReport(idx){
+/* SECTION EXCEL REPORT — non-blocking async generation.
+   Root cause of "Page Unresponsive": filterRawForSection() scanned millions of
+   rawData rows synchronously on the main thread (e.g. 3.95M LMODC rows),
+   blocking Chrome for 30-120 seconds → "Page Unresponsive" dialog.
+
+   Fix: build the report from master aggregates (always available, compact) with
+   async chunked row processing and yield points to keep UI responsive.
+   rawData primary path is preserved for fresh-upload sessions (small datasets).  */
+async function downloadSectionReport(idx){
   const sec=SECS[idx];
   const f=SEC_FILTERS[idx]||{age:sec.ageOpts?.[0]||3,bins:[],msgs:[]};
+  toast('⏳ Preparing report — please wait…','ti');
 
-  // Check rawData first
-  const rawRows=filterRawForSection(sec,idx);
+  // Short yield so the toast renders before heavy processing starts
+  await new Promise(r=>setTimeout(r,100));
 
-  if(rawRows.length>0){
-    _buildAndDownloadReport(sec,f,rawRows,'rawData');
-    return;
+  try{
+    // Try rawData first (available right after upload — small, fast)
+    const rawRows=filterRawForSection(sec,idx);
+    if(rawRows.length>0&&rawRows.length<50000){
+      // Small rawData set — process synchronously (safe)
+      _buildAndDownloadReport(sec,f,rawRows,'rawData');
+      return;
+    }
+
+    // Large or empty rawData → use master aggregates (compact, always available)
+    // Process in async chunks to avoid blocking
+    await _buildReportFromMasterAsync(sec,f);
+
+  }catch(e){
+    console.error('downloadSectionReport error:',e);
+    toast('⚠ Report error: '+e.message,'tw');
+  }
+}
+
+async function _buildReportFromMasterAsync(sec,f){
+  const isForward=sec.src==='forward';
+  const all=(master[sec.src]||[]).filter(r=>{
+    if(r.age!==f.age)return false;
+    if(isForward&&f.bins.length>0&&!f.bins.includes(r.bin))return false;
+    if(isForward&&f.msgs.length>0&&!f.msgs.includes('ALL')&&!f.msgs.includes(r.msg))return false;
+    if(isForward&&f.bins.length>0&&r.os==='IN_MANIFEST')return false;
+    return true;
+  });
+  if(!all.length){toast('No data — upload the matching file first','tw');return;}
+
+  // Yield to browser before heavy processing
+  await new Promise(r=>setTimeout(r,0));
+
+  all.sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.location||a.destination||'').localeCompare(b.location||b.destination||''));
+
+  // Build column set
+  const SKIP=new Set(['date']);
+  const fieldSet=new Set();
+  all.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP.has(k))fieldSet.add(k);}));
+  const priority=['location','destination','age','bin','msg','os','client','count'];
+  const srcCols=[...priority.filter(c=>fieldSet.has(c)),...[...fieldSet].filter(c=>!priority.includes(c))];
+  const allCols=['File Date',...srcCols];
+
+  // Build rows in chunks with async yields to prevent UI freeze
+  const wsRows=[allCols];
+  const CHUNK=2000;
+  for(let i=0;i<all.length;i+=CHUNK){
+    const end=Math.min(i+CHUNK,all.length);
+    for(let j=i;j<end;j++){
+      const r=all[j];
+      wsRows.push(allCols.map(col=>{
+        if(col==='File Date')return r.date||'';
+        const v=r[col];
+        return(v===undefined||v===null)?'':typeof v==='number'?v:String(v);
+      }));
+    }
+    // Yield every 2000 rows to keep UI responsive
+    if(end<all.length)await new Promise(r=>setTimeout(r,0));
   }
 
-  // rawData is empty (purged after upload) — try IDB restore, then fall back to master
-  toast('⏳ Loading data from storage…','ti');
-  initFromIDB().then(()=>{
-    const rawRows2=filterRawForSection(sec,idx);
-    if(rawRows2.length>0){
-      _buildAndDownloadReport(sec,f,rawRows2,'IDB');
-    }else{
-      // Final fallback: master aggregates
-      _buildReportFromMaster(sec,f);
-    }
-  }).catch(()=>_buildReportFromMaster(sec,f));
+  // XLSX generation (synchronous but short — only the header + built data)
+  await new Promise(r=>setTimeout(r,0));
+  const ws=XLSX.utils.aoa_to_sheet(wsRows);
+  ws['!cols']=allCols.map(c=>({wch:Math.min(35,Math.max(8,String(c).length+3))}));
+  const wb=XLSX.utils.book_new();
+  const safeTitle=sec.title.replace(/[^\w\s]/g,'_').replace(/\s+/g,'_').trim().slice(0,31);
+  XLSX.utils.book_append_sheet(wb,ws,safeTitle);
+  XLSX.writeFile(wb,`${safeTitle}_D${f.age}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  const fileDates=[...new Set(all.map(r=>r.date))].length;
+  toast(`⬇ ${fn(all.length)} rows · ${allCols.length} cols · ${fileDates} file dates`,'tok');
 }
 
 function _buildAndDownloadReport(sec,f,rawRows,source){
@@ -6482,41 +6552,6 @@ function _buildAndDownloadReport(sec,f,rawRows,source){
   XLSX.writeFile(wb,`${safeTitle}_D${f.age}_${new Date().toISOString().slice(0,10)}.xlsx`);
   const fileDates=[...new Set(rawRows.map(r=>r._date))].length;
   toast(`⬇ ${fn(rawRows.length)} detailed rows · ${allCols.length} source cols · ${fileDates} file dates (${source})`,'tok');
-}
-
-function _buildReportFromMaster(sec,f){
-  const isForward=sec.src==='forward';
-  const all=(master[sec.src]||[]).filter(r=>{
-    if(r.age!==f.age)return false;
-    if(isForward&&f.bins.length>0&&!f.bins.includes(r.bin))return false;
-    if(isForward&&f.msgs.length>0&&!f.msgs.includes('ALL')&&!f.msgs.includes(r.msg))return false;
-    if(isForward&&f.bins.length>0&&r.os==='IN_MANIFEST')return false;
-    return true;
-  });
-  if(!all.length){toast('No data — upload the matching file first','tw');return;}
-  all.sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.location||a.destination||'').localeCompare(b.location||b.destination||''));
-  const SKIP2=new Set(['date']);
-  const fieldSet2=new Set();
-  all.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP2.has(k))fieldSet2.add(k);}));
-  const priority2=['location','destination','age','bin','msg','os','client','count'];
-  const srcCols2=[...priority2.filter(c=>fieldSet2.has(c)),...[...fieldSet2].filter(c=>!priority2.includes(c))];
-  const allCols2=['File Date',...srcCols2];
-  const wsRows2=[allCols2];
-  all.forEach(r=>{
-    wsRows2.push(allCols2.map(col=>{
-      if(col==='File Date')return r.date||'';
-      const v=r[col];
-      return(v===undefined||v===null)?'':typeof v==='number'?v:String(v);
-    }));
-  });
-  const ws2=XLSX.utils.aoa_to_sheet(wsRows2);
-  ws2['!cols']=allCols2.map(c=>({wch:Math.min(35,Math.max(8,String(c).length+3))}));
-  const wb2=XLSX.utils.book_new();
-  const safeTitle2=sec.title.replace(/[^\w\s]/g,'_').replace(/\s+/g,'_').trim().slice(0,31);
-  XLSX.utils.book_append_sheet(wb2,ws2,safeTitle2);
-  XLSX.writeFile(wb2,`${safeTitle2}_D${f.age}_${new Date().toISOString().slice(0,10)}.xlsx`);
-  const fileDates2=[...new Set(all.map(r=>r.date))].length;
-  toast(`⬇ ${fn(all.length)} rows · ${allCols2.length} cols · ${fileDates2} file dates (master)`,'tok');
 }
 
 /* ═══════════════════════════════════════════════
@@ -6847,6 +6882,26 @@ function getActivePartition(ss, baseName, headers) {
     _initSheet(sh, headers);
     updateIndex(ss, baseName, last.num, last.tab, 1);
     return sh;
+  }
+
+  // LMODC HEADER FIX: if the sheet exists but row 1 is data (not headers),
+  // insert a header row. This happens when a legacy sheet was created without
+  // _initSheet being called (e.g. old LMODC/REVERSE sheets from v6).
+  if (sh.getLastRow() > 0 && headers && headers.length > 0) {
+    var firstRow = sh.getRange(1, 1, 1, Math.min(headers.length, sh.getLastColumn() || 1)).getValues()[0];
+    var isDataRow = firstRow.every(function(v) {
+      var s = String(v || '').trim();
+      // Header cells are strings; date values match YYYY-MM-DD pattern
+      return /^\d{4}-\d{2}-\d{2}/.test(s) || (!isNaN(parseFloat(s)) && s !== '');
+    });
+    if (isDataRow && firstRow[0] !== '') {
+      Logger.log('HEADER FIX: inserting missing header row in ' + last.tab);
+      sh.insertRowBefore(1);
+      sh.getRange(1, 1, 1, headers.length).setValues([headers])
+        .setFontWeight('bold').setBackground('#0d1f3c').setFontColor('#dce6f5');
+      sh.setFrozenRows(1);
+      sh.setFrozenColumns(1);
+    }
   }
 
   // Check capacity: if this partition is full, create the next one
