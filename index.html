@@ -3226,7 +3226,7 @@ function initPanels(){
 
         ${secFilterBar(s,i)}
 
-        <!-- 1. Trend Bar Chart -->
+        <!-- 1. Trends Bar Chart -->
         <div class="tarea">
           <div style="display:flex;justify-content:space-between;align-items:center;padding:0 8px 8px">
             <span style="font-size:11px;font-weight:800;color:var(--brand);text-transform:uppercase;letter-spacing:.8px">📊 ${s.title} — Trends</span>
@@ -3235,14 +3235,11 @@ function initPanels(){
           <div class="twrap"><canvas id="tchrt${i}"></canvas></div>
         </div>
 
-        <!-- 2. Trend Table (pivot) -->
-        <div id="tbl${i}"></div>
+        <!-- 2. Critical Sites table — directly below Trends bar chart -->
+        <div id="critSites${i}" style="margin-top:8px;margin-bottom:8px"></div>
 
-        <!-- 3. Critical Sites table — below pivot table -->
-        <div id="critSites${i}" style="margin-top:10px;margin-bottom:10px"></div>
-
-        <!-- 4. Location Breakdown Chart — below Critical Sites -->
-        <div class="carea">
+        <!-- 3. Location Breakdown — Date vs AWB Count line chart — below Critical Sites -->
+        <div class="carea" style="margin-top:0">
           <div class="ctoolbar">
             <span class="ctoolbar-lbl">📈 Location Breakdown — Date vs AWB Count</span>
             <div style="display:flex;align-items:center;gap:8px">
@@ -3254,6 +3251,9 @@ function initPanels(){
           </div>
           <div class="cwrap"><canvas id="ch${i}"></canvas></div>
         </div>
+
+        <!-- 4. Trends Table (Historical/Latest Average logic table) — at the bottom -->
+        <div id="tbl${i}" style="margin-top:8px"></div>
 
       </div>
     </div>`).join('');
