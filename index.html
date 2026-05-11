@@ -266,7 +266,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 .carea{padding:8px 14px 12px}
 .clbl{font-size:10px;font-weight:700;color:var(--tx3);text-transform:uppercase;
   letter-spacing:.8px;margin-bottom:10px}
-.cwrap{position:relative;height:160px}
+.cwrap{position:relative;height:220px}
 
 /* LEGEND */
 .leg{display:flex;gap:14px;padding:9px 16px;background:var(--sur2);
@@ -2872,32 +2872,34 @@ function renderChart(cid,piv,idx){
   const labels=piv.dates.map(fmtD);
   const dc=selDC[idx]||'ALL';
   const ds=[];
+  const isSingleDC=dc!=='ALL';
 
-  if(dc==='ALL'){
-    // Total line
+  if(!isSingleDC){
+    // ALL mode: Total line + top 7 DCs as dashed lines
+    // Data labels shown only on Total line to avoid clutter
     ds.push({label:'Total',
       data:piv.dates.map(d=>piv.colTotals[d]||0),
       borderColor:'#2563eb',backgroundColor:'rgba(37,99,235,.07)',
-      borderWidth:2.5,pointRadius:4,pointHoverRadius:7,fill:true,tension:.35,order:0});
-    // Top DCs
+      borderWidth:2.5,pointRadius:5,pointHoverRadius:8,fill:true,tension:.35,order:0});
     [...piv.locs].sort((a,b)=>(piv.rowTotals[b]||0)-(piv.rowTotals[a]||0))
       .slice(0,7).forEach((loc,i)=>{
         const lbl=loc.length>22?loc.slice(0,20)+'…':loc;
         ds.push({label:lbl,
-          data:piv.dates.map(d=>piv.grid[loc][d]||0),
+          data:piv.dates.map(d=>piv.grid[loc]?piv.grid[loc][d]||0:0),
           borderColor:CPALS[(i+1)%CPALS.length],backgroundColor:'transparent',
           borderWidth:1.5,pointRadius:3,fill:false,tension:.35,borderDash:[5,3],order:i+1});
       });
   }else{
-    // Single DC — show data labels directly on each point
+    // Single DC: one dataset with prominent data labels on every point
     ds.push({label:dc,
       data:piv.dates.map(d=>piv.grid[dc]?piv.grid[dc][d]||0:0),
-      borderColor:'#2563eb',backgroundColor:'rgba(37,99,235,.07)',
-      borderWidth:2.5,pointRadius:5,pointHoverRadius:8,fill:true,tension:.35});
+      borderColor:'#2563eb',backgroundColor:'rgba(37,99,235,.1)',
+      borderWidth:2.5,pointRadius:6,pointHoverRadius:9,fill:true,tension:.35});
   }
 
   charts[cid]=new Chart(cv,{type:'line',data:{labels,datasets:ds},options:{
     responsive:true,maintainAspectRatio:false,animation:{duration:300},
+    layout:{padding:{top:28,right:8,bottom:4,left:4}}, // top padding for labels above points
     interaction:{mode:'index',intersect:false},
     plugins:{
       legend:{display:true,position:'top',
@@ -2907,25 +2909,42 @@ function renderChart(cid,piv,idx){
         callbacks:{label(c){return` ${c.dataset.label}: ${fn(c.parsed.y)}`;}}
       },
       datalabels:{
-        display:ctx=>{
-          const isSingleDC=dc!=='ALL';
-          // Single DC: show label on ALL points with value>0
-          if(isSingleDC)return ctx.dataset.data[ctx.dataIndex]>0;
-          // ALL mode: only show on Total (dataset 0) for non-zero values
-          if(ctx.datasetIndex!==0)return false;
-          return ctx.dataset.data[ctx.dataIndex]>0;
+        // INWRITTEN DATA LABELS — visible on chart points
+        display(ctx){
+          if(isSingleDC){
+            // Single DC: show ALL non-zero values
+            return ctx.dataset.data[ctx.dataIndex]>0;
+          }
+          // ALL mode: only Total line (dataset 0) to avoid clutter
+          return ctx.datasetIndex===0&&ctx.dataset.data[ctx.dataIndex]>0;
         },
-        anchor:'end',align:'top',offset:4,
-        color:ctx=>ctx.datasetIndex===0?'#1e40af':'#0f172a',
+        anchor:'end',
+        align:'top',
+        offset:4,
+        color(ctx){return isSingleDC?'#1e40af':ctx.datasetIndex===0?'#1e40af':'#334155';},
+        backgroundColor(ctx){
+          // Small pill background for readability
+          return isSingleDC?'rgba(219,234,254,.9)':ctx.datasetIndex===0?'rgba(219,234,254,.9)':'transparent';
+        },
+        borderRadius:3,
+        padding:{top:2,bottom:2,left:4,right:4},
         font:{size:10,family:'Inter',weight:'800'},
-        // Show exact count on the graph point
-        formatter(v){return v>=1000?(v/1000).toFixed(1)+'K':fn(v);}
+        formatter(v){
+          if(!v)return null;
+          return v>=1000?(v/1000).toFixed(1)+'K':fn(v);
+        },
+        // Prevent overlap: clamp to chart area
+        clip:false
       }
     },
     scales:{
-      x:{grid:{color:'#f1f5f9'},ticks:{font:{size:11,weight:'700'},maxRotation:45,color:'#1e293b'}},
+      x:{grid:{color:'#f1f5f9'},
+        ticks:{font:{size:11,weight:'700'},maxRotation:45,color:'#1e293b',autoSkip:true,maxTicksLimit:12}},
       y:{beginAtZero:true,grid:{color:'#f1f5f9'},
-        ticks:{font:{size:11,weight:'700'},color:'#1e293b',callback(v){return v>=1000?(v/1000).toFixed(1)+'K':v;}}}
+        ticks:{font:{size:11,weight:'700'},color:'#1e293b',
+          callback(v){return v>=1000?(v/1000).toFixed(1)+'K':v;}
+        }
+      }
     }
   }});
 }
@@ -3216,13 +3235,13 @@ function initPanels(){
           <div class="twrap"><canvas id="tchrt${i}"></canvas></div>
         </div>
 
-        <!-- 2. Critical Sites table — placed directly below the trend bar chart -->
-        <div id="critSites${i}" style="margin-top:0;margin-bottom:10px"></div>
-
-        <!-- 3. Trend Table (pivot) -->
+        <!-- 2. Trend Table (pivot) -->
         <div id="tbl${i}"></div>
 
-        <!-- 4. Location Breakdown Chart -->
+        <!-- 3. Critical Sites table — below pivot table -->
+        <div id="critSites${i}" style="margin-top:10px;margin-bottom:10px"></div>
+
+        <!-- 4. Location Breakdown Chart — below Critical Sites -->
         <div class="carea">
           <div class="ctoolbar">
             <span class="ctoolbar-lbl">📈 Location Breakdown — Date vs AWB Count</span>
@@ -6346,61 +6365,61 @@ function filterRawForSection(sec,idx){
 }
 
 /* SECTION EXCEL REPORT — Date-wise append, full detailed source data.
-   Primary path  : rawData (full source columns from original uploaded file) — available
-                   immediately after upload before purge, and from IDB on reload.
-   Fallback path : master aggregates — used when rawData is empty (post-purge, old session).
-                   Still produces date-wise rows with all stored aggregate fields.
-
-   Structure: File Date | <all original source columns from uploaded file>
-   No counts-only, no summaries — complete historical master database.              */
+   Priority 1: rawData cache (full original source columns)
+   Priority 2: IDB restore → rawData (async, then re-download)
+   Priority 3: master aggregates (all stored aggregate fields)               */
 function downloadSectionReport(idx){
   const sec=SECS[idx];
   const f=SEC_FILTERS[idx]||{age:sec.ageOpts?.[0]||3,bins:[],msgs:[]};
 
-  // ── PRIMARY: rawData (full source detail from original file) ──────────────────
-  // rawData stores all filtered rows with every original column from the uploaded file.
-  // It is available: (a) immediately after upload; (b) from IDB on page reload.
+  // Check rawData first
   const rawRows=filterRawForSection(sec,idx);
 
   if(rawRows.length>0){
-    // Sort date-wise first, then location
-    rawRows.sort((a,b)=>(a._date||'').localeCompare(b._date||'')||(a.location||a.destination||'').localeCompare(b.location||b.destination||''));
-
-    // Build column set from actual raw rows (all original source columns)
-    const SKIP=new Set(['_date']);
-    const fieldSet=new Set();
-    rawRows.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP.has(k))fieldSet.add(k);}));
-
-    const priorityFields=['location','destination','age','bin','msg','os','client','count'];
-    const srcCols=[
-      ...priorityFields.filter(c=>fieldSet.has(c)),
-      ...[...fieldSet].filter(c=>!priorityFields.includes(c))
-    ];
-    const allCols=['File Date',...srcCols];
-
-    const wsRows=[allCols];
-    rawRows.forEach(r=>{
-      wsRows.push(allCols.map(col=>{
-        if(col==='File Date')return r._date||'';
-        const v=r[col];
-        return(v===undefined||v===null)?'':typeof v==='number'?v:String(v);
-      }));
-    });
-
-    const ws=XLSX.utils.aoa_to_sheet(wsRows);
-    ws['!cols']=allCols.map(c=>({wch:Math.min(35,Math.max(8,String(c).length+3))}));
-    const wb=XLSX.utils.book_new();
-    const safeTitle=sec.title.replace(/[^\w\s]/g,'_').replace(/\s+/g,'_').trim().slice(0,31);
-    XLSX.utils.book_append_sheet(wb,ws,safeTitle);
-    XLSX.writeFile(wb,`${safeTitle}_D${f.age}_${new Date().toISOString().slice(0,10)}.xlsx`);
-    const fileDates=[...new Set(rawRows.map(r=>r._date))].length;
-    toast(`⬇ ${fn(rawRows.length)} detailed rows · ${allCols.length} source cols · ${fileDates} file dates`,'tok');
+    _buildAndDownloadReport(sec,f,rawRows,'rawData');
     return;
   }
 
-  // ── FALLBACK: master aggregates (available after rawData is purged) ───────────
-  // master stores aggregated rows with all fields captured during processing.
-  // Still gives date-wise append structure with all stored fields.
+  // rawData is empty (purged after upload) — try IDB restore, then fall back to master
+  toast('⏳ Loading data from storage…','ti');
+  initFromIDB().then(()=>{
+    const rawRows2=filterRawForSection(sec,idx);
+    if(rawRows2.length>0){
+      _buildAndDownloadReport(sec,f,rawRows2,'IDB');
+    }else{
+      // Final fallback: master aggregates
+      _buildReportFromMaster(sec,f);
+    }
+  }).catch(()=>_buildReportFromMaster(sec,f));
+}
+
+function _buildAndDownloadReport(sec,f,rawRows,source){
+  rawRows.sort((a,b)=>(a._date||'').localeCompare(b._date||'')||(a.location||a.destination||'').localeCompare(b.location||b.destination||''));
+  const SKIP=new Set(['_date']);
+  const fieldSet=new Set();
+  rawRows.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP.has(k))fieldSet.add(k);}));
+  const priority=['location','destination','age','bin','msg','os','client','count'];
+  const srcCols=[...priority.filter(c=>fieldSet.has(c)),...[...fieldSet].filter(c=>!priority.includes(c))];
+  const allCols=['File Date',...srcCols];
+  const wsRows=[allCols];
+  rawRows.forEach(r=>{
+    wsRows.push(allCols.map(col=>{
+      if(col==='File Date')return r._date||'';
+      const v=r[col];
+      return(v===undefined||v===null)?'':typeof v==='number'?v:String(v);
+    }));
+  });
+  const ws=XLSX.utils.aoa_to_sheet(wsRows);
+  ws['!cols']=allCols.map(c=>({wch:Math.min(35,Math.max(8,String(c).length+3))}));
+  const wb=XLSX.utils.book_new();
+  const safeTitle=sec.title.replace(/[^\w\s]/g,'_').replace(/\s+/g,'_').trim().slice(0,31);
+  XLSX.utils.book_append_sheet(wb,ws,safeTitle);
+  XLSX.writeFile(wb,`${safeTitle}_D${f.age}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  const fileDates=[...new Set(rawRows.map(r=>r._date))].length;
+  toast(`⬇ ${fn(rawRows.length)} detailed rows · ${allCols.length} source cols · ${fileDates} file dates (${source})`,'tok');
+}
+
+function _buildReportFromMaster(sec,f){
   const isForward=sec.src==='forward';
   const all=(master[sec.src]||[]).filter(r=>{
     if(r.age!==f.age)return false;
@@ -6409,29 +6428,14 @@ function downloadSectionReport(idx){
     if(isForward&&f.bins.length>0&&r.os==='IN_MANIFEST')return false;
     return true;
   });
-
-  if(!all.length){
-    toast('No data — upload the matching file first','tw');
-    return;
-  }
-
-  // Sort date-wise, then location
-  all.sort((a,b)=>
-    (a.date||'').localeCompare(b.date||'')||
-    (a.location||a.destination||'').localeCompare(b.location||b.destination||'')
-  );
-
-  // Build all stored fields
+  if(!all.length){toast('No data — upload the matching file first','tw');return;}
+  all.sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.location||a.destination||'').localeCompare(b.location||b.destination||''));
   const SKIP2=new Set(['date']);
   const fieldSet2=new Set();
   all.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP2.has(k))fieldSet2.add(k);}));
   const priority2=['location','destination','age','bin','msg','os','client','count'];
-  const srcCols2=[
-    ...priority2.filter(c=>fieldSet2.has(c)),
-    ...[...fieldSet2].filter(c=>!priority2.includes(c))
-  ];
+  const srcCols2=[...priority2.filter(c=>fieldSet2.has(c)),...[...fieldSet2].filter(c=>!priority2.includes(c))];
   const allCols2=['File Date',...srcCols2];
-
   const wsRows2=[allCols2];
   all.forEach(r=>{
     wsRows2.push(allCols2.map(col=>{
@@ -6440,7 +6444,6 @@ function downloadSectionReport(idx){
       return(v===undefined||v===null)?'':typeof v==='number'?v:String(v);
     }));
   });
-
   const ws2=XLSX.utils.aoa_to_sheet(wsRows2);
   ws2['!cols']=allCols2.map(c=>({wch:Math.min(35,Math.max(8,String(c).length+3))}));
   const wb2=XLSX.utils.book_new();
@@ -6448,7 +6451,7 @@ function downloadSectionReport(idx){
   XLSX.utils.book_append_sheet(wb2,ws2,safeTitle2);
   XLSX.writeFile(wb2,`${safeTitle2}_D${f.age}_${new Date().toISOString().slice(0,10)}.xlsx`);
   const fileDates2=[...new Set(all.map(r=>r.date))].length;
-  toast(`⬇ ${fn(all.length)} rows · ${allCols2.length} cols · ${fileDates2} file dates (from master)`,'tok');
+  toast(`⬇ ${fn(all.length)} rows · ${allCols2.length} cols · ${fileDates2} file dates (master)`,'tok');
 }
 
 /* ═══════════════════════════════════════════════
