@@ -915,6 +915,37 @@ const CPALS=['#2563eb','#dc2626','#16a34a','#d97706','#7c3aed','#0891b2','#be185
 ═══════════════════════════════════════════════ */
 /* rawData must be declared before loadM() runs so persistence restore works */
 const rawData={};
+
+/* ═══════════════════════════════════════════════
+   ROLLING AVERAGE STORE
+   Persists HISTORICAL AVERAGE per (section × site) across sessions.
+   On every upload: currentAvg → historicalAvg, newAvg → currentAvg.
+   Structure: { [sectionTitle]: { [site]: { histAvg, latestAvg, updatedAt } } }
+═══════════════════════════════════════════════ */
+const RA_KEY='logistics_rolling_avg_v1';
+let _rollingAvg={};
+
+function _loadRollingAvg(){
+  try{const s=localStorage.getItem(RA_KEY);if(s)_rollingAvg=JSON.parse(s);}catch{}
+}
+function _saveRollingAvg(){
+  try{localStorage.setItem(RA_KEY,JSON.stringify(_rollingAvg));}catch{}
+}
+/* Get stored averages for a site in a section */
+function _getAvg(section,site){
+  return(_rollingAvg[section]&&_rollingAvg[section][site])||{histAvg:0,latestAvg:0,updatedAt:''};
+}
+/* Roll: latestAvg becomes histAvg, newLatest stored. Called on every upload cycle. */
+function _rollAvg(section,site,newLatestAvg,ts){
+  if(!_rollingAvg[section])_rollingAvg[section]={};
+  const prev=_getAvg(section,site);
+  _rollingAvg[section][site]={
+    histAvg  : prev.latestAvg>0 ? prev.latestAvg : newLatestAvg, // first upload: hist = latest
+    latestAvg: newLatestAvg,
+    updatedAt: ts||new Date().toISOString()
+  };
+}
+_loadRollingAvg(); // load on boot
 let master=loadM(),activeTab=0,charts={},debugMode=false,dlog=[],pending={};
 
 function emptyM(){return{forward:[],reverse:[],lmodc:[],forwardShort:[],hov:[],hovPV:[],hovAllRaw:[],hovFwdRaw:[],hovRevRaw:[]}}
@@ -2638,17 +2669,13 @@ function renderTrendChart(cid,sec,idx){
 }
 
 /* ═══════════════════════════════════════════════
-   TABLE RENDERER — v2 (Historical Average Logic)
-   Rows = Location/Destination, Columns = Dates
-   Red cell = value increased vs previous date column
-   Green cell = value decreased vs previous date column
-
-   AVERAGE column: historical average per site across ALL dates in master
-   TREND ARROW: compares LATEST DATE count vs HISTORICAL AVERAGE
-     • Latest > Avg → RED ▲ (pendency rising — worse than historical)
-     • Latest < Avg → GREEN ▼ (pendency falling — better than historical)
-     • Latest == Avg → no arrow (stable)
-   Arrow appears in the LATEST DATE cell, not the TOTAL cell.
+   TABLE RENDERER — v3 (Rolling Average Logic)
+   NEW STRUCTURE: LOCATION | Dates | TOTAL | HISTORICAL AVERAGE | LATEST AVERAGE
+   ARROW: compares LATEST AVERAGE vs HISTORICAL AVERAGE (not latest count vs avg)
+     • Latest Avg > Hist Avg → RED ▲  (pendency trending up)
+     • Latest Avg < Hist Avg → GREEN ▼ (pendency trending down)
+     • Equal → no arrow
+   Date cells: heatmap only (rising/falling vs prior date) — no avg arrows in date cells
 ═══════════════════════════════════════════════ */
 function renderTable(el,piv,sec,idx){
   if(!el)return{grand:0,siteStats:[]};
@@ -2660,10 +2687,10 @@ function renderTable(el,piv,sec,idx){
     return{grand:0,siteStats:[]};
   }
 
-  // ── SORT: descending by row total (highest pendency first) ──────────
+  const secTitle=sec?sec.title:'Unknown';
   const sortedLocs=[...piv.locs].sort((a,b)=>(piv.rowTotals[b]||0)-(piv.rowTotals[a]||0));
   const nDates=piv.dates.length;
-  const latestDate=piv.dates[nDates-1]; // most recent file's date
+  const latestDate=piv.dates[nDates-1];
   let grand=0;
 
   const CELL='padding:3px 7px;text-align:center;font-size:11px;font-weight:700;white-space:nowrap;border:1px solid #c8dfd9;';
@@ -2677,43 +2704,48 @@ function renderTable(el,piv,sec,idx){
         <th style="${CELL_L}background:#0f2b25;color:#fff;min-width:110px;position:sticky;left:0;z-index:2">LOCATION</th>
         ${piv.dates.map((d,di)=>{
           const isLatest=di===nDates-1;
-          const latestStyle=isLatest?'border-bottom:3px solid #E9DF43;':'';
-          return`<th style="${CELL}background:#0f2b25;color:${isLatest?'#E9DF43':'#fff'};min-width:52px;${latestStyle}" title="${isLatest?'Latest uploaded file':''}">
+          return`<th style="${CELL}background:#0f2b25;color:${isLatest?'#E9DF43':'#fff'};min-width:52px;${isLatest?'border-bottom:3px solid #E9DF43;':''}" title="${isLatest?'Latest uploaded file':''}">
             ${fmtD(d)}${isLatest?'<br><span style="font-size:9px;opacity:.8">★ LATEST</span>':''}
           </th>`;
         }).join('')}
         <th style="${CELL}background:#0a4a35;color:#E9DF43;min-width:60px">TOTAL</th>
-        <th style="${CELL}background:#0a4a35;color:#E9DF43;min-width:56px" title="Historical average across all uploaded dates">AVG/DAY</th>
+        <th style="${CELL}background:#1a3a5c;color:#bfdbfe;min-width:72px" title="Previous rolling average — before the latest upload">HISTORICAL<br>AVERAGE</th>
+        <th style="${CELL}background:#1e3a4a;color:#a5f3fc;min-width:72px" title="Newly recalculated average including latest upload">LATEST<br>AVERAGE</th>
       </tr>
     </thead>
     <tbody>`;
 
-  // Build site data for Critical Sites + backend push
   const siteStats=[];
+  const rollTs=new Date().toISOString();
+
   sortedLocs.forEach((loc,ri)=>{
     const rowBg=ri%2===0?'#fff':'#f3faf7';
     const rt=piv.rowTotals[loc]||0;
     grand+=rt;
 
-    // Historical average: total across ALL dates ÷ number of dates
-    // This uses the full master dataset (all uploaded files) not just what's visible
-    const historicalAvg=nDates>0?Math.round(rt/nDates):0;
+    // LATEST AVERAGE: recalculated NOW using all uploaded dates for this site
+    const latestAvg=nDates>0?Math.round(rt/nDates):0;
 
-    // Latest file's count for this site
-    const latestCount=(piv.grid[loc]&&piv.grid[loc][latestDate])||0;
+    // HISTORICAL AVERAGE: stored from the PREVIOUS upload cycle
+    const stored=_getAvg(secTitle,loc);
+    const histAvg=stored.histAvg>0?stored.histAvg:(stored.latestAvg>0?stored.latestAvg:latestAvg);
 
-    // ── TREND ARROW: compare LATEST COUNT vs HISTORICAL AVERAGE ──────
-    // Red ▲ = latest higher than average (pendency worsening)
-    // Green ▼ = latest lower than average (pendency improving)
-    const latestArrow=latestCount>historicalAvg
-      ?`<span style="color:#ef4444;font-size:12px;margin-left:3px;font-weight:900" title="Latest (${fn(latestCount)}) > Avg (${fn(historicalAvg)}) — pendency rising ↑">▲</span>`
-      :latestCount<historicalAvg&&latestCount>0
-      ?`<span style="color:#059669;font-size:12px;margin-left:3px;font-weight:900" title="Latest (${fn(latestCount)}) < Avg (${fn(historicalAvg)}) — pendency falling ↓">▼</span>`
+    // Roll the average store: histAvg ← prev latestAvg, latestAvg ← new value
+    // Only roll if latestAvg has changed (avoid rolling on pure re-renders)
+    if(stored.latestAvg!==latestAvg){
+      _rollAvg(secTitle,loc,latestAvg,rollTs);
+    }
+
+    // ── TREND ARROW: LATEST AVERAGE vs HISTORICAL AVERAGE ──────────────
+    const avgArrow=latestAvg>histAvg
+      ?`<span style="color:#ef4444;font-size:12px;margin-left:3px;font-weight:900" title="Latest avg (${fn(latestAvg)}) > Hist avg (${fn(histAvg)}) — trend rising ↑">▲</span>`
+      :latestAvg<histAvg&&latestAvg>0
+      ?`<span style="color:#059669;font-size:12px;margin-left:3px;font-weight:900" title="Latest avg (${fn(latestAvg)}) < Hist avg (${fn(histAvg)}) — trend falling ↓">▼</span>`
       :``;
 
-    const trend=latestCount>historicalAvg?'RISING':latestCount<historicalAvg&&latestCount>0?'FALLING':'STABLE';
+    const trend=latestAvg>histAvg?'RISING':latestAvg<histAvg&&latestAvg>0?'FALLING':'STABLE';
+    const latestCount=(piv.grid[loc]&&piv.grid[loc][latestDate])||0;
 
-    // Collect for Critical Sites table + backend
     let redCells=0;
     const cells=piv.dates.map((d,di)=>{
       const v=piv.grid[loc][d]||0;
@@ -2723,37 +2755,27 @@ function renderTable(el,piv,sec,idx){
       if(v===0){fg='#94a3b8';}
       else if(prev!==null&&v>prev){bg='background:#ef4444;';fg='#fff';redCells++;}
       else if(prev!==null&&v<prev){bg='background:#dff0ea;';fg='#0a4a35';}
-
-      // ── AVERAGE LOGIC ARROW: shown on EVERY cell, comparing cell value vs historical avg ──
-      // Red ▲ = this date's count is above the site's historical average (concerning)
-      // Green ▼ = below average (improving)
-      let cellArrow='';
-      if(v>0){
-        if(v>historicalAvg){
-          cellArrow=`<span style="color:${bg?'#ffcccc':'#ef4444'};font-size:10px;margin-left:2px;font-weight:900" title="${fn(v)} > avg ${fn(historicalAvg)}">▲</span>`;
-        }else if(v<historicalAvg){
-          cellArrow=`<span style="color:${bg.includes('ef4444')?'#bbf7d0':'#059669'};font-size:10px;margin-left:2px;font-weight:900" title="${fn(v)} < avg ${fn(historicalAvg)}">▼</span>`;
-        }
-      }
-
-      // Highlight the latest date column border
       const latestBorder=isLatest?'border-left:3px solid #E9DF43;border-right:3px solid #E9DF43;':'';
-
-      return`<td style="${CELL}${bg}color:${fg};${latestBorder}">${v===0?'–':fn(v)}${cellArrow}</td>`;
+      return`<td style="${CELL}${bg}color:${fg};${latestBorder}">${v===0?'–':fn(v)}</td>`;
     });
 
-    siteStats.push({loc,rt,historicalAvg,latestCount,trend,redCells,latestDate,nDates});
+    siteStats.push({loc,rt,histAvg,latestAvg,latestCount,trend,redCells,latestDate,nDates});
 
     html+=`<tr style="background:${rowBg}">
       <td style="${CELL_L}font-weight:700;color:#0a2520;position:sticky;left:0;background:${rowBg}" title="${xe(loc)}">${xe(loc)}</td>
       ${cells.join('')}
       <td style="${CELL}background:#0a4a35;color:#E9DF43;font-size:12px">${fn(rt)}</td>
-      <td style="${CELL}background:#e8f5f1;color:#0a4a35;font-size:11px">${fn(historicalAvg)}</td>
+      <td style="${CELL}background:#dbeafe;color:#1e3a6e;font-size:11px">${fn(histAvg)}</td>
+      <td style="${CELL}background:#e0f7fa;color:#0a4a35;font-size:11px">${fn(latestAvg)}${avgArrow}</td>
     </tr>`;
   });
 
-  // Footer row
-  const grandAvg=sortedLocs.length>0?Math.round(grand/sortedLocs.length):0;
+  // Persist updated rolling averages
+  _saveRollingAvg();
+
+  // Footer
+  const grandHistAvg=siteStats.length>0?Math.round(siteStats.reduce((s,r)=>s+r.histAvg,0)/siteStats.length):0;
+  const grandLatestAvg=siteStats.length>0?Math.round(siteStats.reduce((s,r)=>s+r.latestAvg,0)/siteStats.length):0;
   html+=`</tbody><tfoot><tr style="background:#0a2520;color:#fff">
     <td style="${CELL_L}background:#0a2520;color:#fff;font-weight:900;position:sticky;left:0">TOTAL</td>
     ${piv.dates.map((d,di)=>{
@@ -2765,14 +2787,15 @@ function renderTable(el,piv,sec,idx){
       return`<td style="${CELL}background:#0a2520;color:${fc};${latestBorder}">${fn(tot)}</td>`;
     }).join('')}
     <td style="${CELL}background:#0a2520;color:#E9DF43;font-weight:900">${fn(grand)}</td>
-    <td style="${CELL}background:#0a2520;color:#dff0ea">${fn(grandAvg)}</td>
+    <td style="${CELL}background:#0a2520;color:#bfdbfe">${fn(grandHistAvg)}</td>
+    <td style="${CELL}background:#0a2520;color:#a5f3fc">${fn(grandLatestAvg)}</td>
   </tr></tfoot></table></div>
   <div class="leg" style="margin-top:4px;padding:2px 0">
     <span class="lc"><span class="lb lu"></span>▲ Red cell = count rose vs prior date</span>
     <span class="lc"><span class="lb ld"></span>▼ Green cell = count fell vs prior date</span>
-    <span class="lc" style="color:#ef4444;font-size:10px">▲ Red arrow (★ LATEST) = latest count above historical avg</span>
-    <span class="lc" style="color:#059669;font-size:10px">▼ Green arrow (★ LATEST) = latest count below historical avg</span>
-    <span class="lc" style="color:#64748b">AVG/DAY = site average across all uploaded dates</span>
+    <span class="lc" style="color:#ef4444;font-size:10px">▲ Red arrow = Latest Avg above Historical Avg (trend rising)</span>
+    <span class="lc" style="color:#059669;font-size:10px">▼ Green arrow = Latest Avg below Historical Avg (trend falling)</span>
+    <span class="lc" style="color:#1e3a6e;font-size:10px">HISTORICAL AVG = previous session's avg · LATEST AVG = current recalculation</span>
   </div>`;
 
   // ── CRITICAL SITES table (top 5 by score, uses trend vs historical avg) ──
@@ -2785,7 +2808,6 @@ function renderTable(el,piv,sec,idx){
   const CS='padding:5px 8px;text-align:center;font-size:11px;font-weight:700;border:1px solid #fca5a5;';
   const CSL='padding:5px 8px;text-align:left;font-size:11px;font-weight:700;border:1px solid #fca5a5;';
 
-  // Critical Sites is rendered in its own div (below bar chart) — not inside the pivot table
   const critHtml=scored.length?`<div style="padding:12px 12px 10px;background:#fff;border:1px solid #e2e8f0;border-radius:8px">
     <div style="font-size:12px;font-weight:900;color:#7f1d1d;letter-spacing:.5px;text-transform:uppercase;margin-bottom:8px">
       🚨 CRITICAL SITES — Top 5 by Severity
@@ -2796,7 +2818,8 @@ function renderTable(el,piv,sec,idx){
         <th style="${CS}">RANK</th>
         <th style="${CSL}">SITE NAME</th>
         <th style="${CS}">LATEST COUNT</th>
-        <th style="${CS}">HIST. AVG/DAY</th>
+        <th style="${CS}">HIST. AVG</th>
+        <th style="${CS}">LATEST AVG</th>
         <th style="${CS}">TOTAL AWBs</th>
         <th style="${CS}">RED DAYS</th>
         <th style="${CS}">SCORE</th>
@@ -2807,14 +2830,15 @@ function renderTable(el,piv,sec,idx){
         const rank=`#${i+1}`;
         const rowBg=i===0?'#fee2e2':i===1?'#fef3c7':i===2?'#fffbeb':'#fff';
         const scoreBg=i<2?'background:#dc2626;color:#fff;':i===2?'background:#f59e0b;color:#fff;':'';
-        const latestArrow=s.trend==='RISING'
+        const arrow=s.trend==='RISING'
           ?`<span style="color:#ef4444">▲</span>`
           :s.trend==='FALLING'?`<span style="color:#059669">▼</span>`:'';
         return`<tr style="background:${rowBg}">
           <td style="${CS}font-weight:900;color:#7f1d1d">${rank}</td>
           <td style="${CSL}font-weight:800;color:#7f1d1d">${xe(s.loc)}</td>
-          <td style="${CS}font-size:13px;color:#dc2626">${fn(s.latestCount)} ${latestArrow}</td>
-          <td style="${CS}color:#059669">${fn(s.historicalAvg)}</td>
+          <td style="${CS}font-size:12px;color:#0a4a35">${fn(s.latestCount)}</td>
+          <td style="${CS}color:#1e3a6e">${fn(s.histAvg)}</td>
+          <td style="${CS}color:#0a4a35;font-weight:900">${fn(s.latestAvg)} ${arrow}</td>
           <td style="${CS}">${fn(s.rt)}</td>
           <td style="${CS}">${s.redCells}</td>
           <td style="${CS}${scoreBg}">${fn(s.score)}</td>
@@ -3346,14 +3370,13 @@ async function downloadFullSectionImage(idx, name){
   }
 }
 
-/* ── Push site-level historical averages to the SITE AVERAGES sheet ──────────
-   Called after every renderTab so the backend always has the latest averages.
-   Throttled via a module-level debounce so rapid filter changes don't spam Sheets. */
+/* ── Push site-level rolling averages to the SITE AVERAGES sheet ──────────────
+   Pushes HISTORICAL AVERAGE, LATEST AVERAGE, and TREND for every site.
+   Throttled to avoid spamming Sheets on rapid filter changes.               */
 const _siteAvgPushTimer={};
 async function pushSiteAveragesToSheets(sectionTitle, siteStats){
   const url=getGsUrl();
   if(!url||!siteStats||!siteStats.length)return;
-  // Debounce: skip if same section was pushed in the last 10s
   const now=Date.now();
   if(_siteAvgPushTimer[sectionTitle]&&now-_siteAvgPushTimer[sectionTitle]<10000)return;
   _siteAvgPushTimer[sectionTitle]=now;
@@ -3365,9 +3388,10 @@ async function pushSiteAveragesToSheets(sectionTitle, siteStats){
       s.loc,
       s.latestDate||'',
       s.latestCount||0,
-      s.historicalAvg||0,
-      s.rt||0,         // total across all dates
-      s.nDates||0,     // number of dates used for average
+      s.histAvg||0,      // HISTORICAL AVERAGE (previous session)
+      s.latestAvg||0,    // LATEST AVERAGE (current recalculation)
+      s.rt||0,
+      s.nDates||0,
       s.trend||'STABLE',
       new Date().toISOString()
     ]);
@@ -3377,7 +3401,7 @@ async function pushSiteAveragesToSheets(sectionTitle, siteStats){
       syncDate,
       rows
     });
-    console.log(`Site averages pushed for ${sectionTitle}: ${rows.length} sites`);
+    console.log(`Rolling averages pushed for ${sectionTitle}: ${rows.length} sites`);
   }catch(e){
     console.warn('pushSiteAveragesToSheets failed (non-fatal):',e.message);
   }
@@ -6771,11 +6795,12 @@ function getOrCreateSheet(ss, name, headers) {
 function processPayload(payload) {
   var ss = getSS();
 
-  /* ── SITE AVERAGES — historical average per site per section ── */
+  /* ── SITE AVERAGES — rolling historical/latest average per site ── */
   if (payload.type === 'site_averages') {
     var avSheet = getOrCreateSheet(ss, 'SITE AVERAGES',
       ['Sync Date','Section','Site / Location','Latest File Date',
-       'Latest Count','Hist. Avg/Day','Total (All Days)','Days Tracked','Trend','Updated At']);
+       'Latest Count','Historical Average','Latest Average',
+       'Total (All Days)','Days Tracked','Trend','Updated At']);
     var syncDateSA = String(payload.syncDate||new Date().toISOString().slice(0,10)).slice(0,10);
     var sectionSA  = String(payload.section||'');
     var rowsSA     = payload.rows||[];
