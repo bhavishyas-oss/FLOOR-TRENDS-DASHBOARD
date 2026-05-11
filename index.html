@@ -1732,7 +1732,15 @@ function decompAsync(raw, isStored){
   });
 }
 
-async function readExcelNative(buf){
+async function readExcelNative(buf, filename){
+  /* LMODC FIX: LMODC raw files contain an 'age' column whose values are small
+     integers (3,6,10…). If the first row happens to be a pivot-format summary
+     (Row Labels | 3 | 6 | 10) that row is skipped — but some LMODC exports put
+     numeric column headers that wrongly trigger isPivotFmt, skipping all sheets
+     and causing a fallback to the slow XLSX.js "alt method".
+     Solution: skip isPivotFmt check for sheets in files already identified as
+     lmodc by filename. Raw LMODC sheets always have the right headers (scanned_area_code etc). */
+  const knownLmodc = !!filename && idByName(filename)==='lmodc';
   try{
     const data=new Uint8Array(buf);
     const dv=new DataView(buf);
@@ -2006,7 +2014,10 @@ async function readExcelNative(buf){
 
       const hi=findHdrRow(rows);
       const hdrs=cleanH((rows[hi]||[]).map(h=>String(h==null?'':h)));
-      if(isPivotFmt(hdrs)){console.log('Native: skip pivot:',sname);continue;}
+      // For LMODC files: never skip a sheet based on pivot format detection.
+      // LMODC raw files may have numeric-looking columns (age values) that
+      // incorrectly trigger isPivotFmt, causing all sheets to be skipped.
+      if(!knownLmodc && isPivotFmt(hdrs)){console.log('Native: skip pivot:',sname);continue;}
 
       // ── MEMORY FIX: clear entries and data view so the original ArrayBuffer
       // (buf in procExcel) can be GC'd as soon as caller nulls buf.
@@ -2158,7 +2169,7 @@ function procExcel(file){
          Reverse (3-26MB), LMODC, Short Shipment — same path for all.    */
       if(hasPako){
         setP(15,`📖  Reading: ${file.name}`);
-        result=await readExcelNative(buf);
+        result=await readExcelNative(buf, file.name);
         if(result&&result.rows&&result.rows.length>=2){
           // ── MEMORY FIX: release ArrayBuffer immediately after native read ──
           // buf is the full compressed file (up to 76MB+). Nulling it here
@@ -3928,7 +3939,7 @@ async function procHovFile(file,type,date){
         const buf=await file.arrayBuffer();
         let result=null;
         const hasPako=typeof pako!=='undefined';
-        if(hasPako){result=await readExcelNative(buf);}
+        if(hasPako){result=await readExcelNative(buf, f.name);}
         if(!result||result.rows.length<2)result=readExcel(buf,null);
         if(!result||result.rows.length<2){
           console.warn('HOV: no rows found in',file.name);return;
@@ -6302,17 +6313,63 @@ function filterRawForSection(sec,idx){
   return out;
 }
 
-/* SECTION EXCEL REPORT — uses live filter state.
-   rawData is now persisted to localStorage so it survives page reloads.
-   PRIMARY path : rawData cache → full AWB-level source columns.
-   RECOVERY path: rawData was too large to cache → rebuild from master aggregates,
-                  still produces date-wise rows (no fallback message ever shown).  */
+/* SECTION EXCEL REPORT — Date-wise append, full detailed source data.
+   Primary path  : rawData (full source columns from original uploaded file) — available
+                   immediately after upload before purge, and from IDB on reload.
+   Fallback path : master aggregates — used when rawData is empty (post-purge, old session).
+                   Still produces date-wise rows with all stored aggregate fields.
+
+   Structure: File Date | <all original source columns from uploaded file>
+   No counts-only, no summaries — complete historical master database.              */
 function downloadSectionReport(idx){
   const sec=SECS[idx];
   const f=SEC_FILTERS[idx]||{age:sec.ageOpts?.[0]||3,bins:[],msgs:[]};
-  const isForward=sec.src==='forward';
 
-  // Always rebuild from master — authoritative, always current
+  // ── PRIMARY: rawData (full source detail from original file) ──────────────────
+  // rawData stores all filtered rows with every original column from the uploaded file.
+  // It is available: (a) immediately after upload; (b) from IDB on page reload.
+  const rawRows=filterRawForSection(sec,idx);
+
+  if(rawRows.length>0){
+    // Sort date-wise first, then location
+    rawRows.sort((a,b)=>(a._date||'').localeCompare(b._date||'')||(a.location||a.destination||'').localeCompare(b.location||b.destination||''));
+
+    // Build column set from actual raw rows (all original source columns)
+    const SKIP=new Set(['_date']);
+    const fieldSet=new Set();
+    rawRows.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP.has(k))fieldSet.add(k);}));
+
+    const priorityFields=['location','destination','age','bin','msg','os','client','count'];
+    const srcCols=[
+      ...priorityFields.filter(c=>fieldSet.has(c)),
+      ...[...fieldSet].filter(c=>!priorityFields.includes(c))
+    ];
+    const allCols=['File Date',...srcCols];
+
+    const wsRows=[allCols];
+    rawRows.forEach(r=>{
+      wsRows.push(allCols.map(col=>{
+        if(col==='File Date')return r._date||'';
+        const v=r[col];
+        return(v===undefined||v===null)?'':typeof v==='number'?v:String(v);
+      }));
+    });
+
+    const ws=XLSX.utils.aoa_to_sheet(wsRows);
+    ws['!cols']=allCols.map(c=>({wch:Math.min(35,Math.max(8,String(c).length+3))}));
+    const wb=XLSX.utils.book_new();
+    const safeTitle=sec.title.replace(/[^\w\s]/g,'_').replace(/\s+/g,'_').trim().slice(0,31);
+    XLSX.utils.book_append_sheet(wb,ws,safeTitle);
+    XLSX.writeFile(wb,`${safeTitle}_D${f.age}_${new Date().toISOString().slice(0,10)}.xlsx`);
+    const fileDates=[...new Set(rawRows.map(r=>r._date))].length;
+    toast(`⬇ ${fn(rawRows.length)} detailed rows · ${allCols.length} source cols · ${fileDates} file dates`,'tok');
+    return;
+  }
+
+  // ── FALLBACK: master aggregates (available after rawData is purged) ───────────
+  // master stores aggregated rows with all fields captured during processing.
+  // Still gives date-wise append structure with all stored fields.
+  const isForward=sec.src==='forward';
   const all=(master[sec.src]||[]).filter(r=>{
     if(r.age!==f.age)return false;
     if(isForward&&f.bins.length>0&&!f.bins.includes(r.bin))return false;
@@ -6326,59 +6383,40 @@ function downloadSectionReport(idx){
     return;
   }
 
-  // Sort by file date FIRST, then by location within each date
-  // This gives the DATE-WISE APPEND structure: all rows for 01 Apr, then 02 Apr, etc.
+  // Sort date-wise, then location
   all.sort((a,b)=>
     (a.date||'').localeCompare(b.date||'')||
     (a.location||a.destination||'').localeCompare(b.location||b.destination||'')
   );
 
-  // Build column set from actual master records (all source fields)
-  // Structure: File Date | <all source columns exactly as in uploaded file>
-  // Remove internal meta-fields; 'date' becomes "File Date" in col 1
-  const SKIP_COLS=new Set(['date']); // 'date' becomes the first "File Date" col
-  const fieldSet=new Set();
-  all.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP_COLS.has(k))fieldSet.add(k);}));
-
-  // Order: location/destination first, then age, then remaining source cols
-  const priorityFields=['location','destination','age','bin','msg','os','client','count'];
-  const srcCols=[
-    ...priorityFields.filter(f2=>fieldSet.has(f2)),
-    ...[...fieldSet].filter(f2=>!priorityFields.includes(f2))
+  // Build all stored fields
+  const SKIP2=new Set(['date']);
+  const fieldSet2=new Set();
+  all.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP2.has(k))fieldSet2.add(k);}));
+  const priority2=['location','destination','age','bin','msg','os','client','count'];
+  const srcCols2=[
+    ...priority2.filter(c=>fieldSet2.has(c)),
+    ...[...fieldSet2].filter(c=>!priority2.includes(c))
   ];
-  const allCols=['File Date',...srcCols];
+  const allCols2=['File Date',...srcCols2];
 
-  // Build rows: File Date + all source values exactly
-  const wsRows=[allCols];
+  const wsRows2=[allCols2];
   all.forEach(r=>{
-    wsRows.push(allCols.map(col=>{
+    wsRows2.push(allCols2.map(col=>{
       if(col==='File Date')return r.date||'';
       const v=r[col];
       return(v===undefined||v===null)?'':typeof v==='number'?v:String(v);
     }));
   });
 
-  // Excel sheet
-  const ws=XLSX.utils.aoa_to_sheet(wsRows);
-  ws['!cols']=allCols.map(c=>({wch:Math.min(35,Math.max(8,String(c).length+3))}));
-
-  // Style header row (row 1) — bold + background
-  const range=XLSX.utils.decode_range(ws['!ref']);
-  for(let C=range.s.c;C<=range.e.c;C++){
-    const cell=ws[XLSX.utils.encode_cell({r:0,c:C})];
-    if(cell){
-      if(!cell.s)cell.s={};
-      cell.s.font={bold:true};
-      cell.s.fill={patternType:'solid',fgColor:{rgb:'0D1F2C'}};
-      cell.s.font.color={rgb:'FFFFFF'};
-    }
-  }
-
-  const wb=XLSX.utils.book_new();
-  const safeTitle=sec.title.replace(/[^\w\s]/g,'_').replace(/\s+/g,'_').trim().slice(0,31);
-  XLSX.utils.book_append_sheet(wb,ws,safeTitle);
-  XLSX.writeFile(wb,`${safeTitle}_D${f.age}_${new Date().toISOString().slice(0,10)}.xlsx`);
-  toast(`⬇ ${fn(all.length)} rows · ${allCols.length} cols · ${[...new Set(all.map(r=>r.date))].length} file dates`,'tok');
+  const ws2=XLSX.utils.aoa_to_sheet(wsRows2);
+  ws2['!cols']=allCols2.map(c=>({wch:Math.min(35,Math.max(8,String(c).length+3))}));
+  const wb2=XLSX.utils.book_new();
+  const safeTitle2=sec.title.replace(/[^\w\s]/g,'_').replace(/\s+/g,'_').trim().slice(0,31);
+  XLSX.utils.book_append_sheet(wb2,ws2,safeTitle2);
+  XLSX.writeFile(wb2,`${safeTitle2}_D${f.age}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  const fileDates2=[...new Set(all.map(r=>r.date))].length;
+  toast(`⬇ ${fn(all.length)} rows · ${allCols2.length} cols · ${fileDates2} file dates (from master)`,'tok');
 }
 
 /* ═══════════════════════════════════════════════
