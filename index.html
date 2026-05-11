@@ -1799,11 +1799,15 @@ async function readExcelNative(buf){
 
     if(!Object.keys(entries).length)return null;
 
-    /* Helper to async-decompress any entry */
+    /* Helper to async-decompress any entry — handles both STORED and DEFLATED */
     const decomp=async(name)=>{
       const e=entries[name];if(!e)return'';
       const raw=data.subarray(e.start,e.start+e.cSize);
-      return decompAsync(raw, e.comp===0);
+      if(e.comp===0){
+        // STORED (uncompressed) — decode raw bytes directly; no decompAsync needed
+        return new TextDecoder('utf-8',{fatal:false}).decode(raw);
+      }
+      return decompAsync(raw, false);
     };
 
     /* ── 2. Shared strings — async streaming parse ── */
@@ -2702,11 +2706,21 @@ function renderTable(el,piv,sec,idx){
       else if(prev!==null&&v>prev){bg='background:#ef4444;';fg='#fff';redCells++;}
       else if(prev!==null&&v<prev){bg='background:#dff0ea;';fg='#0a4a35';}
 
+      // ── AVERAGE LOGIC ARROW: shown on EVERY cell, comparing cell value vs historical avg ──
+      // Red ▲ = this date's count is above the site's historical average (concerning)
+      // Green ▼ = below average (improving)
+      let cellArrow='';
+      if(v>0){
+        if(v>historicalAvg){
+          cellArrow=`<span style="color:${bg?'#ffcccc':'#ef4444'};font-size:10px;margin-left:2px;font-weight:900" title="${fn(v)} > avg ${fn(historicalAvg)}">▲</span>`;
+        }else if(v<historicalAvg){
+          cellArrow=`<span style="color:${bg.includes('ef4444')?'#bbf7d0':'#059669'};font-size:10px;margin-left:2px;font-weight:900" title="${fn(v)} < avg ${fn(historicalAvg)}">▼</span>`;
+        }
+      }
+
       // Highlight the latest date column border
       const latestBorder=isLatest?'border-left:3px solid #E9DF43;border-right:3px solid #E9DF43;':'';
 
-      // Arrow goes on the LATEST DATE cell only
-      const cellArrow=isLatest?latestArrow:'';
       return`<td style="${CELL}${bg}color:${fg};${latestBorder}">${v===0?'–':fn(v)}${cellArrow}</td>`;
     });
 
@@ -3160,10 +3174,13 @@ function initPanels(){
           <div class="twrap"><canvas id="tchrt${i}"></canvas></div>
         </div>
 
-        <!-- 2. Trend Table -->
+        <!-- 2. Critical Sites table — placed directly below the trend bar chart -->
+        <div id="critSites${i}" style="margin-top:0;margin-bottom:10px"></div>
+
+        <!-- 3. Trend Table (pivot) -->
         <div id="tbl${i}"></div>
 
-        <!-- 3. Location Breakdown Chart -->
+        <!-- 4. Location Breakdown Chart -->
         <div class="carea">
           <div class="ctoolbar">
             <span class="ctoolbar-lbl">📈 Location Breakdown — Date vs AWB Count</span>
@@ -3176,9 +3193,6 @@ function initPanels(){
           </div>
           <div class="cwrap"><canvas id="ch${i}"></canvas></div>
         </div>
-
-        <!-- 4. Critical Sites table (below bar chart) -->
-        <div id="critSites${i}" style="margin-top:0"></div>
 
       </div>
     </div>`).join('');
@@ -6298,8 +6312,7 @@ function downloadSectionReport(idx){
   const f=SEC_FILTERS[idx]||{age:sec.ageOpts?.[0]||3,bins:[],msgs:[]};
   const isForward=sec.src==='forward';
 
-  // Always rebuild from master (authoritative, always up-to-date, never stale cache)
-  // rawData is purged per-file after push, so it may be empty — master is the reliable source
+  // Always rebuild from master — authoritative, always current
   const all=(master[sec.src]||[]).filter(r=>{
     if(r.age!==f.age)return false;
     if(isForward&&f.bins.length>0&&!f.bins.includes(r.bin))return false;
@@ -6313,62 +6326,59 @@ function downloadSectionReport(idx){
     return;
   }
 
-  // Sort by date then location
-  all.sort((a,b)=>a.date.localeCompare(b.date)||(a.location||a.destination||'').localeCompare(b.location||b.destination||''));
+  // Sort by file date FIRST, then by location within each date
+  // This gives the DATE-WISE APPEND structure: all rows for 01 Apr, then 02 Apr, etc.
+  all.sort((a,b)=>
+    (a.date||'').localeCompare(b.date||'')||
+    (a.location||a.destination||'').localeCompare(b.location||b.destination||'')
+  );
 
-  // Compute per-site historical averages from pivot
-  const piv=buildPivot(sec,idx);
-  const nDates=piv.dates.length;
-  const latestDate=piv.dates[nDates-1];
-
-  // Build dynamic column set from all records
-  const priority=['date','location','destination','age','bin','msg','os','client','count'];
+  // Build column set from actual master records (all source fields)
+  // Structure: File Date | <all source columns exactly as in uploaded file>
+  // Remove internal meta-fields; 'date' becomes "File Date" in col 1
+  const SKIP_COLS=new Set(['date']); // 'date' becomes the first "File Date" col
   const fieldSet=new Set();
-  all.forEach(r=>Object.keys(r).forEach(k=>fieldSet.add(k)));
-  const orderedFields=['Date',...priority.filter(f2=>fieldSet.has(f2)),...[...fieldSet].filter(f2=>!priority.includes(f2)),'Hist Avg/Day','Latest Count','Trend'];
+  all.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP_COLS.has(k))fieldSet.add(k);}));
 
-  const wsRows=[orderedFields];
+  // Order: location/destination first, then age, then remaining source cols
+  const priorityFields=['location','destination','age','bin','msg','os','client','count'];
+  const srcCols=[
+    ...priorityFields.filter(f2=>fieldSet.has(f2)),
+    ...[...fieldSet].filter(f2=>!priorityFields.includes(f2))
+  ];
+  const allCols=['File Date',...srcCols];
+
+  // Build rows: File Date + all source values exactly
+  const wsRows=[allCols];
   all.forEach(r=>{
-    const loc=r.location||r.destination||'';
-    const rt=piv.rowTotals[loc]||0;
-    const histAvg=nDates>0?Math.round(rt/nDates):0;
-    const latestCount=(piv.grid[loc]&&piv.grid[loc][latestDate])||0;
-    const trend=latestCount>histAvg?'RISING':latestCount<histAvg&&latestCount>0?'FALLING':'STABLE';
-    wsRows.push(orderedFields.map(col=>{
-      if(col==='Date')return r.date||'';
-      if(col==='Hist Avg/Day')return histAvg;
-      if(col==='Latest Count')return latestCount;
-      if(col==='Trend')return trend;
+    wsRows.push(allCols.map(col=>{
+      if(col==='File Date')return r.date||'';
       const v=r[col];
-      return(v===undefined||v===null)?'':String(v);
+      return(v===undefined||v===null)?'':typeof v==='number'?v:String(v);
     }));
   });
 
-  // Sheet 2: Critical Sites summary
-  const critRows=[['Rank','Site Name','Latest Count','Hist Avg/Day','Total AWBs','Red Days','Score','Trend']];
-  const scored=[...piv.locs].map(loc=>{
-    const rt=piv.rowTotals[loc]||0;
-    const avg=nDates>0?Math.round(rt/nDates):0;
-    const latest=(piv.grid[loc]&&piv.grid[loc][latestDate])||0;
-    let redCells=0;
-    piv.dates.forEach((d,di)=>{const v=piv.grid[loc][d]||0;const prev=di>0?piv.grid[loc][piv.dates[di-1]]||0:null;if(prev!==null&&v>prev)redCells++;});
-    const trend=latest>avg?'RISING':latest<avg&&latest>0?'FALLING':'STABLE';
-    const score=Math.round(rt*(1+redCells*0.15)*(trend==='RISING'?1.2:trend==='FALLING'?0.9:1));
-    return{loc,rt,avg,latest,redCells,trend,score};
-  }).sort((a,b)=>b.score-a.score).slice(0,5);
-  scored.forEach((s,i)=>critRows.push([`#${i+1}`,s.loc,s.latest,s.avg,s.rt,s.redCells,s.score,s.trend]));
-
+  // Excel sheet
   const ws=XLSX.utils.aoa_to_sheet(wsRows);
-  ws['!cols']=orderedFields.map(c=>({wch:Math.min(38,Math.max(8,c.length+3))}));
-  const wsCrit=XLSX.utils.aoa_to_sheet(critRows);
-  wsCrit['!cols']=critRows[0].map(c=>({wch:Math.max(12,String(c).length+2)}));
+  ws['!cols']=allCols.map(c=>({wch:Math.min(35,Math.max(8,String(c).length+3))}));
+
+  // Style header row (row 1) — bold + background
+  const range=XLSX.utils.decode_range(ws['!ref']);
+  for(let C=range.s.c;C<=range.e.c;C++){
+    const cell=ws[XLSX.utils.encode_cell({r:0,c:C})];
+    if(cell){
+      if(!cell.s)cell.s={};
+      cell.s.font={bold:true};
+      cell.s.fill={patternType:'solid',fgColor:{rgb:'0D1F2C'}};
+      cell.s.font.color={rgb:'FFFFFF'};
+    }
+  }
 
   const wb=XLSX.utils.book_new();
-  const safeTitle=sec.title.replace(/[^\w\s]/g,'_').trim().slice(0,28);
+  const safeTitle=sec.title.replace(/[^\w\s]/g,'_').replace(/\s+/g,'_').trim().slice(0,31);
   XLSX.utils.book_append_sheet(wb,ws,safeTitle);
-  XLSX.utils.book_append_sheet(wb,wsCrit,'Critical Sites');
-  XLSX.writeFile(wb,`${safeTitle}_${new Date().toISOString().slice(0,10)}.xlsx`);
-  toast(`⬇ ${fn(all.length)} records · ${orderedFields.length} cols · Critical Sites included`,'tok');
+  XLSX.writeFile(wb,`${safeTitle}_D${f.age}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast(`⬇ ${fn(all.length)} rows · ${allCols.length} cols · ${[...new Set(all.map(r=>r.date))].length} file dates`,'tok');
 }
 
 /* ═══════════════════════════════════════════════
