@@ -1395,7 +1395,7 @@ function pFwd(row,date,agg){
 //   2. Client: exclude FTPL Regional, exclude Meesho Regional, include JioMart Regional
 //   3. Age = exact match from Ageing column only (col AO in xlsx)
 function pRev(row,date,agg){
-  // Filter 1: Reason of Loss
+  // Filter 1: Reason of Loss (business filter — must pass for any section)
   const reason=nv(gv(row,
     'reason of loss','Reason of Loss','reason_of_loss','Reason_of_Loss',
     'Reason Of Loss','reason of Loss','reasonofloss','REASON OF LOSS'));
@@ -1406,13 +1406,24 @@ function pRev(row,date,agg){
   const cu=client.toUpperCase();
   if(cu.includes('FTPL')&&cu.includes('REGIONAL'))return;
   if(cu.includes('MEESHO')&&cu.includes('REGIONAL'))return;
-  // JioMart Regional: include (do not exclude)
-  // All other clients: include by default
 
-  // Filter 3: Age — ONLY from numeric Ageing column, no fallback to text buckets
+  // ── SHEETS RECORDING FIX ───────────────────────────────────────────────────
+  // captureRaw is called HERE — BEFORE the age check — so that ALL rows passing
+  // the business filters above (Reason of Loss + client) are stored in rawData
+  // for backend Google Sheet recording, regardless of their Ageing value.
+  //
+  // OLD BUG: captureRaw was called AFTER `if(age<=0) return`. Reverse files
+  // where Ageing column has value "" or 0 dropped every row → rawData empty
+  // → sheetsPayloadsBySec.rowArrs was empty → REVERSE R DC sheet never got data.
+  //
+  // The section age-filter dropdown (SEC_FILTERS[i].age) still controls what's
+  // DISPLAYED in the dashboard pivot table — this recording is Sheets-only.
+  captureRaw('reverse',row,date);
+
+  // Filter 3: Age (display/aggregation filter only — does NOT affect Sheets recording)
   const ageRaw=gv(row,'ageing','Ageing');
   const age=Math.round(parseFloat(ageRaw)||0);
-  if(age<=0)return;
+  if(age<=0)return; // skip aggregation for unknown age, but Sheets row already captured above
 
   const loc=(gv(row,
     'current_location','Current_location','Current_Location','currentlocation',
@@ -1420,7 +1431,6 @@ function pRev(row,date,agg){
     ||'UNKNOWN').toUpperCase();
   const k=`${age}|${loc}|${client}`;
   if(!agg[k])agg[k]={date,age,location:loc,client,count:0};
-  captureRaw('reverse',row,date);
   agg[k].count++;
 }
 
@@ -1458,24 +1468,26 @@ function parseLMODCAge(s){
 // Location: destination_name (col B)
 // Count (col M) = manifest count, NOT per-row AWB count. Each row = 1 AWB.
 function pLM(row,date,agg){
+  // ── SHEETS RECORDING FIX ───────────────────────────────────────────────────
+  // captureRaw called FIRST — before age check — so ALL LMODC rows are stored
+  // for Google Sheet backend recording. The age filter below only controls
+  // which rows contribute to the dashboard pivot aggregates.
+  captureRaw('lmodc',row,date);
+
   // Age: actual column in LMODC CSV is "Ageing_f" (number, e.g. 1,2,3,6,10)
-  // Fallback: "Ageing" (older LMODC exports) or "ageing"
   const ageStr=gv(row,
-    'Ageing_f','ageing_f',     // LMODC CSV format (confirmed from actual file)
-    'ageing','Ageing',         // older/alternate LMODC exports
+    'Ageing_f','ageing_f',
+    'ageing','Ageing',
     'age','Age');
   const age=parseLMODCAge(ageStr);
-  if(age<=0)return;  // skip rows with no valid age
-  // Destination: "destination_name" in actual LMODC CSV
+  if(age<=0)return; // skip aggregation only; Sheets row captured above
   const dest=(gv(row,
     'destination_name','destination name','destinationname',
     'Destination_name','Destination_Name','DestinationName',
     'destination','Destination')
     ||'UNKNOWN').toUpperCase();
-  // Each row = 1 AWB. Do NOT use Count column as a multiplier.
   const k=`${age}|${dest}`;
   if(!agg[k])agg[k]={date,age,destination:dest,count:0};
-  captureRaw('lmodc',row,date);
   agg[k].count++;
 }
 
@@ -6324,49 +6336,14 @@ document.getElementById('hovFi').addEventListener('change',async e=>{
    Used exclusively by downloadSectionReport().
 ═══════════════════════════════════════════════ */
 /* ═══════════════════════════════════════════════
-   RAW DATA CAPTURE — stores rows for Sheets push
-   ROOT CAUSE FIX (ALL types not recording):
-   The old captureRaw() applied a _VALID_AGES age filter BEFORE storing rows.
-   This caused three separate failures:
-
-   1. DCH/forwardShort: the age column detection used 'ageing_from_bag_rec'
-      (a Forward-only column). DCH files don't have this column → age=0 →
-      0 not in [3,6,10] → EVERY DCH row filtered out → rawData empty → nothing
-      pushed to the "DCH" sheet tab in Google Sheets.
-
-   2. LMODC: only age=3,6,10 rows stored. An LMODC file with mostly age=1,2
-      rows (common for same-day dispatches) would produce empty rawData.
-
-   3. Reverse: age filter [3,10] dropped age=5,6,7,8,9 etc. rows (already
-      fixed in previous session by extending to [1..30]).
-
-   The _VALID_AGES filter was intended to limit memory usage, but the RAW_CAP
-   (100,000 rows) already handles that. Age filtering is a DISPLAY concern
-   (handled by SEC_FILTERS[i].age in renderTable), not a storage concern.
-
-   Fix: remove age pre-filter entirely from captureRaw. Store ALL rows that
-   pass the business filters (RECEIVED_AT_DC, client exclusions, etc.).
-   The RAW_CAP of 100,000 rows still prevents any OOM risk.
+   RAW DATA CAPTURE — stores rows for Google Sheets push
+   Called by each processor AFTER that processor's own business filters have
+   already passed. captureRaw itself applies NO further filtering — it is a
+   pure store. The only protection is RAW_CAP which prevents heap explosion.
+   Age filtering for DISPLAY is done in renderTable/buildPivot, not here.
 ═══════════════════════════════════════════════ */
 function captureRaw(type,row,date){
-  // Apply business filter (mirrors each type's processor)
-  // Only filter out rows that would never appear in any section
-  if(type==='forward'){
-    if(nv(gv(row,'pivot','Pivot'))!=='RECEIVED_AT_DC')return;
-  }else if(type==='reverse'){
-    const reason=nv(gv(row,
-      'reason of loss','Reason of Loss','reason_of_loss','Reason_of_Loss',
-      'Reason Of Loss','reasonofloss','REASON OF LOSS'));
-    if(reason!=='RECEIVED_AT_DC'&&reason!=='MISROUTED')return;
-    const cu=(gv(row,'client','Client','CLIENT')||'').toUpperCase();
-    if(cu.includes('FTPL')&&cu.includes('REGIONAL'))return;
-    if(cu.includes('MEESHO')&&cu.includes('REGIONAL'))return;
-  }
-  // lmodc + forwardShort: no additional base filter (all rows are valid)
-
-  // NO AGE FILTER — age filtering is a display concern (SEC_FILTERS dropdown),
-  // not a storage concern. All rows passing business filters above are stored
-  // for complete Sheets recording. RAW_CAP handles memory safety.
+  // Pure store — no age filter, no business filter (caller already filtered)
   const RAW_CAP=100000;
   if(!rawData[type])rawData[type]={};
   if(!rawData[type][date])rawData[type][date]=[];
