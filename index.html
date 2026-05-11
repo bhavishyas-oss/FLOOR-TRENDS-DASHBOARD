@@ -928,6 +928,16 @@ let _rollingAvg={};
 function _loadRollingAvg(){
   try{const s=localStorage.getItem(RA_KEY);if(s)_rollingAvg=JSON.parse(s);}catch{}
 }
+// Version gate: if the old corrupted data exists (written by render-based rolling),
+// wipe it so histAvg values are rebuilt correctly on the next upload.
+// The v2 key ensures this reset only happens once.
+const RA_RESET_KEY='logistics_rolling_avg_v2_reset';
+if(!localStorage.getItem(RA_RESET_KEY)){
+  localStorage.removeItem(RA_KEY);
+  _rollingAvg={};
+  localStorage.setItem(RA_RESET_KEY,'1');
+  console.log('Rolling averages reset — will be recalculated on next upload (one-time migration)');
+}
 function _saveRollingAvg(){
   try{localStorage.setItem(RA_KEY,JSON.stringify(_rollingAvg));}catch{}
 }
@@ -945,6 +955,31 @@ function _rollAvg(section,site,newLatestAvg,ts){
     updatedAt: ts||new Date().toISOString()
   };
 }
+/* Roll averages for all sections matching a file type, triggered on real uploads.
+   Called from runFiles() AFTER master is updated — so pivot calculation is fresh.
+   This is the ONLY place _rollAvg is called, ensuring histAvg always represents
+   the snapshot from before this specific upload, not an intermediate render.      */
+function _rollAvgForUpload(fileType, ts){
+  const sections=SECS.filter(s=>s.src===fileType);
+  for(const sec of sections){
+    try{
+      const f=SEC_FILTERS[SECS.indexOf(sec)]||{age:sec.ageOpts?.[0]||3};
+      const piv=buildPivot(sec,SECS.indexOf(sec));
+      if(!piv||!piv.locs||!piv.locs.length||!piv.dates||!piv.dates.length)continue;
+      const nDates=piv.dates.length;
+      const secTitle=sec.title;
+      for(const loc of piv.locs){
+        const rt=piv.rowTotals[loc]||0;
+        if(rt===0)continue;
+        const newLatestAvg=Math.round(rt/nDates);
+        _rollAvg(secTitle,loc,newLatestAvg,ts);
+      }
+      console.log(`Rolling averages updated for ${secTitle} (${sections.length > 1 ? 'age '+f.age : 'all ages'})`);
+    }catch(e){console.warn('_rollAvgForUpload error:',e.message);}
+  }
+  _saveRollingAvg();
+}
+
 _loadRollingAvg(); // load on boot
 let master=loadM(),activeTab=0,charts={},debugMode=false,dlog=[],pending={};
 
@@ -2345,6 +2380,12 @@ async function runFiles(files){
       // 1. Persist master aggregates to localStorage immediately (tiny ~50KB)
       persistM();
 
+      // 1a-Roll: roll the historical/latest average for this file type.
+      // Must happen AFTER persistM() so master[type] is updated and buildPivot() is correct.
+      // Must happen BEFORE purgeRawDataForDate() (order doesn't matter for pivot, but
+      // keeping it here makes the sequence clear: persist → roll → IDB save → purge).
+      _rollAvgForUpload(r.type, new Date().toISOString());
+
       // 1a. Save this file's raw rows to IDB (targeted per-date, not full-dataset serialize)
       //     Must happen BEFORE purgeRawDataForDate() frees rawData[r.type][r.date].
       //     saveRawDateToIDB serializes only the current file's filtered rows — bounded spike.
@@ -2716,7 +2757,7 @@ function renderTable(el,piv,sec,idx){
     <tbody>`;
 
   const siteStats=[];
-  const rollTs=new Date().toISOString();
+  // rollTs removed — rolling only happens in runFiles(), not here
 
   sortedLocs.forEach((loc,ri)=>{
     const rowBg=ri%2===0?'#fff':'#f3faf7';
@@ -2726,15 +2767,19 @@ function renderTable(el,piv,sec,idx){
     // LATEST AVERAGE: recalculated NOW using all uploaded dates for this site
     const latestAvg=nDates>0?Math.round(rt/nDates):0;
 
-    // HISTORICAL AVERAGE: stored from the PREVIOUS upload cycle
+    // HISTORICAL AVERAGE: stored from the PREVIOUS upload cycle.
+    // This is read-only here — renderTable NEVER calls _rollAvg.
+    // Rolling only happens in runFiles() after a real file upload (see _rollAvgForUpload).
+    // This prevents intermediate renders (tab switch, filter change, partial data loads)
+    // from corrupting the rolling average chain.
     const stored=_getAvg(secTitle,loc);
-    const histAvg=stored.histAvg>0?stored.histAvg:(stored.latestAvg>0?stored.latestAvg:latestAvg);
-
-    // Roll the average store: histAvg ← prev latestAvg, latestAvg ← new value
-    // Only roll if latestAvg has changed (avoid rolling on pure re-renders)
-    if(stored.latestAvg!==latestAvg){
-      _rollAvg(secTitle,loc,latestAvg,rollTs);
-    }
+    // histAvg: use stored histAvg if it exists; otherwise treat latestAvg as both
+    // (first-ever upload: no prior state → histAvg === latestAvg, no arrow shown)
+    const histAvg=stored.histAvg>0?stored.histAvg:stored.latestAvg>0?stored.latestAvg:latestAvg;
+    // latestAvg from store if available (may be fresher than current pivot calculation
+    // when this render is triggered by a filter change without a new upload)
+    // Use current pivot calculation as latestAvg — it's always total/nDates for current filter
+    // stored.latestAvg is updated by _rollAvgForUpload ONLY on real uploads
 
     // ── TREND ARROW: LATEST AVERAGE vs HISTORICAL AVERAGE ──────────────
     const avgArrow=latestAvg>histAvg
@@ -2770,8 +2815,7 @@ function renderTable(el,piv,sec,idx){
     </tr>`;
   });
 
-  // Persist updated rolling averages
-  _saveRollingAvg();
+  // Rolling averages are saved by _rollAvgForUpload in runFiles() — not here
 
   // Footer
   const grandHistAvg=siteStats.length>0?Math.round(siteStats.reduce((s,r)=>s+r.histAvg,0)/siteStats.length):0;
