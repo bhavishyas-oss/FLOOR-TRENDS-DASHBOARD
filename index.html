@@ -1386,21 +1386,21 @@ function parseLMODCAge(s){
   return nums.length?Math.max(...nums):0;
 }
 
-// LMODC — raw data sheet, one row = one AWB
-// Age:      Ageing_f (col A) — may be plain number or text bucket
-// Location: destination_name (col B)
-// Count (col M) = manifest count, NOT per-row AWB count. Each row = 1 AWB.
-// LMODC — raw data sheet, one row = one AWB
-// Age:      ONLY from 'Ageing' (col U) — actual numeric day count (3, 6, 10...)
-//           NEVER use 'Ageing_f' (col A) — that column holds aggregated
-//           bucket labels and must be completely ignored.
+// LMODC — raw data CSV, one row = one AWB
+// Age:      Ageing_f (col A) — plain integer day count (1,2,3,6,10...)
+//           Fallback: 'Ageing' (col U) for older LMODC exports
 // Location: destination_name (col B)
 // Count (col M) = manifest count, NOT per-row AWB count. Each row = 1 AWB.
 function pLM(row,date,agg){
-  // STRICT: use ONLY 'Ageing' (col U). Do NOT fall back to Ageing_f or age.
-  const ageStr=gv(row,'ageing','Ageing');
+  // Age: actual column in LMODC CSV is "Ageing_f" (number, e.g. 1,2,3,6,10)
+  // Fallback: "Ageing" (older LMODC exports) or "ageing"
+  const ageStr=gv(row,
+    'Ageing_f','ageing_f',     // LMODC CSV format (confirmed from actual file)
+    'ageing','Ageing',         // older/alternate LMODC exports
+    'age','Age');
   const age=parseLMODCAge(ageStr);
   if(age<=0)return;  // skip rows with no valid age
+  // Destination: "destination_name" in actual LMODC CSV
   const dest=(gv(row,
     'destination_name','destination name','destinationname',
     'Destination_name','Destination_Name','DestinationName',
@@ -2042,6 +2042,10 @@ async function readExcelNative(buf, filename){
 function procCSV(file){
   return new Promise(resolve=>{
     const date=xDate(file.name);
+    // Pre-identify by filename so we can bypass isPivotFmt for known LMODC CSV files.
+    // LMODC files are pure raw tabular CSVs — they have no pivot summary sheets.
+    // The isPivotFmt check is only relevant for pre-aggregated Excel pivot exports.
+    const knownTypeByName=idByName(file.name);
     let type=null,how='',hdrs=[];
     const agg={};
     let rowCount=0,skipped=false;
@@ -2055,8 +2059,11 @@ function procCSV(file){
           const f=res.meta&&res.meta.fields;
           hdrs=cleanH(f&&f.length?f:Object.keys(res.data[0]||{}));
           if(hdrs.length){
-            // Strict: skip pivot-format CSVs
-            if(isPivotFmt(hdrs)){skipped=true;return;}
+            // Skip pivot-format CSVs ONLY when the file is NOT already identified
+            // as a known type by filename. LMODC CSVs must never be pivot-skipped:
+            // their raw data headers like "scanned_area_code","destination_name" are
+            // always present and valid — numeric-looking headers elsewhere are irrelevant.
+            if(knownTypeByName!=='lmodc' && isPivotFmt(hdrs)){skipped=true;return;}
             const r=identify(hdrs,file.name);
             type=r.type;how=r.how;
           }
@@ -6228,7 +6235,8 @@ function captureRaw(type,row,date){
   // 2. Age pre-filter — only store rows needed by sections
   let age=0;
   if(type==='lmodc'){
-    age=Math.round(parseLMODCAge(gv(row,'ageing','Ageing')));
+    // Ageing_f is the confirmed age column in actual LMODC CSV files
+    age=Math.round(parseLMODCAge(gv(row,'Ageing_f','ageing_f','ageing','Ageing')));
   }else if(type==='reverse'){
     age=Math.round(parseFloat(gv(row,'ageing','Ageing'))||0);
   }else{
@@ -6288,7 +6296,7 @@ function filterRawForSection(sec,idx){
   for(const [date,rows] of Object.entries(typeData)){
     for(const row of rows){
       let age=0;
-      if(sec.src==='lmodc'){age=Math.round(parseLMODCAge(gv(row,'ageing','Ageing')));}
+      if(sec.src==='lmodc'){age=Math.round(parseLMODCAge(gv(row,'Ageing_f','ageing_f','ageing','Ageing')));}
       else if(sec.src==='reverse'){age=Math.round(parseFloat(gv(row,'ageing','Ageing'))||0);}
       else{age=Math.round(gn(row,
         'ageing_from_bag_rec','Ageing_from_Bag_Rec','Ageing_From_Bag_Rec',
