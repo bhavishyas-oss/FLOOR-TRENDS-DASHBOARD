@@ -6716,9 +6716,9 @@ function showAppsScriptCode(){
   const gs=`/**
  * Logistics Analytics Dashboard — Google Apps Script Backend v7.0
  *
- * ════════════════════════════════════════════════════════════════
+ * ================================================================
  *  HOW TO DEPLOY — READ CAREFULLY
- * ════════════════════════════════════════════════════════════════
+ * ================================================================
  *
  *  STEP 1 → Open your FLOOR TRENDS DATA Google Spreadsheet
  *  STEP 2 → Click:  Extensions  →  Apps Script
@@ -6738,9 +6738,9 @@ function showAppsScriptCode(){
  *  No manual intervention ever needed.
  */
 
-/* ══════════════════════════════════════════════════════════════
+/* ==============================================================
    STORAGE CONSTANTS
-══════════════════════════════════════════════════════════════ */
+============================================================== */
 var MAX_ROWS_PER_PARTITION = 45000;  // split when sheet hits this row count
 var INDEX_SHEET_NAME       = '_PARTITION_INDEX';  // hidden index tab
 
@@ -6757,9 +6757,9 @@ function doOptions(e) {
   return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
 }
 
-/* ══════════════════════════════════════════════════════════════
+/* ==============================================================
    AUTO-PARTITIONING HELPERS
-══════════════════════════════════════════════════════════════ */
+============================================================== */
 
 /* Get or create the partition index sheet.
    Each row: [BaseName, PartitionNum, SheetTabName, LastRow, LastUpdated] */
@@ -6895,9 +6895,9 @@ function _initSheet(sh, headers) {
   }
 }
 
-/* ══════════════════════════════════════════════════════════════
+/* ==============================================================
    GET ENDPOINT
-══════════════════════════════════════════════════════════════ */
+============================================================== */
 function doGet(e) {
   var action = (e && e.parameter && e.parameter.action) || '';
 
@@ -6971,9 +6971,9 @@ function doGet(e) {
   }));
 }
 
-/* ══════════════════════════════════════════════════════════════
+/* ==============================================================
    POST ENDPOINT
-══════════════════════════════════════════════════════════════ */
+============================================================== */
 function doPost(e) {
   var raw='';
   try {
@@ -6996,9 +6996,9 @@ function doPost(e) {
   }
 }
 
-/* ══════════════════════════════════════════════════════════════
+/* ==============================================================
    HELPERS
-══════════════════════════════════════════════════════════════ */
+============================================================== */
 function normDate(v){
   if(!v)return'';
   if(v instanceof Date){try{return Utilities.formatDate(v,Session.getScriptTimeZone(),'yyyy-MM-dd');}catch(_){return v.toISOString().slice(0,10);}}
@@ -7015,9 +7015,9 @@ function getOrCreateSheet(ss,name,headers){
   return sh;
 }
 
-/* ══════════════════════════════════════════════════════════════
+/* ==============================================================
    PAYLOAD ROUTER
-══════════════════════════════════════════════════════════════ */
+============================================================== */
 function processPayload(payload) {
   var ss=getSS();
 
