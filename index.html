@@ -6714,7 +6714,7 @@ async function testSheetsConnection(urlOverride){
 function showAppsScriptCode(){
   if(!requireAdmin('AS Code'))return;
   const gs=`/**
- * Logistics Analytics Dashboard — Google Apps Script Backend v6.0
+ * Logistics Analytics Dashboard — Google Apps Script Backend v7.0
  *
  * ════════════════════════════════════════════════════════════════
  *  HOW TO DEPLOY — READ CAREFULLY
@@ -6722,34 +6722,33 @@ function showAppsScriptCode(){
  *
  *  STEP 1 → Open your FLOOR TRENDS DATA Google Spreadsheet
  *  STEP 2 → Click:  Extensions  →  Apps Script
- *           !! Do NOT go to script.google.com directly !!
- *           !! That creates a STANDALONE script that can't find your sheet !!
- *           Opening from Extensions creates a CONTAINER-BOUND script which
- *           automatically links to your spreadsheet — no ID needed.
- *  STEP 3 → Delete ALL existing code in the editor
- *  STEP 4 → Paste this ENTIRE file
- *  STEP 5 → File → Save  (Ctrl + S)
- *  STEP 6 → Deploy → New deployment
- *              Type           : Web app
- *              Execute as     : Me
- *              Who can access : Anyone
- *  STEP 7 → Copy the Web App URL
- *           (format: https://script.google.com/macros/s/AKfycb.../exec)
- *  STEP 8 → In the dashboard: click "Sheets" → paste URL → Enter
- *  STEP 9 → Click "Sheets" again → click "Test" to verify
+ *  STEP 3 → Delete ALL existing code, paste this ENTIRE file
+ *  STEP 4 → File → Save  (Ctrl + S)
+ *  STEP 5 → Deploy → New deployment
+ *              Type : Web app · Execute as : Me · Who : Anyone
+ *  STEP 6 → Copy the Web App URL, paste in dashboard "Sheets" button
+ *  STEP 7 → Click "Sheets" → "Test" to verify
  *
- * WHY THIS WORKS:
- *  Old approach required replacing YOUR_SPREADSHEET_ID_HERE in the code.
- *  If missed, every write silently failed with "Cannot find spreadsheet".
- *  This version uses getActiveSpreadsheet() — no ID needed, always works.
+ * v7.0 NEW: AUTO-PARTITIONING STORAGE SYSTEM
+ *  Google Sheets limit ≈ 10,000,000 cells per spreadsheet.
+ *  Each section sheet auto-splits when nearing its row limit:
+ *    FORWARD_R_DC_1 → FORWARD_R_DC_2 → FORWARD_R_DC_3 …
+ *  A master INDEX sheet tracks all partition pointers.
+ *  Reads transparently combine all partitions.
+ *  No manual intervention ever needed.
  */
 
-/* ── Get the spreadsheet — no ID needed when script is container-bound ── */
+/* ══════════════════════════════════════════════════════════════
+   STORAGE CONSTANTS
+══════════════════════════════════════════════════════════════ */
+var MAX_ROWS_PER_PARTITION = 45000;  // split when sheet hits this row count
+var INDEX_SHEET_NAME       = '_PARTITION_INDEX';  // hidden index tab
+
+/* ── Get the spreadsheet (container-bound) ── */
 function getSS() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   if (!ss) throw new Error(
-    'No spreadsheet found. Open the script from within your spreadsheet: ' +
-    'Extensions → Apps Script. Do NOT use script.google.com directly.'
+    'No spreadsheet found. Open from within the spreadsheet: Extensions → Apps Script.'
   );
   return ss;
 }
@@ -6758,101 +6757,257 @@ function doOptions(e) {
   return ContentService.createTextOutput('').setMimeType(ContentService.MimeType.TEXT);
 }
 
+/* ══════════════════════════════════════════════════════════════
+   AUTO-PARTITIONING HELPERS
+══════════════════════════════════════════════════════════════ */
+
+/* Get or create the partition index sheet.
+   Each row: [BaseName, PartitionNum, SheetTabName, LastRow, LastUpdated] */
+function getIndexSheet(ss) {
+  var ix = ss.getSheetByName(INDEX_SHEET_NAME);
+  if (!ix) {
+    ix = ss.insertSheet(INDEX_SHEET_NAME);
+    ix.appendRow(['BaseName', 'PartitionNum', 'TabName', 'LastRow', 'LastUpdated']);
+    ix.getRange(1,1,1,5).setFontWeight('bold').setBackground('#1a1a2e').setFontColor('#e0e0ff');
+    ix.setFrozenRows(1);
+    ix.hideSheet();
+    Logger.log('Created partition index sheet');
+  }
+  return ix;
+}
+
+/* Load entire index into a JS object: { baseName: [{num, tab, lastRow}] } */
+function loadIndex(ss) {
+  var ix = getIndexSheet(ss);
+  var idx = {};
+  if (ix.getLastRow() < 2) return idx;
+  var rows = ix.getRange(2, 1, ix.getLastRow()-1, 4).getValues();
+  rows.forEach(function(r) {
+    var base = String(r[0] || '').trim();
+    var num  = Number(r[1]) || 1;
+    var tab  = String(r[2] || '').trim();
+    var last = Number(r[3]) || 0;
+    if (!base || !tab) return;
+    if (!idx[base]) idx[base] = [];
+    idx[base].push({num: num, tab: tab, lastRow: last});
+  });
+  // Sort partitions by number
+  Object.keys(idx).forEach(function(k) {
+    idx[k].sort(function(a,b){return a.num-b.num;});
+  });
+  return idx;
+}
+
+/* Update or insert one partition entry in the index */
+function updateIndex(ss, baseName, partNum, tabName, lastRow) {
+  var ix = getIndexSheet(ss);
+  var now = new Date().toISOString();
+  if (ix.getLastRow() >= 2) {
+    var rows = ix.getRange(2, 1, ix.getLastRow()-1, 3).getValues();
+    for (var i = 0; i < rows.length; i++) {
+      if (String(rows[i][0]) === baseName && Number(rows[i][1]) === partNum) {
+        var rowNum = i + 2;
+        ix.getRange(rowNum, 4, 1, 2).setValues([[lastRow, now]]);
+        return;
+      }
+    }
+  }
+  // New entry
+  ix.appendRow([baseName, partNum, tabName, lastRow, now]);
+}
+
+/* Build a partition tab name: baseName_1, baseName_2 … (max 31 chars) */
+function makeTabName(baseName, num) {
+  var suffix = '_' + num;
+  var base = baseName.substring(0, 31 - suffix.length);
+  return base + suffix;
+}
+
+/* Get the ACTIVE (write) partition for a base section name.
+   Creates partition 1 if none exists. Rolls to next partition if at capacity. */
+function getActivePartition(ss, baseName, headers) {
+  var idx = loadIndex(ss);
+  var parts = idx[baseName] || [];
+
+  if (parts.length === 0) {
+    // First ever write — create partition 1
+    var tab1 = makeTabName(baseName, 1);
+    var sh1  = ss.getSheetByName(tab1) || ss.insertSheet(tab1);
+    _initSheet(sh1, headers);
+    updateIndex(ss, baseName, 1, tab1, 1);
+    Logger.log('Created first partition: ' + tab1);
+    return sh1;
+  }
+
+  // Use the highest-numbered partition
+  var last = parts[parts.length - 1];
+  var sh   = ss.getSheetByName(last.tab);
+  if (!sh) {
+    sh = ss.insertSheet(last.tab);
+    _initSheet(sh, headers);
+    updateIndex(ss, baseName, last.num, last.tab, 1);
+    return sh;
+  }
+
+  // Check capacity: if this partition is full, create the next one
+  if (sh.getLastRow() >= MAX_ROWS_PER_PARTITION) {
+    var nextNum = last.num + 1;
+    var nextTab = makeTabName(baseName, nextNum);
+    var shNext  = ss.getSheetByName(nextTab) || ss.insertSheet(nextTab);
+    _initSheet(shNext, headers);
+    updateIndex(ss, baseName, nextNum, nextTab, 1);
+    Logger.log('Partition rollover: ' + last.tab + ' → ' + nextTab +
+      ' (was ' + sh.getLastRow() + ' rows)');
+    return shNext;
+  }
+
+  return sh;
+}
+
+/* Get ALL partition sheets for a base name (for unified reads) */
+function getAllPartitions(ss, baseName) {
+  var idx   = loadIndex(ss);
+  var parts = idx[baseName] || [];
+  var sheets = [];
+  parts.forEach(function(p) {
+    var sh = ss.getSheetByName(p.tab);
+    if (sh) sheets.push(sh);
+  });
+  // Also check legacy (un-partitioned) sheet with baseName as-is
+  if (sheets.length === 0) {
+    var legacySh = ss.getSheetByName(baseName);
+    if (legacySh && legacySh.getLastRow() > 0) {
+      sheets.push(legacySh);
+      Logger.log('Using legacy (un-partitioned) sheet: ' + baseName);
+    }
+  }
+  return sheets;
+}
+
+/* Initialise a newly created sheet with header row */
+function _initSheet(sh, headers) {
+  if (sh.getLastRow() === 0 && headers && headers.length) {
+    sh.appendRow(headers);
+    sh.getRange(1,1,1,headers.length)
+      .setFontWeight('bold').setBackground('#0d1f3c').setFontColor('#dce6f5');
+    sh.setFrozenRows(1);
+    sh.setFrozenColumns(1);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   GET ENDPOINT
+══════════════════════════════════════════════════════════════ */
 function doGet(e) {
   var action = (e && e.parameter && e.parameter.action) || '';
 
+  /* ── test ── */
   if (action === 'test' || action === 'ping') {
     try {
       var ss   = getSS();
       var name = ss.getName();
       var id   = ss.getId();
-      var tabs = ss.getSheets().map(function(s){ return s.getName(); }).join(', ');
-      Logger.log('TEST OK: ' + name + ' [' + id + ']');
+      var tabs = ss.getSheets().map(function(s){return s.getName();}).join(', ');
+      var idx  = loadIndex(ss);
+      var partSummary = JSON.stringify(Object.keys(idx).reduce(function(acc,k){
+        acc[k]=(idx[k]||[]).length+' partition(s)';return acc;},{},0));
       return buildResponse(JSON.stringify({
-        ok: true, spreadsheetName: name, spreadsheetId: id,
-        existingTabs: tabs,
-        message: 'Connection verified — spreadsheet is accessible'
+        ok:true, spreadsheetName:name, spreadsheetId:id,
+        existingTabs:tabs, partitions:partSummary,
+        message:'v7.0 Auto-partition system active'
       }));
-    } catch (err) {
-      Logger.log('TEST FAILED: ' + err.message);
-      return buildResponse(JSON.stringify({ ok: false, error: err.message }));
+    } catch(err) {
+      return buildResponse(JSON.stringify({ok:false,error:err.message}));
     }
   }
 
+  /* ── getMaster ── */
   if (action === 'getMaster') {
     try {
       var ss   = getSS();
       var snap = ss.getSheetByName('MASTER SNAPSHOT');
       if (!snap || snap.getLastRow() < 2)
-        return buildResponse(JSON.stringify({ ok: false, reason: 'no_snapshot' }));
-      var numRows = snap.getLastRow() - 1;
-      var data    = snap.getRange(2, 1, numRows, 7).getValues();
-      var master  = { forward:[], reverse:[], lmodc:[], forwardShort:[],
-                      hov:[], hovPV:[], hovAllRaw:[], hovFwdRaw:[], hovRevRaw:[] };
-      var validRows = 0;
-      data.forEach(function(r) {
-        var type=String(r[0]||'').trim(), date=normDate(r[1]), count=Number(r[2])||0;
-        if (!type||!date||!master.hasOwnProperty(type)) return;
-        var existing=master[type].filter(function(x){return x.date===date;})[0];
-        if (existing) { if(count>(existing.count||0)){existing.count=count;existing.locs=safeParseJSON(r[3]);existing.bins=safeParseJSON(r[4]);existing.msgs=safeParseJSON(r[5]);} }
-        else { master[type].push({date:date,count:count,locs:safeParseJSON(r[3]),bins:safeParseJSON(r[4]),msgs:safeParseJSON(r[5])}); }
-        validRows++;
+        return buildResponse(JSON.stringify({ok:false,reason:'no_snapshot'}));
+      var data   = snap.getRange(2,1,snap.getLastRow()-1,7).getValues();
+      var master = {forward:[],reverse:[],lmodc:[],forwardShort:[],
+                    hov:[],hovPV:[],hovAllRaw:[],hovFwdRaw:[],hovRevRaw:[]};
+      var n=0;
+      data.forEach(function(r){
+        var type=String(r[0]||'').trim(),date=normDate(r[1]),count=Number(r[2])||0;
+        if(!type||!date||!master.hasOwnProperty(type))return;
+        var ex=master[type].filter(function(x){return x.date===date;})[0];
+        if(ex){if(count>(ex.count||0)){ex.count=count;ex.locs=safeJSON(r[3]);ex.bins=safeJSON(r[4]);ex.msgs=safeJSON(r[5]);}}
+        else{master[type].push({date:date,count:count,locs:safeJSON(r[3]),bins:safeJSON(r[4]),msgs:safeJSON(r[5])});}
+        n++;
       });
-      if (validRows===0) return buildResponse(JSON.stringify({ok:false,reason:'empty_snapshot'}));
+      if(n===0)return buildResponse(JSON.stringify({ok:false,reason:'empty_snapshot'}));
       return buildResponse(JSON.stringify({ok:true,master:JSON.stringify(master)}));
-    } catch(err){ return buildResponse(JSON.stringify({ok:false,error:err.message})); }
+    }catch(err){return buildResponse(JSON.stringify({ok:false,error:err.message}));}
   }
 
+  /* ── getFileLog ── */
   if (action === 'getFileLog') {
     try {
-      var ss=getSS(), sh=ss.getSheetByName('FILE LOG');
-      if(!sh||sh.getLastRow()<2) return buildResponse(JSON.stringify({ok:true,files:[]}));
+      var ss=getSS(),sh=ss.getSheetByName('FILE LOG');
+      if(!sh||sh.getLastRow()<2)return buildResponse(JSON.stringify({ok:true,files:[]}));
       var files=sh.getRange(2,1,sh.getLastRow()-1,6).getValues()
         .filter(function(r){return r[0];})
         .map(function(r){return{id:String(r[0]),name:String(r[1]),type:String(r[2]),
           date:String(r[3]),uploadedAt:String(r[4]),awbs:Number(r[5])||0};});
       return buildResponse(JSON.stringify({ok:true,files:files}));
-    } catch(err){ return buildResponse(JSON.stringify({ok:false,files:[],error:err.message})); }
+    }catch(err){return buildResponse(JSON.stringify({ok:false,files:[],error:err.message}));}
+  }
+
+  /* ── getPartitionIndex (for diagnostics) ── */
+  if (action === 'getIndex') {
+    try {
+      return buildResponse(JSON.stringify({ok:true,index:loadIndex(getSS())}));
+    }catch(err){return buildResponse(JSON.stringify({ok:false,error:err.message}));}
   }
 
   return buildResponse(JSON.stringify({
-    ok:true, service:'Logistics Dashboard v6.0',
-    hint:'Use ?action=test to verify spreadsheet access'
+    ok:true,service:'Logistics Dashboard v7.0 (Auto-Partition)',
+    hint:'?action=test to verify · ?action=getIndex for partition map'
   }));
 }
 
+/* ══════════════════════════════════════════════════════════════
+   POST ENDPOINT
+══════════════════════════════════════════════════════════════ */
 function doPost(e) {
-  var raw = '';
+  var raw='';
   try {
-    if (e && e.postData && e.postData.contents && e.postData.contents.trim().length > 0) {
-      raw = e.postData.contents;
-      Logger.log('doPost: body len=' + raw.length + ' ct=' + (e.postData.type||'?'));
-    } else if (e && e.parameter && e.parameter.payload) {
-      raw = e.parameter.payload;
-      Logger.log('doPost: form-payload len=' + raw.length);
-    } else {
-      Logger.log('doPost: NO PAYLOAD — params=' + JSON.stringify(Object.keys((e&&e.parameter)||{})));
+    if(e&&e.postData&&e.postData.contents&&e.postData.contents.trim().length>0){
+      raw=e.postData.contents;
+    }else if(e&&e.parameter&&e.parameter.payload){
+      raw=e.parameter.payload;
+    }else{
       return buildResponse(JSON.stringify({ok:false,error:'no_payload'}));
     }
-    var payload = JSON.parse(raw);
-    var result  = processPayload(payload);
-    Logger.log('doPost OK: type=' + (payload.type||payload.sheet) + ' result=' + JSON.stringify(result).slice(0,150));
+    var payload=JSON.parse(raw);
+    Logger.log('doPost type='+(payload.type||payload.sheet||'section')+
+      ' rows='+((payload.rows&&payload.rows.length)||0));
+    var result=processPayload(payload);
+    Logger.log('doPost OK: '+JSON.stringify(result).slice(0,120));
     return buildResponse(JSON.stringify(result));
-  } catch(err) {
-    Logger.log('doPost ERROR: ' + err.message + '\nRaw[0:300]=' + String(raw).slice(0,300));
+  }catch(err){
+    Logger.log('doPost ERROR: '+err.message+'\nRaw[0:200]='+String(raw).slice(0,200));
     return buildResponse(JSON.stringify({ok:false,error:err.message}));
   }
 }
 
-function normDate(v) {
-  if (!v) return '';
-  if (v instanceof Date) { try{return Utilities.formatDate(v,Session.getScriptTimeZone(),'yyyy-MM-dd');}catch(_){return v.toISOString().slice(0,10);} }
+/* ══════════════════════════════════════════════════════════════
+   HELPERS
+══════════════════════════════════════════════════════════════ */
+function normDate(v){
+  if(!v)return'';
+  if(v instanceof Date){try{return Utilities.formatDate(v,Session.getScriptTimeZone(),'yyyy-MM-dd');}catch(_){return v.toISOString().slice(0,10);}}
   return String(v).trim().slice(0,10);
 }
-function safeParseJSON(v) { try{return JSON.parse(String(v||'{}'));}catch(_){return {};} }
-function getOrCreateSheet(ss, name, headers) {
-  var sh = ss.getSheetByName(name) || ss.insertSheet(name);
-  if (sh.getLastRow()===0 && headers&&headers.length) {
+function safeJSON(v){try{return JSON.parse(String(v||'{}'));}catch(_){return{};}}
+function getOrCreateSheet(ss,name,headers){
+  var sh=ss.getSheetByName(name)||ss.insertSheet(name);
+  if(sh.getLastRow()===0&&headers&&headers.length){
     sh.appendRow(headers);
     sh.getRange(1,1,1,headers.length).setFontWeight('bold').setBackground('#0d1f3c').setFontColor('#dce6f5');
     sh.setFrozenRows(1);
@@ -6860,127 +7015,189 @@ function getOrCreateSheet(ss, name, headers) {
   return sh;
 }
 
+/* ══════════════════════════════════════════════════════════════
+   PAYLOAD ROUTER
+══════════════════════════════════════════════════════════════ */
 function processPayload(payload) {
-  var ss = getSS();
+  var ss=getSS();
 
-  /* ── SITE AVERAGES — rolling historical/latest average per site ── */
-  if (payload.type === 'site_averages') {
-    var avSheet = getOrCreateSheet(ss, 'SITE AVERAGES',
+  /* ── SITE AVERAGES ── */
+  if(payload.type==='site_averages'){
+    var avSh=getOrCreateSheet(ss,'SITE AVERAGES',
       ['Sync Date','Section','Site / Location','Latest File Date',
        'Latest Count','Historical Average','Latest Average',
        'Total (All Days)','Days Tracked','Trend','Updated At']);
-    var syncDateSA = String(payload.syncDate||new Date().toISOString().slice(0,10)).slice(0,10);
-    var sectionSA  = String(payload.section||'');
-    var rowsSA     = payload.rows||[];
-    if (avSheet.getLastRow()>1) {
-      var ex=avSheet.getRange(2,1,avSheet.getLastRow()-1,2).getValues(),td=[];
-      for(var i=ex.length-1;i>=0;i--){if(normDate(ex[i][0])===syncDateSA&&String(ex[i][1]||'')===sectionSA)td.push(i+2);}
-      td.sort(function(a,b){return b-a;}).forEach(function(r){avSheet.deleteRow(r);});
+    var sd=String(payload.syncDate||new Date().toISOString().slice(0,10)).slice(0,10);
+    var sec=String(payload.section||'');
+    var rowsSA=payload.rows||[];
+    if(avSh.getLastRow()>1){
+      var ex=avSh.getRange(2,1,avSh.getLastRow()-1,2).getValues(),td=[];
+      for(var i=ex.length-1;i>=0;i--){if(normDate(ex[i][0])===sd&&String(ex[i][1]||'')===sec)td.push(i+2);}
+      td.sort(function(a,b){return b-a;}).forEach(function(r){avSh.deleteRow(r);});
     }
     if(rowsSA.length>0){
-      var st=avSheet.getLastRow()+1,nc=rowsSA[0].length||10;
-      if(nc>avSheet.getMaxColumns())avSheet.insertColumnsAfter(avSheet.getMaxColumns(),nc-avSheet.getMaxColumns());
-      avSheet.getRange(st,1,rowsSA.length,nc).setValues(rowsSA.map(function(r){return r.map(function(v){return v==null?'':String(v);});}));
+      var st=avSh.getLastRow()+1,nc=rowsSA[0].length||11;
+      if(nc>avSh.getMaxColumns())avSh.insertColumnsAfter(avSh.getMaxColumns(),nc-avSh.getMaxColumns());
+      avSh.getRange(st,1,rowsSA.length,nc).setValues(rowsSA.map(function(r){return r.map(function(v){return v==null?'':String(v);});}));
       SpreadsheetApp.flush();
-      Logger.log('SITE AVERAGES: '+rowsSA.length+' rows for '+sectionSA);
     }
-    return {ok:true,type:'site_averages',appended:rowsSA.length};
+    return{ok:true,type:'site_averages',appended:rowsSA.length};
   }
 
-  if (payload.type === 'master_snapshot') {
-    var sh = getOrCreateSheet(ss,'MASTER SNAPSHOT',['Type','Date','Count','Locations','Bins','Messages','LastUpdated']);
-    if (sh.getLastRow()>1) sh.deleteRows(2, sh.getLastRow()-1);
+  /* ── MASTER SNAPSHOT ── */
+  if(payload.type==='master_snapshot'){
+    var sn=getOrCreateSheet(ss,'MASTER SNAPSHOT',['Type','Date','Count','Locations','Bins','Messages','LastUpdated']);
+    if(sn.getLastRow()>1)sn.deleteRows(2,sn.getLastRow()-1);
     var rows=payload.rows||[];
-    if (rows.length>0) {
-      var nc=rows[0].length||7;
-      if(nc>sh.getMaxColumns()) sh.insertColumnsAfter(sh.getMaxColumns(),nc-sh.getMaxColumns());
-      sh.getRange(2,1,rows.length,nc).setValues(rows.map(function(r){return r.map(function(v){return v==null?'':String(v);});}));
+    if(rows.length>0){
+      var nc2=rows[0].length||7;
+      if(nc2>sn.getMaxColumns())sn.insertColumnsAfter(sn.getMaxColumns(),nc2-sn.getMaxColumns());
+      sn.getRange(2,1,rows.length,nc2).setValues(rows.map(function(r){return r.map(function(v){return v==null?'':String(v);});}));
       SpreadsheetApp.flush();
     }
-    return {ok:true,type:'master_snapshot',rows:rows.length};
+    return{ok:true,type:'master_snapshot',rows:rows.length};
   }
 
-  if (payload.type === 'section_counts') {
-    var sh=getOrCreateSheet(ss,'SECTION COUNTS',['Sync Date','Section','Source','Age Filter','AWB Count','Record Count','File Dates']);
-    var syncDate=String(payload.syncDate||new Date().toISOString().slice(0,10)).slice(0,10);
+  /* ── SECTION COUNTS ── */
+  if(payload.type==='section_counts'){
+    var csh=getOrCreateSheet(ss,'SECTION COUNTS',['Sync Date','Section','Source','Age Filter','AWB Count','Record Count','File Dates']);
+    var sd2=String(payload.syncDate||new Date().toISOString().slice(0,10)).slice(0,10);
     var counts=payload.counts||[];
-    var secNames=counts.map(function(c){return String(c.section||'');});
-    if(sh.getLastRow()>1){
-      var ex=sh.getRange(2,1,sh.getLastRow()-1,2).getValues(),td=[];
-      for(var i=ex.length-1;i>=0;i--){if(normDate(ex[i][0])===syncDate&&secNames.indexOf(String(ex[i][1]||''))!==-1)td.push(i+2);}
-      td.sort(function(a,b){return b-a;}).forEach(function(r){sh.deleteRow(r);});
+    var sn2=counts.map(function(c){return String(c.section||'');});
+    if(csh.getLastRow()>1){
+      var ex2=csh.getRange(2,1,csh.getLastRow()-1,2).getValues(),td2=[];
+      for(var i2=ex2.length-1;i2>=0;i2--){if(normDate(ex2[i2][0])===sd2&&sn2.indexOf(String(ex2[i2][1]||''))!==-1)td2.push(i2+2);}
+      td2.sort(function(a,b){return b-a;}).forEach(function(r){csh.deleteRow(r);});
     }
-    var cr=counts.map(function(c){return[syncDate,String(c.section||''),String(c.src||''),String(c.ageFilter||''),Number(c.awbs||0),Number(c.records||0),String(c.fileDates||'')];});
-    if(cr.length>0){sh.getRange(sh.getLastRow()+1,1,cr.length,7).setValues(cr);SpreadsheetApp.flush();}
-    return {ok:true,type:'section_counts',appended:cr.length};
+    var cr=counts.map(function(c){return[sd2,String(c.section||''),String(c.src||''),String(c.ageFilter||''),Number(c.awbs||0),Number(c.records||0),String(c.fileDates||'')];});
+    if(cr.length>0){csh.getRange(csh.getLastRow()+1,1,cr.length,7).setValues(cr);SpreadsheetApp.flush();}
+    return{ok:true,type:'section_counts',appended:cr.length};
   }
 
-  if (payload.type === 'file_log') {
-    var sh=getOrCreateSheet(ss,'FILE LOG',['ID','File Name','File Type','Data Date','Uploaded At','AWBs']);
+  /* ── FILE LOG ── */
+  if(payload.type==='file_log'){
+    var fl=getOrCreateSheet(ss,'FILE LOG',['ID','File Name','File Type','Data Date','Uploaded At','AWBs']);
     var entry=payload.entry||{};
-    if(sh.getLastRow()>1){
-      var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues().map(function(r){return String(r[0]);});
-      if(ids.indexOf(String(entry.id||''))!==-1) return {ok:true,type:'file_log',action:'duplicate_skipped'};
+    if(fl.getLastRow()>1){
+      var ids=fl.getRange(2,1,fl.getLastRow()-1,1).getValues().map(function(r){return String(r[0]);});
+      if(ids.indexOf(String(entry.id||''))!==-1)return{ok:true,type:'file_log',action:'duplicate_skipped'};
     }
-    sh.appendRow([entry.id||'',entry.name||'',entry.fileType||entry.type||'',entry.date||'',entry.uploadedAt||new Date().toISOString(),Number(entry.awbs)||0]);
+    fl.appendRow([entry.id||'',entry.name||'',entry.fileType||entry.type||'',entry.date||'',entry.uploadedAt||new Date().toISOString(),Number(entry.awbs)||0]);
     SpreadsheetApp.flush();
-    return {ok:true,type:'file_log'};
+    return{ok:true,type:'file_log'};
   }
 
-  if (payload.type === 'delete_file') {
-    var delEntry=payload.entry||{},delDate=normDate(delEntry.date||'');
-    var delSection=(delEntry.section||'').toString().replace(/[\\/:*?\[\]]/g,' ').replace(/\s+/g,' ').trim().slice(0,31);
-    var deletedRows=0;
-    if(delSection&&delDate){var ds=ss.getSheetByName(delSection);if(ds&&ds.getLastRow()>1){var dv=ds.getRange(2,1,ds.getLastRow()-1,1).getValues(),td=[];for(var i=dv.length-1;i>=0;i--){if(normDate(dv[i][0])===delDate)td.push(i+2);}td.sort(function(a,b){return b-a;}).forEach(function(r){ds.deleteRow(r);deletedRows++;});}}
-    var dl=ss.getSheetByName('FILE LOG');if(dl&&dl.getLastRow()>1&&delEntry.id){var li=dl.getRange(2,1,dl.getLastRow()-1,1).getValues();for(var j=li.length-1;j>=0;j--){if(String(li[j][0])===String(delEntry.id)){dl.deleteRow(j+2);break;}}}
+  /* ── DELETE FILE ── */
+  if(payload.type==='delete_file'){
+    var de=payload.entry||{},dd=normDate(de.date||'');
+    var dsec=(de.section||'').toString().replace(/[\\/:*?\[\]]/g,' ').replace(/\s+/g,' ').trim();
+    var delCount=0;
+    // Delete from ALL partitions of this section
+    var allParts=getAllPartitions(ss,dsec.slice(0,28)); // base name for partition lookup
+    // Also check legacy exact-name sheet
+    var legSh=ss.getSheetByName(dsec.slice(0,31));
+    if(legSh&&allParts.indexOf(legSh)===-1)allParts.push(legSh);
+    allParts.forEach(function(dsh){
+      if(!dsh||dsh.getLastRow()<=1)return;
+      var dv=dsh.getRange(2,1,dsh.getLastRow()-1,1).getValues(),td=[];
+      for(var i=dv.length-1;i>=0;i--){if(normDate(dv[i][0])===dd)td.push(i+2);}
+      td.sort(function(a,b){return b-a;}).forEach(function(r){dsh.deleteRow(r);delCount++;});
+    });
+    var dl=ss.getSheetByName('FILE LOG');
+    if(dl&&dl.getLastRow()>1&&de.id){
+      var li=dl.getRange(2,1,dl.getLastRow()-1,1).getValues();
+      for(var j=li.length-1;j>=0;j--){if(String(li[j][0])===String(de.id)){dl.deleteRow(j+2);break;}}
+    }
     SpreadsheetApp.flush();
-    return {ok:true,type:'delete_file',deletedRows:deletedRows};
+    return{ok:true,type:'delete_file',deletedRows:delCount};
   }
 
-  /* ── SECTION DATA (Forward R@DC / Reverse R@DC / LMODC / DCH) ── */
-  var rawName=(payload.sheet||'Floor Trends').toString().replace(/[\\/:*?\[\]]/g,' ').replace(/\s+/g,' ').trim();
-  var sheetName=rawName.substring(0,31)||'Data';
-  Logger.log('Section: sheet="'+sheetName+'" date='+(payload.date||'?')+' rows='+((payload.rows&&payload.rows.length)||0));
-
-  var sheet=ss.getSheetByName(sheetName)||ss.insertSheet(sheetName);
+  /* ── SECTION DATA — with AUTO-PARTITIONING ─────────────────────────────────
+     Key change from v6: instead of writing to a single fixed-name sheet,
+     we route writes through getActivePartition() which:
+       1. Creates SECTION_NAME_1 on first write
+       2. Rolls to SECTION_NAME_2 when _1 hits MAX_ROWS_PER_PARTITION
+       3. Records all pointers in _PARTITION_INDEX
+     Reads via getAllPartitions() transparently merge all partitions.           */
+  var rawName=(payload.sheet||'Floor Trends').toString()
+    .replace(/[\\/:*?\[\]]/g,' ').replace(/\s+/g,' ').trim();
+  // Base name max 28 chars to leave room for _NN suffix (31 - 3 = 28)
+  var baseName=rawName.substring(0,28)||'Data';
   var headers=payload.headers||['Date','Location','Count'];
   var newRows=payload.rows||[];
   var dateKey=normDate(payload.date||'');
 
-  if(sheet.getLastRow()===0){
-    sheet.appendRow(headers);
-    sheet.getRange(1,1,1,headers.length).setFontWeight('bold').setBackground('#0d1f3c').setFontColor('#dce6f5');
-    sheet.setFrozenRows(1);sheet.setFrozenColumns(1);
-    Logger.log('Created sheet "'+sheetName+'" with '+headers.length+' columns');
-  } else if(headers.length>sheet.getLastColumn()){
-    if(headers.length>sheet.getMaxColumns()) sheet.insertColumnsAfter(sheet.getMaxColumns(),headers.length-sheet.getMaxColumns());
-    sheet.getRange(1,1,1,headers.length).setValues([headers]).setFontWeight('bold').setBackground('#0d1f3c').setFontColor('#dce6f5');
+  Logger.log('Section write: base="'+baseName+'" date='+dateKey+' rows='+newRows.length);
+
+  // ── Get active write partition (creates or rolls over automatically) ──
+  var sheet=getActivePartition(ss,baseName,headers);
+
+  // Refresh header if columns expanded
+  if(headers.length>sheet.getLastColumn()){
+    if(headers.length>sheet.getMaxColumns())
+      sheet.insertColumnsAfter(sheet.getMaxColumns(),headers.length-sheet.getMaxColumns());
+    sheet.getRange(1,1,1,headers.length).setValues([headers])
+      .setFontWeight('bold').setBackground('#0d1f3c').setFontColor('#dce6f5');
   }
 
+  // Dedup by date: delete existing rows for this dateKey across ALL partitions
+  // (prevents double-entries if the same file is re-uploaded)
+  var allSheetsForDedup=getAllPartitions(ss,baseName);
   var deletedCount=0;
-  if(dateKey&&sheet.getLastRow()>1){
-    var lrow=sheet.getLastRow(),dv=sheet.getRange(2,1,lrow-1,1).getValues(),td=[];
+  allSheetsForDedup.forEach(function(dsh){
+    if(!dsh||dsh.getLastRow()<=1)return;
+    var dv=dsh.getRange(2,1,dsh.getLastRow()-1,1).getValues(),td=[];
     for(var d=dv.length-1;d>=0;d--){if(normDate(dv[d][0])===dateKey)td.push(d+2);}
-    td.sort(function(a,b){return b-a;}).forEach(function(r){sheet.deleteRow(r);deletedCount++;});
-    if(deletedCount>0) Logger.log('Dedup: removed '+deletedCount+' rows for '+dateKey+' in '+sheetName);
-  }
+    td.sort(function(a,b){return b-a;}).forEach(function(r){dsh.deleteRow(r);deletedCount++;});
+  });
+  if(deletedCount>0)Logger.log('Dedup: removed '+deletedCount+' rows for '+dateKey);
 
+  // Re-fetch active partition after dedup (dedup may have emptied a later partition)
+  sheet=getActivePartition(ss,baseName,headers);
+
+  // Append rows
   var appendedCount=0;
   if(newRows.length>0){
-    var startRow=sheet.getLastRow()+1;
-    var numCols=Math.max(headers.length,newRows[0]?newRows[0].length:0);
-    if(numCols>sheet.getMaxColumns()) sheet.insertColumnsAfter(sheet.getMaxColumns(),numCols-sheet.getMaxColumns());
-    var paddedRows=newRows.map(function(r){var row=r.slice();while(row.length<numCols)row.push('');return row;});
-    sheet.getRange(startRow,1,paddedRows.length,numCols).setValues(paddedRows);
-    appendedCount=paddedRows.length;
-    Logger.log('Appended '+appendedCount+' rows to "'+sheetName+'" for '+dateKey);
+    // Check if this batch itself would overflow the current partition
+    // If so, split across partitions
+    var remaining=newRows;
+    while(remaining.length>0){
+      sheet=getActivePartition(ss,baseName,headers);
+      var space=Math.max(0,MAX_ROWS_PER_PARTITION-sheet.getLastRow());
+      if(space===0){
+        // Force rollover by bumping index — getActivePartition will create next
+        Logger.log('Forced rollover for '+baseName);
+        continue;
+      }
+      var batch=remaining.slice(0,space);
+      remaining=remaining.slice(space);
+      var numCols=Math.max(headers.length,batch[0]?batch[0].length:0);
+      if(numCols>sheet.getMaxColumns())
+        sheet.insertColumnsAfter(sheet.getMaxColumns(),numCols-sheet.getMaxColumns());
+      var paddedRows=batch.map(function(r){var row=r.slice();while(row.length<numCols)row.push('');return row;});
+      var startRow=sheet.getLastRow()+1;
+      sheet.getRange(startRow,1,paddedRows.length,numCols).setValues(paddedRows);
+      appendedCount+=paddedRows.length;
+      // Update index with new row count
+      var parts=loadIndex(ss)[baseName]||[];
+      if(parts.length>0){
+        var last=parts[parts.length-1];
+        updateIndex(ss,baseName,last.num,last.tab,sheet.getLastRow());
+      }
+    }
+    Logger.log('Appended '+appendedCount+' rows across partition(s) of "'+baseName+'" for '+dateKey);
   }
 
   SpreadsheetApp.flush();
-  return {ok:true,sheet:sheetName,date:dateKey,deleted:deletedCount,appended:appendedCount,totalRows:sheet.getLastRow()-1};
+  return{
+    ok:true,sheet:sheet.getName(),baseName:baseName,date:dateKey,
+    deleted:deletedCount,appended:appendedCount,
+    totalRows:sheet.getLastRow()-1,
+    partitionCount:(loadIndex(ss)[baseName]||[]).length
+  };
 }
 
-function buildResponse(body) {
+function buildResponse(body){
   return ContentService.createTextOutput(body).setMimeType(ContentService.MimeType.JSON);
 }
 `;
