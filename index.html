@@ -2444,19 +2444,18 @@ async function runFiles(files){
       //   43 cols × 5000 rows = 215,000 cells per file upload.
       //   28 files × 215,000 = 6,020,000 cells for ONE section alone → hits 10M fast.
       // Fix: store only ~15 essential columns (70% cell reduction):
-      //   15 cols × 1200 rows × 28 files = 504,000 cells for one section — manageable.
-      // The collated Excel report uses these same key fields for analysis.
-      // PERMANENT FIX: store only 5 minimal columns per file type.
-      // Math: 5 cols × 400 rows × 365 days = 730k cells/year per section.
-      // 4 sections × 730k = 2.9M cells/year — stays well under 10M permanently.
+      // 2. Snapshot ALL source columns for Sheets.
+      // FULL-DATA FIX: The previous MIN_COLS whitelist was storing only 5-6 columns
+      // (e.g. Date, Ageing_f, destination_name, awb_number, Manifest_Status).
+      // This made the Collated Excel Report incomplete — missing all other source fields.
+      //
+      // Fix: store ALL columns from rawData. The partition system (800 rows/partition,
+      // auto-rollover to _2, _3 etc.) keeps each partition at ~34k cells, so storing
+      // 43 cols × 800 rows = 34,400 cells/partition — well within Google Sheets limits.
+      // 10M limit / 34,400 = 290 partitions possible = years of data without issues.
+      //
+      // Row cap: 400 rows per upload (prevents OOM in browser during JSON serialization).
       const SHEETS_ROW_CAP=400;
-      // Minimal columns per type — ordered: Date first, then location, age, AWB, status
-      const MIN_COLS={
-        forward     :['Awb_number','awb_number','Ageing_from_b','ageing_from_bag_rec','location','Location','Pivot','pivot','order_status'],
-        reverse     :['Awb_number','awb_number','Ageing','ageing','current_location','location','Location','Reason of Loss','reason_of_loss','Client','client'],
-        forwardShort:['Awb_number','awb_number','Ageing_from_b','ageing_from_bag_rec','Current_location','current_location','location','Location','message','Message'],
-        lmodc       :['Ageing_f','ageing_f','Ageing','ageing','destination_name','Destination_name','awb_number','Awb_number','Manifest_Status']
-      };
       const sheetsPayloadsBySec=[];
       if(getGsUrl()){
         const rawDateRows=(rawData[r.type]&&rawData[r.type][r.date])||[];
@@ -2465,13 +2464,9 @@ async function runFiles(files){
             const sec=SECS[si];
             if(sec.src!==r.type)continue;
             const sheetName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().slice(0,28);
-            const wantedCols=MIN_COLS[r.type]||[];
+            // Collect ALL columns present in the raw rows (no filtering)
             const colSet=new Set(['Date']);
-            if(rawDateRows.length>0){
-              const sampleKeys=Object.keys(rawDateRows[0]);
-              sampleKeys.forEach(k=>{if(wantedCols.includes(k))colSet.add(k);});
-            }
-            if(colSet.size<2)break;
+            rawDateRows.forEach(row=>Object.keys(row).forEach(k=>{colSet.add(k);}));
             const allCols=[...colSet];
             const cappedRows=rawDateRows.length>SHEETS_ROW_CAP
               ?rawDateRows.slice(0,SHEETS_ROW_CAP):rawDateRows;
@@ -2482,7 +2477,7 @@ async function runFiles(files){
                 return(v!==undefined&&v!==null&&v!=='')?String(v):'';
               }))
               .filter(arr=>arr.slice(1).some(v=>v!==''));
-            console.log(`Sheets: "${sheetName}" ${allCols.length}c × ${rowArrs.length}r`);
+            console.log(`Sheets: "${sheetName}" ${allCols.length}c × ${rowArrs.length}r (all columns)`);
             if(rowArrs.length){
               sheetsPayloadsBySec.push({sheetName,headers:allCols,rowArrs,date:r.date});
               break;
