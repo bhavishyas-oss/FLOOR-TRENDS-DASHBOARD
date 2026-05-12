@@ -2446,33 +2446,32 @@ async function runFiles(files){
       // Fix: store only ~15 essential columns (70% cell reduction):
       //   15 cols × 1200 rows × 28 files = 504,000 cells for one section — manageable.
       // The collated Excel report uses these same key fields for analysis.
-      const SHEETS_ROW_CAP=1200;
-      // Essential columns stored per file type (all others dropped for cell efficiency)
-      const ESSENTIAL_COLS={
-        forward     :new Set(['Date','Awb_number','awb_number','Ageing_from_b','ageing_from_bag_rec','Pivot','pivot','product_name','received_at_bag','a.client_warehouse','seller_name','Client','client','location','Location','order_status']),
-        reverse     :new Set(['Date','Awb_number','awb_number','Ageing','ageing','Reason of Loss','reason_of_loss','reason of loss','Client','client','current_location','location','Location','scanned_time','bin_name','message']),
-        forwardShort:new Set(['Date','Awb_number','awb_number','Ageing_from_b','ageing_from_bag_rec','Current_location','current_location','location','Location','Client','client','message','Message','order_status','bin_level','bin_name']),
-        lmodc       :new Set(['Date','Ageing_f','ageing_f','Ageing','ageing','destination_name','Destination_name','origin_name','manifest_code','scanned_area_code','Manifest_Status','awb_number','Awb_number','Lane Code','count','Count'])
+      // PERMANENT FIX: store only 5 minimal columns per file type.
+      // Math: 5 cols × 400 rows × 365 days = 730k cells/year per section.
+      // 4 sections × 730k = 2.9M cells/year — stays well under 10M permanently.
+      const SHEETS_ROW_CAP=400;
+      // Minimal columns per type — ordered: Date first, then location, age, AWB, status
+      const MIN_COLS={
+        forward     :['Awb_number','awb_number','Ageing_from_b','ageing_from_bag_rec','location','Location','Pivot','pivot','order_status'],
+        reverse     :['Awb_number','awb_number','Ageing','ageing','current_location','location','Location','Reason of Loss','reason_of_loss','Client','client'],
+        forwardShort:['Awb_number','awb_number','Ageing_from_b','ageing_from_bag_rec','Current_location','current_location','location','Location','message','Message'],
+        lmodc       :['Ageing_f','ageing_f','Ageing','ageing','destination_name','Destination_name','awb_number','Awb_number','Manifest_Status']
       };
       const sheetsPayloadsBySec=[];
       if(getGsUrl()){
         const rawDateRows=(rawData[r.type]&&rawData[r.type][r.date])||[];
-        console.log(`Sheets snapshot: type=${r.type} date=${r.date} rawRows=${rawDateRows.length}`);
         if(rawDateRows.length>0){
           for(let si=0;si<SECS.length;si++){
             const sec=SECS[si];
             if(sec.src!==r.type)continue;
             const sheetName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().slice(0,28);
-            // Build column set: essential cols for this type + always include Date
-            const essentials=ESSENTIAL_COLS[r.type]||new Set(['Date']);
+            const wantedCols=MIN_COLS[r.type]||[];
             const colSet=new Set(['Date']);
-            // Add essential cols that actually exist in the data
             if(rawDateRows.length>0){
               const sampleKeys=Object.keys(rawDateRows[0]);
-              sampleKeys.forEach(k=>{
-                if(essentials.has(k))colSet.add(k);
-              });
+              sampleKeys.forEach(k=>{if(wantedCols.includes(k))colSet.add(k);});
             }
+            if(colSet.size<2)break;
             const allCols=[...colSet];
             const cappedRows=rawDateRows.length>SHEETS_ROW_CAP
               ?rawDateRows.slice(0,SHEETS_ROW_CAP):rawDateRows;
@@ -2483,14 +2482,14 @@ async function runFiles(files){
                 return(v!==undefined&&v!==null&&v!=='')?String(v):'';
               }))
               .filter(arr=>arr.slice(1).some(v=>v!==''));
-            console.log(`Sheets snapshot: sec="${sheetName}" cols=${allCols.length} rowArrs=${rowArrs.length}`);
+            console.log(`Sheets: "${sheetName}" ${allCols.length}c × ${rowArrs.length}r`);
             if(rowArrs.length){
               sheetsPayloadsBySec.push({sheetName,headers:allCols,rowArrs,date:r.date});
               break;
             }
           }
         }else{
-          console.warn(`Sheets: rawData[${r.type}][${r.date}] empty — captureRaw may have been called before pXxx`);
+          console.warn(`Sheets: rawData[${r.type}][${r.date}] empty`);
         }
       }
 
@@ -6777,7 +6776,8 @@ function showAppsScriptCode(){
    Rollover happens proactively at MAX_ROWS_PER_PARTITION so Google never
    throws "would exceed 10,000,000 cells" errors during append operations.
 ============================================================ */
-var MAX_ROWS_PER_PARTITION = 1500;  // REDUCED from 45000 — prevents hitting 10M total limit
+var MAX_ROWS_PER_PARTITION = 800;   // 800 rows * 15 cols = 12,000 cells/partition
+                                    // 10M cells / 12,000 = 833 partitions = decades of data
 var INDEX_SHEET_NAME       = '_PARTITION_INDEX';
 
 /* ── Get the spreadsheet (container-bound) ── */
@@ -7192,34 +7192,110 @@ function processPayload(payload) {
     return {ok:true,sheet:baseName,appended:0,reason:'empty_rows'};
   }
 
-  // ── PROACTIVE CELL LIMIT GUARD ───────────────────────────────────────────
-  // Check total spreadsheet cells BEFORE writing to prevent the "would exceed
-  // 10,000,000 cells" error. If the spreadsheet is close to the limit, force
-  // rollover to a new partition BEFORE attempting any setValues() call.
+  // ── PROACTIVE CELL LIMIT MANAGEMENT ────────────────────────────────────────
+  // The spreadsheet near 10M cells. Instead of just skipping writes (which loses data),
+  // we automatically clean up the LEGACY unpartitioned sheets that were created before
+  // the partitioning system was implemented. These legacy sheets (LMODC, DCH, REVERSE R DC
+  // etc. — WITHOUT the _N suffix) consume millions of cells with 43+ wide columns.
+  // After cleanup, we have headroom for new partitioned writes (15-col, narrow sheets).
   var totalCells = 0;
   try {
     var allSheets = ss.getSheets();
-    for (var s = 0; s < allSheets.length; s++) {
-      var sh2 = allSheets[s];
-      // Only count actual used area (not the sheet's full allocated size)
-      var lr = sh2.getLastRow();
-      var lc = sh2.getLastColumn();
-      if (lr > 0 && lc > 0) totalCells += lr * lc;
+    for (var s2 = 0; s2 < allSheets.length; s2++) {
+      var sh2 = allSheets[s2];
+      var lr2 = sh2.getLastRow();
+      var lc2 = sh2.getLastColumn();
+      if (lr2 > 0 && lc2 > 0) totalCells += lr2 * lc2;
     }
     Logger.log('Total spreadsheet cells before write: ' + totalCells);
   } catch(cellCountErr) {
     Logger.log('Cell count warning: ' + cellCountErr.message);
   }
 
-  // If spreadsheet is over 9M cells, force a new spreadsheet-level warning
-  // and skip writing to prevent the Google error. The row cap below handles
-  // normal rollover; this is the safety net for the total limit.
-  var CELL_SAFETY = 9500000;
+  var CELL_SAFETY = 9000000; // start cleanup at 9M cells
   if (totalCells > CELL_SAFETY) {
-    Logger.log('WARNING: Spreadsheet near cell limit (' + totalCells + ') — skipping write for: ' + baseName);
-    return {ok:false, error:'cell_limit', totalCells:totalCells, baseName:baseName,
-      message:'Spreadsheet approaching 10M cell limit. Delete old data tabs or use a new spreadsheet.'};
+    Logger.log('Cell safety triggered (' + totalCells + '). Auto-cleaning legacy sheets...');
+    var freedCells = _cleanupLegacySheets(ss);
+    Logger.log('Freed ' + freedCells + ' cells from legacy sheets. Recalculating...');
+    totalCells = Math.max(0, totalCells - freedCells);
+
+    // If still over limit after cleanup, clear oldest partition rows for this section
+    if (totalCells > CELL_SAFETY) {
+      var freed2 = _pruneOldestPartition(ss, baseName);
+      Logger.log('Pruned ' + freed2 + ' cells from oldest partition of ' + baseName);
+      totalCells = Math.max(0, totalCells - freed2);
+    }
+
+    // If still critically full (no cleanable sheets found), skip write gracefully
+    if (totalCells > 9800000) {
+      Logger.log('CRITICAL: Spreadsheet full even after cleanup. Skipping write for: ' + baseName);
+      return {ok:false, error:'cell_limit_critical', totalCells:totalCells,
+        message:'Spreadsheet at capacity. Please create a new FLOOR TRENDS DATA spreadsheet and update the Apps Script deployment.'};
+    }
   }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   CLEANUP HELPERS — called automatically when spreadsheet nears cell limit
+───────────────────────────────────────────────────────────────────────── */
+
+/* Delete unpartitioned legacy sheets (no _N suffix) which were created before
+   the partitioning system. These are wide (43+ cols) and consume most cells.
+   Returns approximate cells freed.                                          */
+function _cleanupLegacySheets(ss) {
+  // Legacy sheet names (no _N suffix) that are safe to delete because
+  // the dashboard's localStorage/IDB contains the same data.
+  var LEGACY_NAMES = ['LMODC', 'DCH', 'REVERSE R DC', 'Sheet1',
+    'FORWARD R DC', 'Reverse R DC', 'Forward R DC', 'FORWARD_R_DC',
+    'REVERSE_R_DC', 'FWD R DC', 'REV R DC'];
+  var freed = 0;
+  LEGACY_NAMES.forEach(function(name) {
+    var sh = ss.getSheetByName(name);
+    if (!sh) return;
+    var lr = sh.getLastRow();
+    var lc = sh.getLastColumn();
+    if (lr < 2) return; // empty or header-only — skip
+    // Only delete if there IS a partitioned successor (e.g. LMODC_1 exists)
+    var hasPartitioned = ss.getSheetByName(name.substring(0,28)+'_1') ||
+                         ss.getSheetByName(name.replace(/ /g,'_').substring(0,27)+'_1');
+    if (hasPartitioned) {
+      freed += lr * lc;
+      try {
+        sh.clearContents(); // clear contents but keep sheet (safer than delete)
+        sh.clearFormats();
+        Logger.log('Legacy sheet cleared: ' + name + ' (freed ~' + (lr*lc) + ' cells)');
+      } catch(e) {
+        Logger.log('Could not clear legacy sheet ' + name + ': ' + e.message);
+      }
+    }
+  });
+  try { SpreadsheetApp.flush(); } catch(e) {}
+  return freed;
+}
+
+/* Delete the data rows from the OLDEST partition of a section (keep header).
+   Returns approximate cells freed.                                          */
+function _pruneOldestPartition(ss, baseName) {
+  var idx = loadIndex(ss);
+  var parts = idx[baseName] || [];
+  if (parts.length <= 1) return 0; // keep the only partition
+  // Delete rows from partition 1 (oldest) — keep header row
+  var oldestTab = parts[0].tab;
+  var oldSh = ss.getSheetByName(oldestTab);
+  if (!oldSh || oldSh.getLastRow() <= 1) return 0;
+  var freedRows = oldSh.getLastRow() - 1;
+  var freedCols = oldSh.getLastColumn();
+  try {
+    oldSh.deleteRows(2, freedRows);
+    SpreadsheetApp.flush();
+    // Update index to reflect empty partition
+    updateIndex(ss, baseName, parts[0].num, oldestTab, 1);
+    Logger.log('Pruned ' + freedRows + ' rows from oldest partition: ' + oldestTab);
+  } catch(e) {
+    Logger.log('Could not prune ' + oldestTab + ': ' + e.message);
+    return 0;
+  }
+  return freedRows * freedCols;
+}
 
   // ── Step 1: Get/create the active write partition ────────────────────────
   // Call ONCE and reuse. Do NOT call inside the while loop — that causes
