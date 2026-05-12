@@ -2439,8 +2439,21 @@ async function runFiles(files){
         _sheetsFetch(getGsUrl(),{type:'file_log',entry:regEntry}).catch(()=>{});
       }
 
-      // 2. Snapshot raw rows for Sheets — capped to prevent OOM accumulation.
-      const SHEETS_ROW_CAP=5000; // 5k rows per push — safe for 43-col files (5k×43=215k cells < 6MB)
+      // 2. Snapshot essential columns for Sheets — cell usage optimized.
+      // CELL LIMIT FIX: storing ALL 43+ raw source columns burns cells rapidly:
+      //   43 cols × 5000 rows = 215,000 cells per file upload.
+      //   28 files × 215,000 = 6,020,000 cells for ONE section alone → hits 10M fast.
+      // Fix: store only ~15 essential columns (70% cell reduction):
+      //   15 cols × 1200 rows × 28 files = 504,000 cells for one section — manageable.
+      // The collated Excel report uses these same key fields for analysis.
+      const SHEETS_ROW_CAP=1200;
+      // Essential columns stored per file type (all others dropped for cell efficiency)
+      const ESSENTIAL_COLS={
+        forward     :new Set(['Date','Awb_number','awb_number','Ageing_from_b','ageing_from_bag_rec','Pivot','pivot','product_name','received_at_bag','a.client_warehouse','seller_name','Client','client','location','Location','order_status']),
+        reverse     :new Set(['Date','Awb_number','awb_number','Ageing','ageing','Reason of Loss','reason_of_loss','reason of loss','Client','client','current_location','location','Location','scanned_time','bin_name','message']),
+        forwardShort:new Set(['Date','Awb_number','awb_number','Ageing_from_b','ageing_from_bag_rec','Current_location','current_location','location','Location','Client','client','message','Message','order_status','bin_level','bin_name']),
+        lmodc       :new Set(['Date','Ageing_f','ageing_f','Ageing','ageing','destination_name','Destination_name','origin_name','manifest_code','scanned_area_code','Manifest_Status','awb_number','Awb_number','Lane Code','count','Count'])
+      };
       const sheetsPayloadsBySec=[];
       if(getGsUrl()){
         const rawDateRows=(rawData[r.type]&&rawData[r.type][r.date])||[];
@@ -2450,8 +2463,16 @@ async function runFiles(files){
             const sec=SECS[si];
             if(sec.src!==r.type)continue;
             const sheetName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().slice(0,28);
+            // Build column set: essential cols for this type + always include Date
+            const essentials=ESSENTIAL_COLS[r.type]||new Set(['Date']);
             const colSet=new Set(['Date']);
-            rawDateRows.forEach(row=>Object.keys(row).forEach(k=>{colSet.add(k);}));
+            // Add essential cols that actually exist in the data
+            if(rawDateRows.length>0){
+              const sampleKeys=Object.keys(rawDateRows[0]);
+              sampleKeys.forEach(k=>{
+                if(essentials.has(k))colSet.add(k);
+              });
+            }
             const allCols=[...colSet];
             const cappedRows=rawDateRows.length>SHEETS_ROW_CAP
               ?rawDateRows.slice(0,SHEETS_ROW_CAP):rawDateRows;
@@ -2462,14 +2483,14 @@ async function runFiles(files){
                 return(v!==undefined&&v!==null&&v!=='')?String(v):'';
               }))
               .filter(arr=>arr.slice(1).some(v=>v!==''));
-            console.log(`Sheets snapshot: sec="${sheetName}" allCols=${allCols.length} rowArrs=${rowArrs.length}`);
+            console.log(`Sheets snapshot: sec="${sheetName}" cols=${allCols.length} rowArrs=${rowArrs.length}`);
             if(rowArrs.length){
               sheetsPayloadsBySec.push({sheetName,headers:allCols,rowArrs,date:r.date});
               break;
             }
           }
         }else{
-          console.warn(`Sheets: rawData[${r.type}][${r.date}] empty — no rows to push`);
+          console.warn(`Sheets: rawData[${r.type}][${r.date}] empty — captureRaw may have been called before pXxx`);
         }
       }
 
@@ -6750,8 +6771,14 @@ function showAppsScriptCode(){
 /* ==============================================================
    STORAGE CONSTANTS
 ============================================================== */
-var MAX_ROWS_PER_PARTITION = 45000;  // split when sheet hits this row count
-var INDEX_SHEET_NAME       = '_PARTITION_INDEX';  // hidden index tab
+/* ============================================================
+   STORAGE CONSTANTS — tuned to stay within Google Sheets 10M cell limit.
+   10M cells / (1500 rows * ~50 cols avg) = ~133 partitions = years of data.
+   Rollover happens proactively at MAX_ROWS_PER_PARTITION so Google never
+   throws "would exceed 10,000,000 cells" errors during append operations.
+============================================================ */
+var MAX_ROWS_PER_PARTITION = 1500;  // REDUCED from 45000 — prevents hitting 10M total limit
+var INDEX_SHEET_NAME       = '_PARTITION_INDEX';
 
 /* ── Get the spreadsheet (container-bound) ── */
 function getSS() {
@@ -7161,8 +7188,37 @@ function processPayload(payload) {
   Logger.log('Section write: base="'+baseName+'" date='+dateKey+' rows='+newRows.length+' hdrs='+headers.length);
 
   if(!newRows.length){
-    Logger.log('Section write: empty rows — skipping (headers-only chunk handled by _initSheet)');
+    Logger.log('Section write: empty rows — skipping');
     return {ok:true,sheet:baseName,appended:0,reason:'empty_rows'};
+  }
+
+  // ── PROACTIVE CELL LIMIT GUARD ───────────────────────────────────────────
+  // Check total spreadsheet cells BEFORE writing to prevent the "would exceed
+  // 10,000,000 cells" error. If the spreadsheet is close to the limit, force
+  // rollover to a new partition BEFORE attempting any setValues() call.
+  var totalCells = 0;
+  try {
+    var allSheets = ss.getSheets();
+    for (var s = 0; s < allSheets.length; s++) {
+      var sh2 = allSheets[s];
+      // Only count actual used area (not the sheet's full allocated size)
+      var lr = sh2.getLastRow();
+      var lc = sh2.getLastColumn();
+      if (lr > 0 && lc > 0) totalCells += lr * lc;
+    }
+    Logger.log('Total spreadsheet cells before write: ' + totalCells);
+  } catch(cellCountErr) {
+    Logger.log('Cell count warning: ' + cellCountErr.message);
+  }
+
+  // If spreadsheet is over 9M cells, force a new spreadsheet-level warning
+  // and skip writing to prevent the Google error. The row cap below handles
+  // normal rollover; this is the safety net for the total limit.
+  var CELL_SAFETY = 9500000;
+  if (totalCells > CELL_SAFETY) {
+    Logger.log('WARNING: Spreadsheet near cell limit (' + totalCells + ') — skipping write for: ' + baseName);
+    return {ok:false, error:'cell_limit', totalCells:totalCells, baseName:baseName,
+      message:'Spreadsheet approaching 10M cell limit. Delete old data tabs or use a new spreadsheet.'};
   }
 
   // ── Step 1: Get/create the active write partition ────────────────────────
@@ -7178,9 +7234,12 @@ function processPayload(payload) {
     Logger.log('Flush after _initSheet warning: ' + flushErr.message);
   }
 
-  // ── Step 2: Dedup — remove existing rows for this date ──────────────────
+  // ── Step 2: Dedup — only on first chunk (headers provided = first chunk) ──
+  // Subsequent chunks (headers=[]) are pure appends — no dedup needed because
+  // the first chunk already cleared the date's rows.
   var deletedCount = 0;
-  if (dateKey) {
+  var isFirstChunk = (headers && headers.length > 0 && dateKey);
+  if (isFirstChunk) {
     var allSheetsForDedup = getAllPartitions(ss, baseName);
     allSheetsForDedup.forEach(function(dsh) {
       if (!dsh || dsh.getLastRow() <= 1) return;
@@ -7413,16 +7472,13 @@ async function _drainSyncQueue(){
   if(failed>0)    console.warn(`Sync queue: ${failed} items still pending (will retry next upload)`);
 }
 
-/* ── POST one section/date batch to the deployed web app ── */
-/* ── Push section rows to Sheets — single atomic POST ──────────────────────
-   ROOT CAUSE FIX: Old approach sent rows in 300-row chunks (15-30 POSTs per file).
-   Each chunk hit the Apps Script redirect (/exec → internal URL). For chunks
-   after the first, headers were empty [], causing the AppScript to call
-   getActivePartition with stale index data (prior chunk's flush hadn't propagated),
-   leading to wrong startRow calculations and setValues writing to wrong positions.
-
-   Fix: send ALL rows in ONE POST. One execution = one flush = atomic write.
-   Apps Script handles up to 50MB body; 5000 rows × 43 cols ≈ 3MB = well within limit. */
+/* ── Push section rows to Sheets — chunked POST (OOM-safe) ─────────────────
+   Single-POST of 5000 rows = ~3-5MB JSON string allocation in browser memory
+   on top of the already-loaded file buffers → OOM "Aw Snap" crash.
+   Fix: chunk to 500 rows per POST = ~300KB each = safe memory footprint.
+   AppScript receives each chunk atomically (flush per execution). Headers
+   sent on first chunk only; subsequent chunks use date='' to signal append.
+   Each chunk is independent — if one fails, it queues for retry.            */
 async function pushSectionDate(sheetName,headers,rows,date){
   const url=getGsUrl();
   if(!url||!rows.length)return false;
@@ -7433,24 +7489,33 @@ async function pushSectionDate(sheetName,headers,rows,date){
     .map(r=>r.map(v=>(v==null)?'':String(v)));
   if(!safeRows.length){console.log(`pushSectionDate: no non-empty rows for ${sheetName}`);return true;}
 
-  console.log(`pushSectionDate: sending ${safeRows.length} rows × ${safeHdrs.length} cols → "${sheetName}"`);
-
-  // Single atomic POST — all rows + headers in one call
-  const payload={sheet:sheetName, headers:safeHdrs, rows:safeRows, date};
-  const r=await _sheetsFetch(url, payload);
-
-  if(r.ok===true){
-    console.log(`Sheets OK: "${sheetName}" appended=${r.body&&r.body.appended||safeRows.length}`);
-    return true;
+  // 500 rows × 15 cols = 7,500 cells per chunk = ~50KB JSON = safe for browser memory
+  const CHUNK=500;
+  let allOk=true;
+  for(let i=0;i<safeRows.length;i+=CHUNK){
+    const chunk=safeRows.slice(i,i+CHUNK);
+    const payload={
+      sheet  : sheetName,
+      headers: i===0?safeHdrs:[], // headers only on first chunk
+      rows   : chunk,
+      date   : i===0?date:''      // date on first chunk for dedup; blank for subsequent
+    };
+    const r=await _sheetsFetch(url, payload);
+    if(r.ok===true){
+      // Only log first and last chunks to avoid console spam
+      if(i===0||i+CHUNK>=safeRows.length)
+        console.log(`Sheets "${sheetName}": chunk ${Math.floor(i/CHUNK)+1} OK, appended=${r.body&&r.body.appended||chunk.length}`);
+    }else if(r.ok===null){
+      console.log(`Sheets "${sheetName}": chunk ${Math.floor(i/CHUNK)+1} sent (no-cors)`);
+    }else{
+      console.warn(`pushSectionDate FAILED chunk ${Math.floor(i/CHUNK)+1} for "${sheetName}":`,r.body&&r.body.error||'unknown');
+      _enqueueSyncItem(payload);
+      allOk=false;
+    }
+    // Brief yield between chunks to keep browser responsive
+    if(i+CHUNK<safeRows.length)await new Promise(r=>setTimeout(r,100));
   }
-  if(r.ok===null){
-    // no-cors opaque — data was delivered (can't verify server outcome)
-    console.log(`Sheets sent (no-cors): "${sheetName}" ${safeRows.length} rows — outcome unverifiable`);
-    return true;
-  }
-  console.warn(`pushSectionDate FAILED: "${sheetName}"`, r.body&&r.body.error||'unknown error');
-  _enqueueSyncItem(payload);
-  return false;
+  return allOk;
 }
 
 /* Push section-wise AWB counts to a dedicated SECTION COUNTS sheet */
