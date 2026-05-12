@@ -2805,22 +2805,24 @@ function renderTable(el,piv,sec,idx){
   let grand=0;
 
   // CSS classes (ptc-*) replace per-cell inline styles → 6× smaller HTML string
-  // See <style> section for class definitions
+  // CELL/CELL_L defined as empty strings so header TH style attributes resolve gracefully
+  // (these were removed in a prior refactor but still referenced in template literals)
+  const CELL='';const CELL_L='';
 
   let html=`
   <div style="overflow-x:auto;-webkit-overflow-scrolling:touch" id="_tblWrap_${el.id}">
   <table style="border-collapse:collapse;width:100%;font-family:var(--sans);font-size:11px;table-layout:auto">
     <thead>
       <tr style="background:#0f2b25;color:#fff">
-        <th style="${CELL_L}background:#0f2b25;color:#fff;min-width:110px;position:sticky;left:0;z-index:2">LOCATION</th>
+        <th class="ptc-hd" style="text-align:left;min-width:110px;position:sticky;left:0;z-index:2">LOCATION</th>
         ${piv.dates.map((d,di)=>{
           const isLatest=di===nDates-1;
           return`<th class="${isLatest?'ptc-hdl':'ptc-hd'}" title="${isLatest?'Latest uploaded file':''}">${fmtD(d)}${isLatest?'<br><span style="font-size:9px;opacity:.8">★ LATEST</span>':''}
           </th>`;
         }).join('')}
-        <th style="${CELL}background:#0a4a35;color:#E9DF43;min-width:60px">TOTAL</th>
-        <th style="${CELL}background:#1a3a5c;color:#bfdbfe;min-width:72px" title="Previous rolling average — before the latest upload">HISTORICAL<br>AVERAGE</th>
-        <th style="${CELL}background:#1e3a4a;color:#a5f3fc;min-width:72px" title="Newly recalculated average including latest upload">LATEST<br>AVERAGE</th>
+        <th class="ptc-hd" style="background:#0a4a35;color:#E9DF43;min-width:60px">TOTAL</th>
+        <th class="ptc-hd" style="background:#1a3a5c;color:#bfdbfe;min-width:72px" title="Previous rolling average">HISTORICAL<br>AVERAGE</th>
+        <th class="ptc-hd" style="background:#1e3a4a;color:#a5f3fc;min-width:72px" title="Newly recalculated average">LATEST<br>AVERAGE</th>
       </tr>
     </thead>
     <tbody>`;
