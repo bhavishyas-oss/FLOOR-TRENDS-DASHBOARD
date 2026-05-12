@@ -208,6 +208,27 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 .tbl tbody tr:hover td:first-child{background:#d0ede5!important}
 /* total column */
 .tbl tbody td:last-child{border-right:none;font-weight:900;color:#0a2520;background:#eaf6f2!important}
+
+/* ── Pivot table cell classes — replace per-cell inline styles ──────────────
+   OOM/freeze FIX: each <td> had ~120 chars of inline style. With 30 dates ×
+   30 sites = 900 cells × 120 chars = 108KB of style strings in the HTML string.
+   Using CSS classes shrinks it to 10-20 chars per cell = 18KB → 6× smaller.
+   el.innerHTML = 300KB string → el.innerHTML = 50KB string: 6× faster parse.  */
+.ptc{padding:3px 7px;text-align:center;font-size:11px;font-weight:700;white-space:nowrap;border:1px solid #c8dfd9;box-sizing:border-box}
+.ptcl{padding:3px 7px;text-align:left;font-size:11px;font-weight:700;white-space:nowrap;border:1px solid #c8dfd9;max-width:150px;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box}
+.ptc-r{background:#ef4444;color:#fff}
+.ptc-g{background:#dff0ea;color:#0a4a35}
+.ptc-z{color:#94a3b8}
+.ptc-lat{border-left:3px solid #E9DF43!important;border-right:3px solid #E9DF43!important}
+.ptc-tot{background:#0a4a35;color:#E9DF43;font-size:12px;text-align:center;font-weight:700;border:1px solid #c8dfd9}
+.ptc-ha{background:#dbeafe;color:#1e3a6e;font-size:11px;font-weight:700;text-align:center;border:1px solid #c8dfd9}
+.ptc-la{background:#e0f7fa;color:#0a4a35;font-size:11px;font-weight:700;text-align:center;border:1px solid #c8dfd9}
+.ptc-loc{font-weight:700;color:#0a2520}
+.ptc-hd{background:#0f2b25;color:#fff;padding:3px 7px;text-align:center;font-size:11px;font-weight:700;white-space:nowrap;border:1px solid #c8dfd9;min-width:52px}
+.ptc-hdl{background:#0f2b25;color:#E9DF43;border-bottom:3px solid #E9DF43;padding:3px 7px;text-align:center;font-size:11px;font-weight:700;white-space:nowrap;border:1px solid #c8dfd9}
+.ptc-ft{background:#0a2520;color:#fff;font-weight:900;padding:3px 7px;text-align:center;font-size:11px;border:1px solid #c8dfd9}
+.ptc-ftr{background:#fca5a5;color:#0a2520}
+.ptc-ftg{background:#6ee7b7;color:#0a2520}
 /* footer */
 .tbl tfoot td{
   background:var(--navy)!important;color:#ffffff!important;
@@ -2783,8 +2804,8 @@ function renderTable(el,piv,sec,idx){
   const latestDate=piv.dates[nDates-1];
   let grand=0;
 
-  const CELL='padding:3px 7px;text-align:center;font-size:11px;font-weight:700;white-space:nowrap;border:1px solid #c8dfd9;';
-  const CELL_L='padding:3px 7px;text-align:left;font-size:11px;font-weight:700;white-space:nowrap;border:1px solid #c8dfd9;max-width:150px;overflow:hidden;text-overflow:ellipsis;';
+  // CSS classes (ptc-*) replace per-cell inline styles → 6× smaller HTML string
+  // See <style> section for class definitions
 
   let html=`
   <div style="overflow-x:auto;-webkit-overflow-scrolling:touch" id="_tblWrap_${el.id}">
@@ -2794,8 +2815,7 @@ function renderTable(el,piv,sec,idx){
         <th style="${CELL_L}background:#0f2b25;color:#fff;min-width:110px;position:sticky;left:0;z-index:2">LOCATION</th>
         ${piv.dates.map((d,di)=>{
           const isLatest=di===nDates-1;
-          return`<th style="${CELL}background:#0f2b25;color:${isLatest?'#E9DF43':'#fff'};min-width:52px;${isLatest?'border-bottom:3px solid #E9DF43;':''}" title="${isLatest?'Latest uploaded file':''}">
-            ${fmtD(d)}${isLatest?'<br><span style="font-size:9px;opacity:.8">★ LATEST</span>':''}
+          return`<th class="${isLatest?'ptc-hdl':'ptc-hd'}" title="${isLatest?'Latest uploaded file':''}">${fmtD(d)}${isLatest?'<br><span style="font-size:9px;opacity:.8">★ LATEST</span>':''}
           </th>`;
         }).join('')}
         <th style="${CELL}background:#0a4a35;color:#E9DF43;min-width:60px">TOTAL</th>
@@ -2844,23 +2864,24 @@ function renderTable(el,piv,sec,idx){
     const cells=piv.dates.map((d,di)=>{
       const v=piv.grid[loc][d]||0;
       const prev=di>0?piv.grid[loc][piv.dates[di-1]]||0:null;
-      const isLatest=di===nDates-1;
-      let bg='',fg='#0a2520';
-      if(v===0){fg='#94a3b8';}
-      else if(prev!==null&&v>prev){bg='background:#ef4444;';fg='#fff';redCells++;}
-      else if(prev!==null&&v<prev){bg='background:#dff0ea;';fg='#0a4a35';}
-      const latestBorder=isLatest?'border-left:3px solid #E9DF43;border-right:3px solid #E9DF43;':'';
-      return`<td style="${CELL}${bg}color:${fg};${latestBorder}">${v===0?'–':fn(v)}</td>`;
+      const isLat=di===nDates-1;
+      // CSS classes replace inline styles — 120 chars → 20 chars per cell
+      let cls='ptc';
+      if(v===0)cls+=' ptc-z';
+      else if(prev!==null&&v>prev){cls+=' ptc-r';redCells++;}
+      else if(prev!==null&&v<prev)cls+=' ptc-g';
+      if(isLat)cls+=' ptc-lat';
+      return`<td class="${cls}">${v===0?'–':fn(v)}</td>`;
     });
 
     siteStats.push({loc,rt,histAvg,latestAvg,latestCount,trend,redCells,latestDate,nDates});
 
     html+=`<tr style="background:${rowBg}">
-      <td style="${CELL_L}font-weight:700;color:#0a2520;position:sticky;left:0;background:${rowBg}" title="${xe(loc)}">${xe(loc)}</td>
+      <td class="ptcl ptc-loc" style="position:sticky;left:0;background:${rowBg}" title="${xe(loc)}">${xe(loc)}</td>
       ${cells.join('')}
-      <td style="${CELL}background:#0a4a35;color:#E9DF43;font-size:12px">${fn(rt)}</td>
-      <td style="${CELL}background:#dbeafe;color:#1e3a6e;font-size:11px">${fn(histAvg)}</td>
-      <td style="${CELL}background:#e0f7fa;color:#0a4a35;font-size:11px">${fn(latestAvg)}${avgArrow}</td>
+      <td class="ptc-tot">${fn(rt)}</td>
+      <td class="ptc-ha">${fn(histAvg)}</td>
+      <td class="ptc-la">${fn(latestAvg)}${avgArrow}</td>
     </tr>`;
   });
 
@@ -2868,20 +2889,22 @@ function renderTable(el,piv,sec,idx){
 
   // Footer
   const grandHistAvg=siteStats.length>0?Math.round(siteStats.reduce((s,r)=>s+r.histAvg,0)/siteStats.length):0;
-  const grandLatestAvg=siteStats.length>0?Math.round(siteStats.reduce((s,r)=>s+r.latestAvg,0)/siteStats.length):0;
-  html+=`</tbody><tfoot><tr style="background:#0a2520;color:#fff">
-    <td style="${CELL_L}background:#0a2520;color:#fff;font-weight:900;position:sticky;left:0">TOTAL</td>
+  const grandLatAvg=siteStats.length>0?Math.round(siteStats.reduce((s,r)=>s+r.latestAvg,0)/siteStats.length):0;
+  html+=`</tbody><tfoot><tr>
+    <td class="ptc-ft" style="text-align:left;position:sticky;left:0">TOTAL</td>
     ${piv.dates.map((d,di)=>{
       const tot=piv.colTotals[d]||0;
       const prev=di>0?(piv.colTotals[piv.dates[di-1]]||0):null;
-      const isLatest=di===nDates-1;
-      const fc=prev!==null&&tot>prev?'#fca5a5':prev!==null&&tot<prev&&tot>0?'#6ee7b7':'#fff';
-      const latestBorder=isLatest?'border-left:3px solid #E9DF43;border-right:3px solid #E9DF43;':'';
-      return`<td style="${CELL}background:#0a2520;color:${fc};${latestBorder}">${fn(tot)}</td>`;
+      const isLat=di===nDates-1;
+      let cls='ptc-ft';
+      if(prev!==null&&tot>prev)cls+=' ptc-ftr';
+      else if(prev!==null&&tot<prev&&tot>0)cls+=' ptc-ftg';
+      if(isLat)cls+=' ptc-lat';
+      return`<td class="${cls}">${fn(tot)}</td>`;
     }).join('')}
-    <td style="${CELL}background:#0a2520;color:#E9DF43;font-weight:900">${fn(grand)}</td>
-    <td style="${CELL}background:#0a2520;color:#bfdbfe">${fn(grandHistAvg)}</td>
-    <td style="${CELL}background:#0a2520;color:#a5f3fc">${fn(grandLatestAvg)}</td>
+    <td class="ptc-ft" style="color:#E9DF43">${fn(grand)}</td>
+    <td class="ptc-ft" style="color:#bfdbfe">${fn(grandHistAvg)}</td>
+    <td class="ptc-ft" style="color:#a5f3fc">${fn(grandLatAvg)}</td>
   </tr></tfoot></table></div>
   <div class="leg" style="margin-top:4px;padding:2px 0">
     <span class="lc"><span class="lb lu"></span>▲ Red cell = count rose vs prior date</span>
