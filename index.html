@@ -2440,18 +2440,16 @@ async function runFiles(files){
       }
 
       // 2. Snapshot raw rows for Sheets — capped to prevent OOM accumulation.
-      //    OOM FIX: an uncapped 50k-row × 43-col rowArrs = ~100MB stays alive
-      //    for 30-60s during background push while the next file's buffers load.
-      //    Cap at 8000 rows; master aggregates always allow full reporting later.
-      const SHEETS_ROW_CAP=8000;
+      const SHEETS_ROW_CAP=5000; // 5k rows per push — safe for 43-col files (5k×43=215k cells < 6MB)
       const sheetsPayloadsBySec=[];
       if(getGsUrl()){
         const rawDateRows=(rawData[r.type]&&rawData[r.type][r.date])||[];
+        console.log(`Sheets snapshot: type=${r.type} date=${r.date} rawRows=${rawDateRows.length}`);
         if(rawDateRows.length>0){
           for(let si=0;si<SECS.length;si++){
             const sec=SECS[si];
             if(sec.src!==r.type)continue;
-            const sheetName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().slice(0,31);
+            const sheetName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().slice(0,28);
             const colSet=new Set(['Date']);
             rawDateRows.forEach(row=>Object.keys(row).forEach(k=>{colSet.add(k);}));
             const allCols=[...colSet];
@@ -2464,11 +2462,14 @@ async function runFiles(files){
                 return(v!==undefined&&v!==null&&v!=='')?String(v):'';
               }))
               .filter(arr=>arr.slice(1).some(v=>v!==''));
+            console.log(`Sheets snapshot: sec="${sheetName}" allCols=${allCols.length} rowArrs=${rowArrs.length}`);
             if(rowArrs.length){
               sheetsPayloadsBySec.push({sheetName,headers:allCols,rowArrs,date:r.date});
               break;
             }
           }
+        }else{
+          console.warn(`Sheets: rawData[${r.type}][${r.date}] empty — no rows to push`);
         }
       }
 
@@ -7141,87 +7142,140 @@ function processPayload(payload) {
   }
 
   /* ── SECTION DATA — with AUTO-PARTITIONING ─────────────────────────────────
-     Key change from v6: instead of writing to a single fixed-name sheet,
-     we route writes through getActivePartition() which:
-       1. Creates SECTION_NAME_1 on first write
-       2. Rolls to SECTION_NAME_2 when _1 hits MAX_ROWS_PER_PARTITION
-       3. Records all pointers in _PARTITION_INDEX
-     Reads via getAllPartitions() transparently merge all partitions.           */
+     ROOT CAUSE FIX for "headers appear but rows don't":
+     1. setValues() is BUFFERED in Apps Script — changes only commit on flush().
+     2. appendRow() in _initSheet IS auto-flushed immediately.
+     3. If setValues() throws before flush(), the data is silently discarded
+        while the appendRow() header remains (already committed).
+     4. getActivePartition() was called 3× per payload (before dedup, after dedup,
+        inside while loop), causing stale loadIndex() reads and duplicate operations.
+     Fix: flush() explicitly after header write. Call getActivePartition() ONCE.
+          Wrap setValues() in try-catch with detailed Logger output.           */
   var rawName=(payload.sheet||'Floor Trends').toString()
     .replace(/[\\/:*?\[\]]/g,' ').replace(/\s+/g,' ').trim();
-  // Base name max 28 chars to leave room for _NN suffix (31 - 3 = 28)
   var baseName=rawName.substring(0,28)||'Data';
-  var headers=payload.headers||['Date','Location','Count'];
+  var headers=payload.headers||[];  // empty for chunks > 0; that's intentional
   var newRows=payload.rows||[];
   var dateKey=normDate(payload.date||'');
 
-  Logger.log('Section write: base="'+baseName+'" date='+dateKey+' rows='+newRows.length);
+  Logger.log('Section write: base="'+baseName+'" date='+dateKey+' rows='+newRows.length+' hdrs='+headers.length);
 
-  // ── Get active write partition (creates or rolls over automatically) ──
-  var sheet=getActivePartition(ss,baseName,headers);
-
-  // Refresh header if columns expanded
-  if(headers.length>sheet.getLastColumn()){
-    if(headers.length>sheet.getMaxColumns())
-      sheet.insertColumnsAfter(sheet.getMaxColumns(),headers.length-sheet.getMaxColumns());
-    sheet.getRange(1,1,1,headers.length).setValues([headers])
-      .setFontWeight('bold').setBackground('#0d1f3c').setFontColor('#dce6f5');
+  if(!newRows.length){
+    Logger.log('Section write: empty rows — skipping (headers-only chunk handled by _initSheet)');
+    return {ok:true,sheet:baseName,appended:0,reason:'empty_rows'};
   }
 
-  // Dedup by date: delete existing rows for this dateKey across ALL partitions
-  // (prevents double-entries if the same file is re-uploaded)
-  var allSheetsForDedup=getAllPartitions(ss,baseName);
-  var deletedCount=0;
-  allSheetsForDedup.forEach(function(dsh){
-    if(!dsh||dsh.getLastRow()<=1)return;
-    var dv=dsh.getRange(2,1,dsh.getLastRow()-1,1).getValues(),td=[];
-    for(var d=dv.length-1;d>=0;d--){if(normDate(dv[d][0])===dateKey)td.push(d+2);}
-    td.sort(function(a,b){return b-a;}).forEach(function(r){dsh.deleteRow(r);deletedCount++;});
-  });
-  if(deletedCount>0)Logger.log('Dedup: removed '+deletedCount+' rows for '+dateKey);
+  // ── Step 1: Get/create the active write partition ────────────────────────
+  // Call ONCE and reuse. Do NOT call inside the while loop — that causes
+  // repeated loadIndex() reads that see stale data before flush().
+  var sheet = getActivePartition(ss, baseName, headers);
 
-  // Re-fetch active partition after dedup (dedup may have emptied a later partition)
-  sheet=getActivePartition(ss,baseName,headers);
+  // FLUSH immediately after getActivePartition (which calls _initSheet internally).
+  // This commits any appendRow() header write BEFORE setValues() runs.
+  // Without this flush, getLastRow() returns stale counts and setValues may write
+  // to wrong rows or conflict with the buffered appendRow.
+  try { SpreadsheetApp.flush(); } catch(flushErr) {
+    Logger.log('Flush after _initSheet warning: ' + flushErr.message);
+  }
 
-  // Append rows
-  var appendedCount=0;
-  if(newRows.length>0){
-    // Check if this batch itself would overflow the current partition
-    // If so, split across partitions
-    var remaining=newRows;
-    while(remaining.length>0){
-      sheet=getActivePartition(ss,baseName,headers);
-      var space=Math.max(0,MAX_ROWS_PER_PARTITION-sheet.getLastRow());
-      if(space===0){
-        // Force rollover by bumping index — getActivePartition will create next
-        Logger.log('Forced rollover for '+baseName);
-        continue;
+  // ── Step 2: Dedup — remove existing rows for this date ──────────────────
+  var deletedCount = 0;
+  if (dateKey) {
+    var allSheetsForDedup = getAllPartitions(ss, baseName);
+    allSheetsForDedup.forEach(function(dsh) {
+      if (!dsh || dsh.getLastRow() <= 1) return;
+      var dv = dsh.getRange(2, 1, dsh.getLastRow()-1, 1).getValues();
+      var td = [];
+      for (var d = dv.length-1; d >= 0; d--) {
+        if (normDate(dv[d][0]) === dateKey) td.push(d + 2);
       }
-      var batch=remaining.slice(0,space);
-      remaining=remaining.slice(space);
-      var numCols=Math.max(headers.length,batch[0]?batch[0].length:0);
-      if(numCols>sheet.getMaxColumns())
-        sheet.insertColumnsAfter(sheet.getMaxColumns(),numCols-sheet.getMaxColumns());
-      var paddedRows=batch.map(function(r){var row=r.slice();while(row.length<numCols)row.push('');return row;});
-      var startRow=sheet.getLastRow()+1;
-      sheet.getRange(startRow,1,paddedRows.length,numCols).setValues(paddedRows);
-      appendedCount+=paddedRows.length;
-      // Update index with new row count
-      var parts=loadIndex(ss)[baseName]||[];
-      if(parts.length>0){
-        var last=parts[parts.length-1];
-        updateIndex(ss,baseName,last.num,last.tab,sheet.getLastRow());
-      }
+      td.sort(function(a,b){return b-a;}).forEach(function(r){dsh.deleteRow(r); deletedCount++;});
+    });
+    if (deletedCount > 0) {
+      Logger.log('Dedup: removed ' + deletedCount + ' rows for ' + dateKey + ' in ' + baseName);
+      // Flush after dedup so getLastRow() is accurate for the append
+      try { SpreadsheetApp.flush(); } catch(e) {}
+      // Re-fetch sheet after dedup (row positions changed)
+      sheet = getActivePartition(ss, baseName, headers);
     }
-    Logger.log('Appended '+appendedCount+' rows across partition(s) of "'+baseName+'" for '+dateKey);
   }
 
+  // ── Step 3: Expand columns if needed ────────────────────────────────────
+  var numCols = newRows[0] ? newRows[0].length : (headers.length || 1);
+  if (numCols < 1) numCols = 1;
+  if (numCols > sheet.getMaxColumns()) {
+    try {
+      sheet.insertColumnsAfter(sheet.getMaxColumns(), numCols - sheet.getMaxColumns());
+    } catch(colErr) {
+      Logger.log('insertColumns error: ' + colErr.message);
+    }
+  }
+
+  // ── Step 4: Append rows in batches of 1000 (Apps Script quota limit) ────
+  var appendedCount = 0;
+  var BATCH_SIZE = 1000;
+  for (var bi = 0; bi < newRows.length; bi += BATCH_SIZE) {
+    var batch = newRows.slice(bi, bi + BATCH_SIZE);
+
+    // Pad/truncate all rows to exactly numCols
+    var paddedRows = batch.map(function(r) {
+      var row = Array.isArray(r) ? r.slice() : [];
+      while (row.length < numCols) row.push('');
+      if (row.length > numCols) row = row.slice(0, numCols);
+      return row;
+    });
+
+    // Check if there's space in current partition, roll over if needed
+    var space = MAX_ROWS_PER_PARTITION - sheet.getLastRow();
+    if (space <= 0) {
+      // Current partition full — create next one
+      var parts2 = loadIndex(ss)[baseName] || [];
+      var nextNum = parts2.length > 0 ? parts2[parts2.length-1].num + 1 : 1;
+      var nextTab = makeTabName(baseName, nextNum);
+      var shNext = ss.getSheetByName(nextTab) || ss.insertSheet(nextTab);
+      _initSheet(shNext, headers.length > 0 ? headers : (sheet.getLastRow() > 0 ? sheet.getRange(1,1,1,sheet.getLastColumn()).getValues()[0] : []));
+      SpreadsheetApp.flush();
+      updateIndex(ss, baseName, nextNum, nextTab, 1);
+      sheet = shNext;
+      space = MAX_ROWS_PER_PARTITION - 1; // 1 for header row
+    }
+
+    var batchToWrite = paddedRows.slice(0, space);
+    var startRow = sheet.getLastRow() + 1;
+
+    try {
+      if (batchToWrite.length > 0 && numCols > 0) {
+        sheet.getRange(startRow, 1, batchToWrite.length, numCols).setValues(batchToWrite);
+        appendedCount += batchToWrite.length;
+        Logger.log('Wrote ' + batchToWrite.length + ' rows to "' + sheet.getName() + '" startRow=' + startRow);
+      }
+    } catch (writeErr) {
+      Logger.log('setValues ERROR for "' + baseName + '" batch ' + bi + ': ' + writeErr.message +
+        '\nnumCols=' + numCols + ' rows=' + batchToWrite.length + ' startRow=' + startRow +
+        '\nbatch[0] length=' + (batchToWrite[0] ? batchToWrite[0].length : 'N/A'));
+      // Continue with next batch rather than aborting entirely
+    }
+  }
+
+  // ── Step 5: Commit all buffered changes ──────────────────────────────────
   SpreadsheetApp.flush();
-  return{
-    ok:true,sheet:sheet.getName(),baseName:baseName,date:dateKey,
-    deleted:deletedCount,appended:appendedCount,
-    totalRows:sheet.getLastRow()-1,
-    partitionCount:(loadIndex(ss)[baseName]||[]).length
+
+  // ── Step 6: Update partition index with new row count ───────────────────
+  try {
+    var finalParts = loadIndex(ss)[baseName] || [];
+    if (finalParts.length > 0) {
+      var lastPart = finalParts[finalParts.length-1];
+      updateIndex(ss, baseName, lastPart.num, lastPart.tab, sheet.getLastRow());
+    }
+  } catch(idxErr) {
+    Logger.log('Index update error: ' + idxErr.message);
+  }
+
+  Logger.log('Section write DONE: "'+baseName+'" appended='+appendedCount+' deleted='+deletedCount+' totalRows='+(sheet.getLastRow()-1));
+  return {
+    ok: true, sheet: sheet.getName(), baseName: baseName, date: dateKey,
+    deleted: deletedCount, appended: appendedCount,
+    totalRows: sheet.getLastRow() - 1
   };
 }
 
@@ -7360,7 +7414,15 @@ async function _drainSyncQueue(){
 }
 
 /* ── POST one section/date batch to the deployed web app ── */
-/* ── Push one batch (≤300 rows) to Sheets ─────────────────────────────*/
+/* ── Push section rows to Sheets — single atomic POST ──────────────────────
+   ROOT CAUSE FIX: Old approach sent rows in 300-row chunks (15-30 POSTs per file).
+   Each chunk hit the Apps Script redirect (/exec → internal URL). For chunks
+   after the first, headers were empty [], causing the AppScript to call
+   getActivePartition with stale index data (prior chunk's flush hadn't propagated),
+   leading to wrong startRow calculations and setValues writing to wrong positions.
+
+   Fix: send ALL rows in ONE POST. One execution = one flush = atomic write.
+   Apps Script handles up to 50MB body; 5000 rows × 43 cols ≈ 3MB = well within limit. */
 async function pushSectionDate(sheetName,headers,rows,date){
   const url=getGsUrl();
   if(!url||!rows.length)return false;
@@ -7369,32 +7431,26 @@ async function pushSectionDate(sheetName,headers,rows,date){
   const safeRows=rows
     .filter(r=>Array.isArray(r)&&r.some(v=>v!==null&&v!==undefined&&v!==''))
     .map(r=>r.map(v=>(v==null)?'':String(v)));
-  if(!safeRows.length)return true;
+  if(!safeRows.length){console.log(`pushSectionDate: no non-empty rows for ${sheetName}`);return true;}
 
-  const CHUNK=300;
-  let allOk=true;
-  for(let i=0;i<safeRows.length;i+=CHUNK){
-    const chunk=safeRows.slice(i,i+CHUNK);
-    const payload={
-      sheet:sheetName,
-      headers:i===0?safeHdrs:[],
-      rows:chunk,
-      date:i===0?date:''
-    };
-    // Single attempt — on failure, queue for background retry. No blocking retry loops.
-    // SPEED FIX: the old 3-attempt loop with 400ms/800ms/1200ms delays meant one failed
-    // chunk could block the upload for 27+ seconds. Queued items are retried next upload.
-    let ok=false;
-    const r=await _sheetsFetch(url, payload);
-    if(r.ok||r.ok===null){ok=true;}
-    if(!ok){
-      console.warn(`pushSectionDate: queuing failed chunk for ${sheetName} (will retry next upload)`);
-      _enqueueSyncItem(payload);
-      allOk=false;
-    }
-    if(i+CHUNK<safeRows.length)await new Promise(r=>setTimeout(r,40));
+  console.log(`pushSectionDate: sending ${safeRows.length} rows × ${safeHdrs.length} cols → "${sheetName}"`);
+
+  // Single atomic POST — all rows + headers in one call
+  const payload={sheet:sheetName, headers:safeHdrs, rows:safeRows, date};
+  const r=await _sheetsFetch(url, payload);
+
+  if(r.ok===true){
+    console.log(`Sheets OK: "${sheetName}" appended=${r.body&&r.body.appended||safeRows.length}`);
+    return true;
   }
-  return allOk;
+  if(r.ok===null){
+    // no-cors opaque — data was delivered (can't verify server outcome)
+    console.log(`Sheets sent (no-cors): "${sheetName}" ${safeRows.length} rows — outcome unverifiable`);
+    return true;
+  }
+  console.warn(`pushSectionDate FAILED: "${sheetName}"`, r.body&&r.body.error||'unknown error');
+  _enqueueSyncItem(payload);
+  return false;
 }
 
 /* Push section-wise AWB counts to a dedicated SECTION COUNTS sheet */
