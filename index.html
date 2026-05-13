@@ -1505,15 +1505,9 @@ function pRev(row,date,agg){
 }
 
 /* ── LMODC age parser ──────────────────────────
-   Ageing_f may store plain numbers ("3","6","10")
-   OR text bucket labels:
-     "6+"        → 6   (D6 bucket)
-     "6 to 10"   → 10  (D10 bucket — upper bound)
-     "7-10"      → 10  (D10 bucket — upper bound)
-     "10+"       → 10  (D10 bucket)
-   Root cause of D6 inflation: parseFloat("6 to 10")
-   = 6, causing D10 records to land in D6.
-   Fix: extract the UPPER bound from range strings.
+   Reads from 'Ageing' column U (actual day count).
+   'Ageing_f' column A is a category code — NOT used.
+   Day count → bucket:  1-5 → D3 · 6-9 → D6 · 10+ → D10
 ──────────────────────────────────────────────── */
 function parseLMODCAge(s){
   s=String(s==null?'':s).trim();
@@ -1552,11 +1546,12 @@ function pLM(row,date,agg){
   // which rows contribute to the dashboard pivot aggregates.
   captureRaw('lmodc',row,date);
 
-  // Age: actual column in LMODC CSV is "Ageing_f" (number, e.g. 1,2,3,6,10)
+  // AGEING FIX: use 'Ageing' column U (actual day count: 1,2,3,6,10...).
+  // DO NOT use 'Ageing_f' column A — that is a category code (e.g. always "1"),
+  // NOT the actual pendency day count. Using Ageing_f caused D6/D10 to show zero.
   const ageStr=gv(row,
-    'Ageing_f','ageing_f',
-    'ageing','Ageing',
-    'age','Age');
+    'ageing','Ageing',         // Column U — correct field (day count e.g. 3,6,10)
+    'age','Age');              // generic fallback only
   const age=parseLMODCAge(ageStr);
   if(age<=0)return; // skip aggregation only; Sheets row captured above
   const dest=(gv(row,
@@ -6573,7 +6568,7 @@ function filterRawForSection(sec,idx){
   for(const [date,rows] of Object.entries(typeData)){
     for(const row of rows){
       let age=0;
-      if(sec.src==='lmodc'){age=Math.round(parseLMODCAge(gv(row,'Ageing_f','ageing_f','ageing','Ageing')));}
+      if(sec.src==='lmodc'){age=Math.round(parseLMODCAge(gv(row,'ageing','Ageing')));}
       else if(sec.src==='reverse'){age=Math.round(parseFloat(gv(row,'ageing','Ageing'))||0);}
       else{age=Math.round(gn(row,
         'ageing_from_bag_rec','Ageing_from_Bag_Rec','Ageing_From_Bag_Rec',
@@ -6734,7 +6729,7 @@ async function _buildSectionCSV(sec,f){
       const rows=snapData[date]||[];
       for(const row of rows){
         let rowAge=0;
-        if(sec.src==='lmodc') rowAge=Math.round(parseLMODCAge(gv(row,'Ageing_f','ageing_f','ageing','Ageing')));
+        if(sec.src==='lmodc') rowAge=Math.round(parseLMODCAge(gv(row,'ageing','Ageing')));
         else if(sec.src==='reverse') rowAge=Math.round(parseFloat(gv(row,'ageing','Ageing'))||0);
         else rowAge=Math.round(gn(row,'ageing_from_bag_recc','Ageing_from_bag_recc','Ageing_from_Bag_Rec','ageing_from_bag_rec','ageing','Ageing'));
         if(rowAge!==f.age)continue;
@@ -6765,7 +6760,7 @@ async function _buildSectionCSV(sec,f){
     // Filter by age using the 'Date' column (col 1 in sheet = file date)
     // Age column name varies by type — check common names
     const ageKey=sheetsRows.length>0?
-      ['Ageing_f','ageing_f','Ageing_from_bag_recc','Ageing_from_Bag_Rec','ageing','Ageing'].find(k=>k in sheetsRows[0]):'';
+      ['ageing','Ageing','Ageing_from_bag_recc','Ageing_from_Bag_Rec'].find(k=>k in sheetsRows[0]):'';
     const filtered=sheetsRows.filter(r=>{
       if(!ageKey)return true; // no age col found — include all
       let a=0;
