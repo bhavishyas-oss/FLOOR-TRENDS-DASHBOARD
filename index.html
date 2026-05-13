@@ -210,24 +210,13 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 /* total column */
 .tbl tbody td:last-child{border-right:none;font-weight:900;color:#0a2520;background:#eaf6f2!important}
 
-/* ── Global wrap-text for ALL tables — prevents cut-off values ──────────── */
-table td, table th {
-  white-space: normal !important;
-  word-break: break-word;
-  overflow-wrap: break-word;
-  vertical-align: top;
-}
-/* Exception: pivot date headers stay compact */
-.ptc-hd, .ptc-hdl { white-space: nowrap !important; }
-/* HOV tables */
-#hovTableWrap td, #hovTableWrap th,
-#hovOverallTableWrap td, #hovOverallTableWrap th,
-#hovFwdBin1Wrap td, #hovFwdBin1Wrap th,
-#hovFwdBin2Wrap td, #hovFwdBin2Wrap th,
-#hovRevWrap td, #hovRevWrap th,
-#hovLMWrap td, #hovLMWrap th { white-space: normal !important; word-break: break-word; }
-/* Trend/pivot tables */
-.tbl tbody td, .tbl tbody th { white-space: normal !important; word-break: break-word; }
+/* ── Targeted wrap-text — ONLY for product description long-text cells ──────
+   The previous global `table td, table th { white-space:normal !important }`
+   was causing HOV D15+ table LOCATION headers to wrap vertically (each letter
+   on its own line — see screenshot). Reverted to nowrap default everywhere
+   except the specific cells that need it (product description, long AWB lists). */
+.hov-pv-desc { white-space: normal !important; word-break: break-word; overflow-wrap: break-word; }
+.ptcl { white-space: normal; word-break: break-word; min-width: 110px; max-width: 150px; }
    OOM/freeze FIX: each <td> had ~120 chars of inline style. With 30 dates ×
    30 sites = 900 cells × 120 chars = 108KB of style strings in the HTML string.
    Using CSS classes shrinks it to 10-20 chars per cell = 18KB → 6× smaller.
@@ -693,22 +682,29 @@ table td, table th {
             <div id="hovPClist" style="overflow-y:auto;max-height:170px;padding:3px 0"></div>
           </div>
         </div>
-        <select id="hovDCselect" class="dc-select" onchange="renderHovTab()" style="min-width:160px;font-size:11px"><option value="ALL">All Sites</option></select>
+        <!-- DC multi-select (matches PC filter style) -->
+        <div style="position:relative;display:inline-block" id="hovDCwrap">
+          <div id="hovDCtrigger" onclick="toggleHovDCDrop()"
+            style="font-size:11px;padding:5px 24px 5px 9px;border-radius:5px;border:1px solid var(--bdr2);
+              background:#fff;color:var(--tx);min-width:160px;cursor:pointer;position:relative;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+            <span id="hovDCtriggerLabel">All Sites</span>
+            <span style="position:absolute;right:6px;top:50%;transform:translateY(-50%);color:#94a3b8">▾</span>
+          </div>
+          <div id="hovDCdrop" style="display:none;position:absolute;top:100%;left:0;width:220px;max-height:260px;background:#fff;
+            border:1px solid var(--bdr2);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.18);z-index:300;margin-top:2px;flex-direction:column">
+            <div style="padding:5px 8px;border-bottom:1px solid var(--bdr)">
+              <input id="hovDCsearch" type="text" placeholder="Search site…" style="width:100%;font-size:11px;padding:4px 8px;border-radius:4px;border:1px solid var(--bdr2);outline:none" oninput="renderHovDCList(this.value)">
+            </div>
+            <div style="padding:3px 8px;border-bottom:1px solid var(--bdr);display:flex;gap:8px">
+              <button onclick="hovDCSelectAll()" style="font-size:10px;cursor:pointer;border:none;background:none;color:var(--brand);font-weight:700">All</button>
+              <button onclick="hovDCClearAll()" style="font-size:10px;cursor:pointer;border:none;background:none;color:#ef4444;font-weight:700">Clear</button>
+            </div>
+            <div id="hovDClist" style="overflow-y:auto;max-height:190px;padding:3px 0"></div>
+          </div>
+        </div>
         <span class="cc" id="hovGrandTotal" style="margin-left:auto">–</span>
         <button class="btn bg" onclick="generateHovPDF(0)" style="font-size:10px;padding:4px 9px;color:var(--brand);border-color:var(--bdr2)">📄 PDF</button>
         <button class="btn bg" onclick="downloadHovSectionImage('hovPerFileWrap','HOV_Overview.png')" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG</button>
-      </div>
-    </div>
-
-    <!-- Overall AWB Count Table (auto-generated from all files) -->
-    <div id="hovOverallSection" style="display:none;flex-direction:column;gap:10px;margin-bottom:8px">
-      <div class="card">
-        <div class="chead" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
-          <span class="ct">📊 OVERALL AWB COUNT — All Sites</span>
-          <span style="font-size:10px;color:var(--tx3);font-weight:600">Sorted by Total ↓ · TOTAL vs AVERAGE trend</span>
-          <button class="btn bg" onclick="downloadHovSectionImage('hovOverallTableWrap','HOV_Overall.png')" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG</button>
-        </div>
-        <div id="hovOverallTableWrap" style="overflow-x:auto;-webkit-overflow-scrolling:touch"></div>
       </div>
     </div>
 
@@ -1521,19 +1517,27 @@ function pRev(row,date,agg){
 ──────────────────────────────────────────────── */
 function parseLMODCAge(s){
   s=String(s==null?'':s).trim();
-  if(!s)return 0;
-  // Pure integer or decimal: "3", "6", "10", "3.0"
-  if(/^\d+(\.\d+)?$/.test(s))return Math.round(parseFloat(s));
-  // Range "X to Y" or "X-Y": use UPPER bound Y
-  // (e.g. "6 to 10" → 10, "7-10" → 10, "4-6" → 6)
-  const rng=s.match(/(\d+)\s*(?:to|-)\s*(\d+)/i);
-  if(rng)return parseInt(rng[2]);
-  // "X+" bucket: use X ("6+" → 6, "10+" → 10)
-  const plus=s.match(/^(\d+)\s*\+/);
-  if(plus)return parseInt(plus[1]);
-  // Fallback: largest number found in string
-  const nums=[...s.matchAll(/\d+/g)].map(m=>parseInt(m[0]));
-  return nums.length?Math.max(...nums):0;
+  if(!s||s==='0')return 0;
+  // Parse numeric value from the string
+  let n=NaN;
+  // Pure integer or decimal: "1","3","6","10","3.0"
+  if(/^\d+(\.\d+)?$/.test(s)){n=parseFloat(s);}
+  // Range "X to Y" or "X-Y": use upper bound ("6 to 10" → 10, "4-6" → 6)
+  else{const rng=s.match(/(\d+)\s*(?:to|-)\s*(\d+)/i);if(rng)n=parseInt(rng[2]);}
+  // "X+" bucket ("6+" → 6, "10+" → 10)
+  if(isNaN(n)){const plus=s.match(/^(\d+)\s*\+/);if(plus)n=parseInt(plus[1]);}
+  // Fallback: largest number found
+  if(isNaN(n)){const nums=[...s.matchAll(/\d+/g)].map(m=>parseInt(m[0]));n=nums.length?Math.max(...nums):NaN;}
+  if(isNaN(n)||n<=0)return 0;
+  // BUCKET MAPPING — LMODC uses three buckets:
+  // D3  = age 1-5 days  (Ageing_f values 1,2,3,4,5)
+  // D6  = age 6-9 days  (Ageing_f values 6,7,8,9)
+  // D10 = age 10+ days  (Ageing_f values 10,11,12,...)
+  // FIX: previously age=1,2 returned 0 → filtered out → D3 showed no data.
+  // Now: any age 1-5 maps to D3 bucket.
+  if(n>=10)return 10;
+  if(n>=6)return 6;
+  return 3; // age 1-5 → D3 bucket (previously 1-2 returned 0 and were dropped)
 }
 
 // LMODC — raw data CSV, one row = one AWB
@@ -4556,7 +4560,11 @@ function pivTbl(headers,rows,footerRow,maxH){
       const extra=cls==='cup'?'background:#ef4444;color:#fff;font-weight:900':
         cls==='cdn'?'background:#dff0ea;color:#0a4a35':
         cls==='czr'?'color:#94a3b8':'background:'+bg;
-      h+=`<td style="padding:8px 13px;${al};border-bottom:1.5px solid #c8dfd9;border-right:1px solid #daeee9;font-weight:700;white-space:nowrap;${extra}">${xe(String(val===null||val===undefined?'\u2013':val))}</td>`;
+      // Allow text wrap for Product Description column (last wide text column)
+      const hd=String(headers[ci]||'').toUpperCase();
+      const isDesc=hd.includes('DESC')||hd.includes('DESCRIPTION');
+      const wrapStyle=isDesc?'white-space:normal;word-break:break-word;min-width:200px;max-width:400px':'white-space:nowrap';
+      h+=`<td style="padding:8px 13px;${al};border-bottom:1.5px solid #c8dfd9;border-right:1px solid #daeee9;font-weight:700;${wrapStyle};${extra}">${xe(String(val===null||val===undefined?'\u2013':val))}</td>`;
     });
     h+=`</tr>`;
   });
@@ -4579,7 +4587,7 @@ function buildHovDataFiltered(pcs,dc){
   const filt=all.filter(r=>{
     if(r.age<2||r.age>15)return false;
     if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
-    if(dc&&dc!=='ALL'&&r.location!==dc)return false;
+    if(!_hovDCFilter(r.location))return false;
     return true;
   });
   if(!filt.length)return{locs:[],ages:HOV_AGES,grid:{},rowTotals:{},colTotals:{}};
@@ -4600,12 +4608,76 @@ function buildHovDataFiltered(pcs,dc){
 }
 
 /* ── Populate DC dropdown ── */
+/* ── HOV DC multi-select state (mirrors PC filter design) ── */
+let _hovDCselected=new Set(['ALL']);
+let _hovDCDropOpen=false;
+let _hovDCall=[];
+
+function _hovDCFilter(loc){
+  if(_hovDCselected.has('ALL')||_hovDCselected.size===0)return true;
+  return _hovDCselected.has(loc);
+}
+function updateHovDCLabel(){
+  const lbl=document.getElementById('hovDCtriggerLabel');if(!lbl)return;
+  if(_hovDCselected.has('ALL'))lbl.textContent='All Sites';
+  else if(_hovDCselected.size===0)lbl.textContent='All Sites';
+  else if(_hovDCselected.size===1)lbl.textContent=[..._hovDCselected][0];
+  else lbl.textContent=`${_hovDCselected.size} sites selected`;
+}
+function toggleHovDCDrop(){
+  const d=document.getElementById('hovDCdrop');if(!d)return;
+  _hovDCDropOpen=!_hovDCDropOpen;
+  d.style.display=_hovDCDropOpen?'flex':'none';
+  if(_hovDCDropOpen){const s=document.getElementById('hovDCsearch');if(s)s.focus();}
+}
+function renderHovDCList(query){
+  const list=document.getElementById('hovDClist');if(!list)return;
+  const q=(query||'').toLowerCase().trim();
+  const filtered=_hovDCall.filter(p=>p.toLowerCase().includes(q));
+  list.innerHTML=filtered.map(p=>{
+    const chk=_hovDCselected.has(p);
+    return`<label style="display:flex;align-items:center;gap:7px;padding:6px 12px;cursor:pointer;
+        font-size:12px;color:${p==='ALL'?'var(--brand)':'var(--tx)'};font-weight:${chk?'700':'400'};
+        background:${chk?'var(--brand-xlt)':'transparent'}"
+        onmouseover="this.style.background='var(--brand-xlt)'"
+        onmouseout="this.style.background='${chk?'var(--brand-xlt)':'transparent'}'">
+      <input type="checkbox" ${chk?'checked':''} onchange="toggleHovDC('${p.replace(/'/g,"\\'")}')"
+        style="width:13px;height:13px;cursor:pointer;accent-color:var(--brand)">
+      ${xe(p==='ALL'?'All Sites':p)}
+    </label>`;
+  }).join('');
+}
+function toggleHovDC(dc){
+  if(dc==='ALL'){_hovDCselected=new Set(['ALL']);}
+  else{
+    _hovDCselected.delete('ALL');
+    if(_hovDCselected.has(dc))_hovDCselected.delete(dc);
+    else _hovDCselected.add(dc);
+    if(_hovDCselected.size===0)_hovDCselected=new Set(['ALL']);
+  }
+  updateHovDCLabel();
+  renderHovDCList(document.getElementById('hovDCsearch')?.value||'');
+  renderHovTab();
+}
+function hovDCSelectAll(){_hovDCselected=new Set(['ALL']);updateHovDCLabel();renderHovDCList('');renderHovTab();}
+function hovDCClearAll(){_hovDCselected=new Set(['ALL']);updateHovDCLabel();renderHovDCList('');renderHovTab();}
+document.addEventListener('click',e2=>{
+  const dw=document.getElementById('hovDCwrap');
+  if(dw&&!dw.contains(e2.target)&&_hovDCDropOpen){
+    _hovDCDropOpen=false;
+    const d2=document.getElementById('hovDCdrop');if(d2)d2.style.display='none';
+  }
+});
+
 function populateHovDCDropdown(){
-  const sel=document.getElementById('hovDCselect');if(!sel)return;
-  const cur=sel.value;
   const allLocs=[...new Set((master.hov||[]).map(r=>r.location))].sort();
-  sel.innerHTML=`<option value="ALL">All Sites</option>`+allLocs.map(l=>`<option value="${l}">${l}</option>`).join('');
-  if(allLocs.includes(cur))sel.value=cur;
+  _hovDCall=['ALL',...allLocs];
+  // Remove invalid selections
+  const valid=new Set(['ALL',...allLocs]);
+  _hovDCselected=new Set([..._hovDCselected].filter(s=>valid.has(s)));
+  if(_hovDCselected.size===0)_hovDCselected=new Set(['ALL']);
+  renderHovDCList('');
+  updateHovDCLabel();
 }
 
 /* ── AWB Search (Fix 3): cross-file, age-independent ── */
@@ -4671,20 +4743,18 @@ function renderHovTab(){
   populateHovPC();
   populateHovDCDropdown();
   const pcs=getHovPCs();
-  const dc=(document.getElementById('hovDCselect')?.value)||'ALL';
-
   // Grand total (across all files matching filter)
   const grand=(master.hov||[]).filter(r=>{
     if(r.age<2||r.age>15)return false;
     if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
-    if(dc&&dc!=='ALL'&&r.location!==dc)return false;
+    if(!_hovDCFilter(r.location))return false;
     return true;
   }).reduce((s,r)=>s+r.count,0);
   const tot=document.getElementById('hovGrandTotal');
   if(tot)tot.textContent=grand?fn(grand)+' AWBs':'–';
 
   // Primary render: per-file sections (no combined view)
-  renderHovPerFile(pcs,dc);
+  renderHovPerFile(pcs);
 }
 
 /* ── Bar chart render (Fix 4) ── */
@@ -4972,7 +5042,7 @@ function fmtHovDate(dateStr){
 }
 
 /* ── OVERALL AWB COUNT table — all sites, all dates, sorted by total desc ── */
-function renderHovOverall(pcs,dc){
+function renderHovOverall(pcs){
   const sec=document.getElementById('hovOverallSection');
   const wrap=document.getElementById('hovOverallTableWrap');
   if(!sec||!wrap)return;
@@ -4980,7 +5050,7 @@ function renderHovOverall(pcs,dc){
   const allHov=(master.hov||[]).filter(r=>{
     if(r.age<2||r.age>15)return false;
     if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
-    if(dc&&dc!=='ALL'&&r.location!==dc)return false;
+    if(!_hovDCFilter(r.location))return false;
     return true;
   });
   if(!allHov.length){sec.style.display='none';return;}
@@ -5104,17 +5174,17 @@ function renderHovCriticalSites(sites){
   wrap.innerHTML=html;
 }
 
-function renderHovPerFile(pcs,dc){
+function renderHovPerFile(pcs){
   const wrap=document.getElementById('hovPerFileWrap');if(!wrap)return;
 
   // Render the Overall AWB Count table + Critical Sites first
-  renderHovOverall(pcs,dc);
+  renderHovOverall(pcs);
 
   const allHov=master.hov||[];
   const filtHov=allHov.filter(r=>{
     if(r.age<2||r.age>15)return false;
     if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
-    if(dc&&dc!=='ALL'&&r.location!==dc)return false;
+    if(!_hovDCFilter(r.location))return false;
     return true;
   });
   if(!filtHov.length){
