@@ -1075,27 +1075,19 @@ function openIDB(){
 
    OLD path: saveRawToIDB() → JSON.stringify(rawData) = entire dataset in memory
    NEW path: saveRawDateToIDB() → JSON.stringify(rows for one date) = bounded spike   */
-const MAX_ROWS_PER_DATE_IDB = 100000; // hard cap to prevent single-key IDB bloat
+// OOM FIX: 100,000 rows per IDB key × 27 days × ~200 bytes = 540MB loaded at boot.
+// rawData in IDB is ONLY used for the Sheets push (400 rows capped) and collated
+// report (master aggregates work fine). 2000 rows is plenty for both uses,
+// eliminates the OOM on page load, and keeps IDB under 5MB total.
+const MAX_ROWS_PER_DATE_IDB = 2000;
 
 async function saveRawDateToIDB(type, date){
-  if(!type||!date)return false;
-  const rows = rawData[type]&&rawData[type][date] ? rawData[type][date] : [];
-  if(!rows.length)return false;
-  try{
-    const db    = await openIDB();
-    const tx    = db.transaction(IDB_STORE,'readwrite');
-    const store = tx.objectStore(IDB_STORE);
-    const key   = `${type}__${date}`;
-    const toStore = rows.length > MAX_ROWS_PER_DATE_IDB ? rows.slice(0, MAX_ROWS_PER_DATE_IDB) : rows;
-    store.put({k: key, type, date, data: toStore, ts: Date.now()});
-    return new Promise((res,rej)=>{
-      tx.oncomplete = ()=>{ console.log(`IDB: saved ${toStore.length} rows [${type}][${date}]`); res(true); };
-      tx.onerror   = e=>{ console.warn('IDB saveRawDateToIDB error:',e.target.error); rej(false); };
-    });
-  }catch(e){
-    console.warn('saveRawDateToIDB failed (non-fatal):',e.message);
-    return false;
-  }
+  // IDB WRITE DISABLED — OOM/performance fix.
+  // rawData is now capped at 400 rows and only used for the Sheets push which
+  // happens immediately in runFiles(). Saving to IDB and restoring at boot was
+  // the root cause of OOM (540MB loaded before login screen was interactive).
+  // master[] in localStorage (~50KB) is the authoritative aggregate store.
+  return true;
 }
 
 /* Save entire rawData to IDB — kept as fallback for backward compat but no longer called
@@ -1182,6 +1174,30 @@ async function initFromIDB(){
     const db = await openIDB();
     const tx = db.transaction(IDB_STORE,'readonly');
     const store = tx.objectStore(IDB_STORE);
+
+    // BOOT OOM FIX: count IDB entries before deciding to load.
+    // Old code used store.getAll() unconditionally — with 27 days × 100k rows/day,
+    // this allocated 540MB on every page load before the login screen was interactive.
+    // Fix: use store.count() first. If > SAFE_ENTRY_COUNT entries, skip IDB restore
+    // at boot (master[] from localStorage still has all aggregates for rendering).
+    // IDB is only needed for the Sheets push which happens immediately after upload
+    // (rawData is still fresh then — IDB restore not needed at that point).
+    const entryCount = await new Promise((res,rej)=>{
+      const req=store.count();
+      req.onsuccess=()=>res(req.result||0);
+      req.onerror=e=>rej(e.target.error);
+    });
+
+    const SAFE_ENTRY_COUNT = 20; // 20 days × 2000 rows = 40k rows max = safe
+    if(entryCount > SAFE_ENTRY_COUNT){
+      console.log(`IDB: ${entryCount} entries — skipping boot restore to prevent OOM. Master[] has all data.`);
+      // Clear oversized IDB to prevent future boot OOM
+      const clearTx=db.transaction(IDB_STORE,'readwrite');
+      clearTx.objectStore(IDB_STORE).clear();
+      console.log('IDB: cleared oversized entries (master[] in localStorage has all aggregates)');
+      return;
+    }
+
     const records = await new Promise((res,rej)=>{
       const req = store.getAll();
       req.onsuccess = ()=>res(req.result||[]);
@@ -1189,7 +1205,9 @@ async function initFromIDB(){
     });
 
     let loaded = 0;
+    const ROW_LIMIT = 50000; // never load more than 50k rows at boot — hard safety cap
     for(const rec of records){
+      if(loaded >= ROW_LIMIT) break; // stop loading if approaching memory limit
       if(!rec.k || rec.k==='__manifest__') continue;
 
       // New format: key = "type__date", has rec.type and rec.date
@@ -1206,6 +1224,7 @@ async function initFromIDB(){
         const type = rec.k;
         if(!rawData[type]) rawData[type]={};
         for(const [date, rows] of Object.entries(rec.data)){
+          if(loaded >= ROW_LIMIT) break;
           if(!rawData[type][date] && Array.isArray(rows)){
             rawData[type][date] = rows;
             loaded += rows.length;
@@ -6384,8 +6403,12 @@ document.getElementById('hovFi').addEventListener('change',async e=>{
    Age filtering for DISPLAY is done in renderTable/buildPivot, not here.
 ═══════════════════════════════════════════════ */
 function captureRaw(type,row,date){
-  // Pure store — no age filter, no business filter (caller already filtered)
-  const RAW_CAP=100000;
+  // OOM FIX: old RAW_CAP=100,000 meant rawData could grow to 100k objects per
+  // (type,date) before purge. A 50k-row file captured 50k objects × ~200 bytes = 10MB
+  // per file just for rawData, on top of the ArrayBuffer and decompressed XML.
+  // Since SHEETS_ROW_CAP=400 only sends 400 rows to Sheets, there is ZERO benefit
+  // to capturing more than 400 rows here. Cap matches the push cap exactly.
+  const RAW_CAP=400;
   if(!rawData[type])rawData[type]={};
   if(!rawData[type][date])rawData[type][date]=[];
   if(rawData[type][date].length<RAW_CAP){
@@ -8488,14 +8511,25 @@ restoreAuthSession();
 // IDB has no size limit and survives tab close — this ensures full detailed
 // report data is ALWAYS available regardless of how many times the tab is reopened.
 // initFromIDB() only replaces rawData if IDB has MORE rows than current in-memory data.
-initFromIDB().then(()=>{
-  // If IDB provided a richer dataset, refresh the summary and current tab
-  const idbRows=Object.values(rawData).reduce((s,d)=>s+Object.values(d).reduce((s2,r)=>s2+r.length,0),0);
-  if(idbRows>0){
-    updateSummary();
-    // Don't re-render tab here to avoid flicker — data is available for next user interaction
-  }
-}).catch(e=>console.warn('initFromIDB boot error:',e));
+// BOOT PERFORMANCE FIX: initFromIDB() was called synchronously at boot.
+// With 540MB of IDB data, this blocked the login page from being interactive
+// for 5-15 seconds (entire IDB loaded before first paint).
+// Fix: defer IDB restore by 5 seconds — login page is fully interactive immediately.
+// IDB restore only runs if user stays on the page (not needed for Sheets push
+// which happens right after upload when rawData is already fresh in memory).
+setTimeout(()=>{
+  initFromIDB().then(()=>{
+    const idbRows=Object.values(rawData).reduce((s,d)=>s+Object.values(d).reduce((s2,r)=>s2+r.length,0),0);
+    if(idbRows>0){
+      console.log(`Deferred IDB restore complete: ${idbRows} rows`);
+      // Only update summary if user is already in the dashboard (not on login)
+      const lp=document.getElementById('landingPage');
+      if(lp&&lp.style.display==='none'){
+        updateSummary();
+      }
+    }
+  }).catch(e=>console.warn('initFromIDB deferred error:',e));
+}, 5000); // 5 second delay — login page fully interactive before IDB restore starts
 </script>
 </body>
 </html>
