@@ -6581,94 +6581,119 @@ async function downloadSectionReport(idx){
   }
 }
 
-/* ── Build CSV rows for one section + age filter (async, chunked) ──────────
-   DATA SOURCES (priority order):
-   1. _rawSnap[type][date] — full source rows with ALL original file columns.
-      Available for all files uploaded in the current browser session.
-      Gives: File Date | Awb_number | Pivot | location | bin_level | message | …ALL 178 cols
-   2. master[src] aggregates — fallback for historical data from prior sessions.
-      Gives: File Date | location | age | bin | msg | os | count
-      (summary only — raw rows no longer in memory for old uploads)
-── */
+/* ── Fetch full source rows from Google Sheets partition tabs ───────────────
+   Used by _buildSectionCSV for historical dates whose rawData was purged.
+   Reads from SECTION_1, SECTION_2 … (all partitions) via AppScript GET.
+   Returns array of row objects keyed by header name, or [] on failure.      */
+async function _fetchFromSheets(sheetBaseName){
+  const url=getGsUrl();
+  if(!url)return[];
+  try{
+    const enc=encodeURIComponent(sheetBaseName.substring(0,28));
+    const resp=await fetch(`${url}?action=getPartitionData&baseName=${enc}&maxRows=3000`,{method:'GET'});
+    const data=await resp.json();
+    if(!data.ok||!data.rows||!data.rows.length)return[];
+    const hdrs=data.headers||[];
+    // Convert array rows to header-keyed objects
+    return data.rows.map(row=>{
+      const obj={};
+      hdrs.forEach((h,i)=>{if(h)obj[h]=row[i]??'';});
+      return obj;
+    });
+  }catch(e){
+    console.warn('_fetchFromSheets failed:',e.message);
+    return[];
+  }
+}
+
+/* ── Build CSV rows for one section + age filter ─────────────────────────────
+   DATA PRIORITY:
+   1. _rawSnap  — full source rows (all original cols) from current session
+   2. Sheets    — full source rows fetched from Google Sheets partition tabs
+                  (available for all historical uploads, 3000 rows max)
+   3. master[]  — summary aggregates fallback (count/location/age only)
+                  only used when Sheets fetch also returns nothing              */
 async function _buildSectionCSV(sec,f){
   const isForward=sec.src==='forward';
 
-  // ── Priority 1: _rawSnap — full source columns from uploaded files ────────
+  // ── Helper: rows to CSV using all original source headers ────────────────
+  function rowsToCSV(rows, dateKey){
+    if(!rows.length)return null;
+    const SKIP=new Set([dateKey||'_skip_']);
+    const fieldSet=new Set();
+    rows.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP.has(k))fieldSet.add(k);}));
+    const allCols=['File Date',...fieldSet];
+    const lines=[allCols.map(_csvCell).join(',')];
+    rows.forEach(r=>{
+      lines.push(allCols.map(col=>{
+        if(col==='File Date')return _csvCell(r[dateKey]||r.Date||r.date||'');
+        const v=r[col];
+        return _csvCell((v===undefined||v===null)?'':String(v));
+      }).join(','));
+    });
+    return lines.join('\r\n');
+  }
+
+  // ── Priority 1: _rawSnap — full source rows from current session ──────────
   const snapData=_rawSnap[sec.src]||{};
   const snapDates=Object.keys(snapData).sort();
-
   if(snapDates.length>0){
-    // Filter dates that match the current age filter
-    // Raw rows contain original source columns — we filter by age using the
-    // same logic as pFwd/pRev/pLM (using gv() column lookups)
     const allRows=[];
     for(const date of snapDates){
       const rows=snapData[date]||[];
       for(const row of rows){
-        // Age filter: check the age in the raw row
         let rowAge=0;
-        if(sec.src==='lmodc'){
-          rowAge=Math.round(parseLMODCAge(gv(row,'Ageing_f','ageing_f','ageing','Ageing')));
-        }else if(sec.src==='reverse'){
-          rowAge=Math.round(parseFloat(gv(row,'ageing','Ageing'))||0);
-        }else{
-          // forward / forwardShort — use Ageing_from_bag_recc or Ageing_from_Bag_Rec
-          rowAge=Math.round(gn(row,
-            'ageing_from_bag_recc','Ageing_from_bag_recc','Ageing_from_Bag_Rec',
-            'ageing_from_bag_rec','Ageing_from_Bag_Recc',
-            'ageing','Ageing'));
-        }
+        if(sec.src==='lmodc') rowAge=Math.round(parseLMODCAge(gv(row,'Ageing_f','ageing_f','ageing','Ageing')));
+        else if(sec.src==='reverse') rowAge=Math.round(parseFloat(gv(row,'ageing','Ageing'))||0);
+        else rowAge=Math.round(gn(row,'ageing_from_bag_recc','Ageing_from_bag_recc','Ageing_from_Bag_Rec','ageing_from_bag_rec','ageing','Ageing'));
         if(rowAge!==f.age)continue;
-        // Bin/message filter for forward
-        if(isForward&&f.bins.length>0){
-          const bin=Math.round(gn(row,'bin_level','bin','Bin'));
-          if(!f.bins.includes(bin))continue;
-        }
-        if(isForward&&f.msgs.length>0&&!f.msgs.includes('ALL')){
-          const msg=nv(gv(row,'message','Message','msg'));
-          if(!f.msgs.includes(msg))continue;
-        }
+        if(isForward&&f.bins.length>0){const bin=Math.round(gn(row,'bin_level','bin','Bin'));if(!f.bins.includes(bin))continue;}
+        if(isForward&&f.msgs.length>0&&!f.msgs.includes('ALL')){const msg=nv(gv(row,'message','Message','msg'));if(!f.msgs.includes(msg))continue;}
         allRows.push({_date:date,...row});
       }
-      await new Promise(r=>setTimeout(r,0)); // yield per date
+      await new Promise(r=>setTimeout(r,0));
     }
-
     if(allRows.length>0){
-      // Sort date-wise then by location/destination
-      const locKey=sec.src==='lmodc'?'destination_name':'Current_location';
-      allRows.sort((a,b)=>
-        (a._date||'').localeCompare(b._date||'')||
-        (gv(a,locKey,'location','Location')||'').localeCompare(gv(b,locKey,'location','Location')||'')
-      );
-
-      // Build column list from actual raw rows (all original source headers)
-      const SKIP=new Set(['_date']);
-      const fieldSet=new Set();
-      allRows.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP.has(k))fieldSet.add(k);}));
-      const allCols=['File Date',...fieldSet];
-
-      // Build CSV lines
-      const lines=[allCols.map(_csvCell).join(',')];
-      const CHUNK=3000;
-      for(let i=0;i<allRows.length;i+=CHUNK){
-        const end=Math.min(i+CHUNK,allRows.length);
-        for(let j=i;j<end;j++){
-          const r=allRows[j];
-          lines.push(allCols.map(col=>{
-            if(col==='File Date')return _csvCell(r._date||'');
-            const v=r[col];
-            return _csvCell((v===undefined||v===null)?'':typeof v==='number'?v:String(v));
-          }).join(','));
-        }
-        if(end<allRows.length)await new Promise(r=>setTimeout(r,0));
-      }
-      return lines.join('\r\n');
+      const csv=rowsToCSV(allRows,'_date');
+      if(csv){toast(`⬇ CSV from current session (${fn(allRows.length)} rows)`,'tok');return csv;}
     }
   }
 
-  // ── Priority 2: master aggregates — fallback for pre-session historical data ──
-  // Only reached when _rawSnap has no matching data (files uploaded before this session).
-  // Returns summary columns (location | age | count) instead of full source rows.
+  // ── Priority 2: Sheets backend — full source rows for historical uploads ──
+  // The Sheets partitions (LMODC_1, LMODC_2 …) store the raw rows that were
+  // pushed during upload. This is the ONLY source of full-column historical data
+  // for files uploaded in previous browser sessions (rawData was purged then).
+  toast('⏳ Fetching historical source data from Google Sheets…','ti');
+  await new Promise(r=>setTimeout(r,80));
+
+  // Get the sheet base name for this section (matches what was written during upload)
+  const sheetBaseName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().substring(0,28);
+  const sheetsRows=await _fetchFromSheets(sheetBaseName);
+
+  if(sheetsRows.length>0){
+    // Filter by age using the 'Date' column (col 1 in sheet = file date)
+    // Age column name varies by type — check common names
+    const ageKey=sheetsRows.length>0?
+      ['Ageing_f','ageing_f','Ageing_from_bag_recc','Ageing_from_Bag_Rec','ageing','Ageing'].find(k=>k in sheetsRows[0]):'';
+    const filtered=sheetsRows.filter(r=>{
+      if(!ageKey)return true; // no age col found — include all
+      let a=0;
+      if(sec.src==='lmodc')a=Math.round(parseLMODCAge(r[ageKey]));
+      else a=Math.round(parseFloat(r[ageKey])||0);
+      return a===f.age;
+    });
+    if(filtered.length>0){
+      // 'Date' is the first column written by the Sheets push (it's the file date)
+      const csv=rowsToCSV(filtered,'Date');
+      if(csv){
+        const fileDates=[...new Set(filtered.map(r=>r.Date||''))].length;
+        toast(`⬇ CSV from Sheets backend (${fn(filtered.length)} rows, ${fileDates} dates, D${f.age})`,'tok');
+        return csv;
+      }
+    }
+  }
+
+  // ── Priority 3: master aggregates — last resort (counts only) ────────────
   const all=(master[sec.src]||[]).filter(r=>{
     if(r.age!==f.age)return false;
     if(isForward&&f.bins.length>0&&!f.bins.includes(r.bin))return false;
@@ -6677,16 +6702,13 @@ async function _buildSectionCSV(sec,f){
     return true;
   });
   if(!all.length)return null;
-
   all.sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.location||a.destination||'').localeCompare(b.location||b.destination||''));
-
   const SKIP=new Set(['date']);
   const fieldSet=new Set();
   all.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP.has(k))fieldSet.add(k);}));
   const priority=['location','destination','age','bin','msg','os','client','count'];
   const srcCols=[...priority.filter(c=>fieldSet.has(c)),...[...fieldSet].filter(c=>!priority.includes(c))];
   const allCols=['File Date',...srcCols];
-
   const lines=[allCols.map(_csvCell).join(',')];
   const CHUNK=3000;
   for(let i=0;i<all.length;i+=CHUNK){
@@ -6701,6 +6723,7 @@ async function _buildSectionCSV(sec,f){
     }
     if(end<all.length)await new Promise(r=>setTimeout(r,0));
   }
+  toast('⚠ Showing summary counts — Sheets backend had no data for this section. Re-upload files for full source CSV.','tw');
   return lines.join('\r\n');
 }
 
@@ -7246,6 +7269,47 @@ function doGet(e) {
           date:String(r[3]),uploadedAt:String(r[4]),awbs:Number(r[5])||0};});
       return buildResponse(JSON.stringify({ok:true,files:files}));
     }catch(err){return buildResponse(JSON.stringify({ok:false,files:[],error:err.message}));}
+  }
+
+  /* ── getPartitionData — full raw rows from partition sheets for CSV export ──
+     Dashboard uses this to get historical source data for sections.
+     Returns: { ok, headers:[], rows:[[...]], count }
+     Params: baseName (sheet base, max 28 chars), maxRows (default 2000, max 5000) */
+  if (action === 'getPartitionData') {
+    try {
+      var ss2   = getSS();
+      var bname = (e.parameter.baseName || '').toString().trim().substring(0, 28);
+      var mrows = Math.min(parseInt(e.parameter.maxRows || '2000') || 2000, 5000);
+      if (!bname) return buildResponse(JSON.stringify({ok:false,error:'baseName required'}));
+
+      var allSheets2 = getAllPartitions(ss2, bname);
+      var legSh2 = ss2.getSheetByName(bname.substring(0, 31));
+      if (legSh2 && allSheets2.indexOf(legSh2) === -1) allSheets2.push(legSh2);
+
+      if (!allSheets2.length)
+        return buildResponse(JSON.stringify({ok:true,headers:[],rows:[],count:0,note:'no_sheets'}));
+
+      var headers2 = [], outRows = [];
+      for (var si2 = 0; si2 < allSheets2.length; si2++) {
+        var sh3 = allSheets2[si2];
+        if (!sh3 || sh3.getLastRow() < 2) continue;
+        var lc3 = sh3.getLastColumn();
+        if (lc3 < 1) continue;
+        if (!headers2.length)
+          headers2 = sh3.getRange(1,1,1,lc3).getValues()[0].map(function(h){return String(h||'').trim();});
+        var rowsLeft = mrows - outRows.length;
+        if (rowsLeft <= 0) break;
+        var readCount = Math.min(sh3.getLastRow()-1, rowsLeft);
+        var rawVals = sh3.getRange(2,1,readCount,lc3).getValues();
+        for (var ri3=0; ri3<rawVals.length; ri3++)
+          outRows.push(rawVals[ri3].map(function(v){return v===null||v===undefined?'':String(v);}));
+        if (outRows.length >= mrows) break;
+      }
+      Logger.log('getPartitionData: '+bname+' rows='+outRows.length);
+      return buildResponse(JSON.stringify({ok:true,headers:headers2,rows:outRows,count:outRows.length}));
+    } catch(gpErr) {
+      return buildResponse(JSON.stringify({ok:false,error:gpErr.message,rows:[],headers:[]}));
+    }
   }
 
   /* ── getPartitionIndex (for diagnostics) ── */
