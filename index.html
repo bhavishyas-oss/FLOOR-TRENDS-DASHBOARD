@@ -210,7 +210,24 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 /* total column */
 .tbl tbody td:last-child{border-right:none;font-weight:900;color:#0a2520;background:#eaf6f2!important}
 
-/* ── Pivot table cell classes — replace per-cell inline styles ──────────────
+/* ── Global wrap-text for ALL tables — prevents cut-off values ──────────── */
+table td, table th {
+  white-space: normal !important;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  vertical-align: top;
+}
+/* Exception: pivot date headers stay compact */
+.ptc-hd, .ptc-hdl { white-space: nowrap !important; }
+/* HOV tables */
+#hovTableWrap td, #hovTableWrap th,
+#hovOverallTableWrap td, #hovOverallTableWrap th,
+#hovFwdBin1Wrap td, #hovFwdBin1Wrap th,
+#hovFwdBin2Wrap td, #hovFwdBin2Wrap th,
+#hovRevWrap td, #hovRevWrap th,
+#hovLMWrap td, #hovLMWrap th { white-space: normal !important; word-break: break-word; }
+/* Trend/pivot tables */
+.tbl tbody td, .tbl tbody th { white-space: normal !important; word-break: break-word; }
    OOM/freeze FIX: each <td> had ~120 chars of inline style. With 30 dates ×
    30 sites = 900 cells × 120 chars = 108KB of style strings in the HTML string.
    Using CSS classes shrinks it to 10-20 chars per cell = 18KB → 6× smaller.
@@ -683,7 +700,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
       </div>
     </div>
 
-    <!-- Overall AWB Count Table + Critical Sites (auto-generated from all files) -->
+    <!-- Overall AWB Count Table (auto-generated from all files) -->
     <div id="hovOverallSection" style="display:none;flex-direction:column;gap:10px;margin-bottom:8px">
       <div class="card">
         <div class="chead" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
@@ -692,13 +709,6 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
           <button class="btn bg" onclick="downloadHovSectionImage('hovOverallTableWrap','HOV_Overall.png')" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG</button>
         </div>
         <div id="hovOverallTableWrap" style="overflow-x:auto;-webkit-overflow-scrolling:touch"></div>
-      </div>
-      <div class="card">
-        <div class="chead" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-          <span class="ct">🚨 CRITICAL SITES — Top 5 by Severity</span>
-          <span style="font-size:10px;color:var(--tx3);font-weight:600">Score = Total × (1 + RedCells×0.2)</span>
-        </div>
-        <div id="hovCriticalSitesWrap"></div>
       </div>
     </div>
 
@@ -5044,9 +5054,7 @@ function renderHovOverall(pcs,dc){
   </tr></tfoot>`;
   html+=`</table>`;
   wrap.innerHTML=html;
-
-  // Render critical sites below
-  renderHovCriticalSites(sites);
+  // Critical Sites and Average Logic Trend removed from HOV tracking tab
 }
 
 /* ── CRITICAL SITES table — Top 5 by severity score ── */
@@ -5837,88 +5845,101 @@ function renderHovSiteDetail(dc){
   );
 }
 
-/* ── PDF generation (html2canvas → jsPDF) ── */
+/* ── PDF generation — full scrollable content, multi-page ── */
 function generateHovPDF(tabIdx){
-  const tabNames=['HOV_Overview','HOV_Detailed','D15plus_Tracking'];
+  const tabNames=['HOV_Overview','HOV_Detailed','D15plus_Tracking','Action_User_Trends'];
   const panelId=`hovSubPanel${tabIdx}`;
   const panel=document.getElementById(panelId);
   if(!panel){toast('Tab not found','tw');return;}
   if(typeof html2canvas==='undefined'){toast('⚠ html2canvas not loaded','tw');return;}
-  toast('⏳ Generating PDF…','ti');
+  toast('⏳ Generating full-content PDF…','ti');
 
-  // Capture the entire panel
+  // Temporarily make panel visible and fully expanded for capture
+  const origOverflow=panel.style.overflow;
+  const origMaxH=panel.style.maxHeight;
+  panel.style.overflow='visible';
+  panel.style.maxHeight='none';
+
+  // Also expand all inner scrollable containers
+  const scrollables=panel.querySelectorAll('[style*="overflow"]');
+  const savedStyles=[];
+  scrollables.forEach(el=>{
+    savedStyles.push({el,overflow:el.style.overflow,maxH:el.style.maxHeight});
+    el.style.overflow='visible';
+    el.style.maxHeight='none';
+  });
+
+  // Full dimensions including scroll
+  const W=Math.max(panel.scrollWidth,1200);
+  const H=panel.scrollHeight;
+
   html2canvas(panel,{
-    scale:1.5,backgroundColor:'#f0f7f5',useCORS:true,allowTaint:true,
-    width:panel.scrollWidth,height:panel.scrollHeight,
-    windowWidth:panel.scrollWidth+200,windowHeight:panel.scrollHeight+200,
+    scale:1.5,
+    backgroundColor:'#f0f7f5',
+    useCORS:true,
+    allowTaint:true,
+    width:W,
+    height:H,
+    windowWidth:W+100,
+    windowHeight:H+100,
     logging:false,
-    onclone(doc){doc.querySelectorAll('*').forEach(e=>{e.style.overflow='visible';e.style.maxHeight='none';});}
+    onclone(doc){
+      // Remove all overflow constraints in the clone
+      doc.querySelectorAll('*').forEach(el=>{
+        el.style.overflow='visible';
+        el.style.maxHeight='none';
+        el.style.overflowX='visible';
+        el.style.overflowY='visible';
+        // Ensure wrap-text
+        if(el.tagName==='TD'||el.tagName==='TH'){
+          el.style.whiteSpace='normal';
+          el.style.wordBreak='break-word';
+        }
+      });
+    }
   }).then(canvas=>{
-    // Create PDF using data URL embedded in an <a> download
-    // (pure client-side: convert canvas to PNG then wrap in a minimal PDF blob)
-    const imgData=canvas.toDataURL('image/png',0.92);
-    const W=canvas.width,H=canvas.height;
-    // Build a minimal single-page PDF manually (no library needed)
-    const pdf=buildSimplePDF(imgData,W,H);
-    const a=document.createElement('a');
-    a.href=URL.createObjectURL(new Blob([pdf],{type:'application/pdf'}));
-    a.download=`${tabNames[tabIdx]}_${new Date().toISOString().slice(0,10)}.pdf`;
-    document.body.appendChild(a);a.click();document.body.removeChild(a);
-    toast(`📄 PDF downloaded: ${tabNames[tabIdx]}`,'tok');
-  }).catch(e=>{console.warn(e);toast('PDF generation failed — try PNG instead','te');});
-}
+    // Restore original styles
+    panel.style.overflow=origOverflow;
+    panel.style.maxHeight=origMaxH;
+    savedStyles.forEach(({el,overflow,maxH})=>{el.style.overflow=overflow;el.style.maxHeight=maxH;});
 
-/* Minimal PDF builder (PNG image embedded in PDF) */
-function buildSimplePDF(dataUrl,imgW,imgH){
-  // PDF unit: 1 point = 1/72 inch
-  // We scale image to fit A4 (595 × 842 pt) or use actual dimensions
-  const A4W=595,A4H=842;
-  const scale=Math.min(A4W/imgW,A4H/imgH,1);
-  const pw=Math.round(imgW*scale),ph=Math.round(imgH*scale);
-  // Strip data URL prefix
-  const b64=dataUrl.replace(/^data:image\/png;base64,/,'');
-  const imgBytes=atob(b64);
-  const raw=new Uint8Array(imgBytes.length);
-  for(let i=0;i<imgBytes.length;i++)raw[i]=imgBytes.charCodeAt(i);
+    const imgData=canvas.toDataURL('image/jpeg',0.88);
+    const filename=`${tabNames[tabIdx]||'HOV_Report'}_${new Date().toISOString().slice(0,10)}.pdf`;
 
-  // Build PDF structure
-  const enc=s=>s.split('').map(c=>c.charCodeAt(0));
-  let body='';
-  const offsets=[];
-
-  const obj=(n,content)=>{offsets[n]=body.length;body+=`${n} 0 obj\n${content}\nendobj\n`;};
-
-  obj(1,'<< /Type /Catalog /Pages 2 0 R >>');
-  obj(2,`<< /Type /Pages /Kids [3 0 R] /Count 1 >>`);
-  obj(3,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pw} ${ph}] /Contents 4 0 R /Resources << /XObject << /Im1 5 0 R >> >> >>`);
-
-  const stream=`q ${pw} 0 0 ${ph} 0 0 cm /Im1 Do Q`;
-  obj(4,`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
-
-  // Image XObject
-  const imgStream=[
-    `<< /Type /XObject /Subtype /Image /Width ${imgW} /Height ${imgH}`,
-    `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode`,
-    `/Length ${raw.length} >>`,
-    `stream`
-  ].join('\n');
-  offsets[5]=body.length;
-  // For simplicity, embed as raw PNG data with no filter (larger but works everywhere)
-  const imgObjStr=`5 0 obj\n<< /Type /XObject /Subtype /Image /Width ${imgW} /Height ${imgH} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length ${raw.length*2+1} >>\nstream\n`;
-
-  // Build final PDF as text (simpler: skip binary image, use PNG as-is via base64)
-  // Use jsPDF-compatible approach: print directly from canvas
-  const win=window.open('','_blank');
-  if(!win){toast('Allow pop-ups for PDF export','tw');return null;}
-  win.document.write(`<!DOCTYPE html><html><head><title>HOV Report</title><style>
-    body{margin:0;padding:0;background:#fff}img{max-width:100%;display:block}
-    @media print{body{margin:0}@page{margin:10mm}}
-  </style></head><body>
-    <img src="${dataUrl}" style="width:100%;height:auto">
-    <script>window.onload=function(){window.print();window.onafterprint=function(){window.close();}}<\/script>
-  </body></html>`);
-  win.document.close();
-  return null; // PDF via print dialog
+    // Open print window with full-size image — browser handles pagination
+    const win=window.open('','_blank','width=900,height=700');
+    if(!win){toast('⚠ Allow pop-ups for PDF','tw');return;}
+    const imgW=canvas.width;
+    const imgH=canvas.height;
+    // A4 ratio at 96dpi: 794px wide. Scale to fit.
+    win.document.write(`<!DOCTYPE html><html><head><title>${filename}</title><style>
+      *{margin:0;padding:0;box-sizing:border-box}
+      body{background:#fff;font-family:sans-serif}
+      img{width:100%;height:auto;display:block;page-break-inside:avoid}
+      @media print{
+        html,body{width:100%;margin:0;padding:0}
+        @page{margin:8mm;size:A4 portrait}
+        img{width:100%;height:auto;page-break-before:auto;page-break-after:auto}
+      }
+    </style></head><body>
+      <img src="${imgData}" alt="HOV Report">
+      <script>
+        window.onload=function(){
+          setTimeout(function(){window.print();},600);
+          window.onafterprint=function(){window.close();};
+        };
+      <\/script>
+    </body></html>`);
+    win.document.close();
+    toast(`📄 PDF ready — ${tabNames[tabIdx]} (${fn(Math.round(imgH/96))} inches tall)`,'tok');
+  }).catch(e=>{
+    // Restore styles on error
+    panel.style.overflow=origOverflow;
+    panel.style.maxHeight=origMaxH;
+    savedStyles.forEach(({el,overflow,maxH})=>{el.style.overflow=overflow;el.style.maxHeight=maxH;});
+    console.warn('PDF error:',e);
+    toast('PDF failed — try PNG export instead','te');
+  });
 }
 
 /* ── Helper: isNA ── */
