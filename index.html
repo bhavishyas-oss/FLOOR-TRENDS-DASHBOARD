@@ -1507,7 +1507,7 @@ function pRev(row,date,agg){
 /* ── LMODC age parser ──────────────────────────
    Reads from 'Ageing' column U (actual day count).
    'Ageing_f' column A is a category code — NOT used.
-   Day count → bucket:  1-5 → D3 · 6-9 → D6 · 10+ → D10
+   Day count → bucket:  3 → D3 · 6 → D6 · 10 → D10
 ──────────────────────────────────────────────── */
 function parseLMODCAge(s){
   s=String(s==null?'':s).trim();
@@ -1524,18 +1524,18 @@ function parseLMODCAge(s){
   if(isNaN(n)){const nums=[...s.matchAll(/\d+/g)].map(m=>parseInt(m[0]));n=nums.length?Math.max(...nums):NaN;}
   if(isNaN(n)||n<=0)return 0;
   // BUCKET MAPPING — LMODC uses three buckets:
-  // D3  = age 1-5 days  (Ageing_f values 1,2,3,4,5)
-  // D6  = age 6-9 days  (Ageing_f values 6,7,8,9)
-  // D10 = age 10+ days  (Ageing_f values 10,11,12,...)
+  // D3  = age 3 day  (Ageing value 3)
+  // D6  = age 6 day  (Ageing value 6)
+  // D10 = age 10 day  (Ageing value 10)
   // FIX: previously age=1,2 returned 0 → filtered out → D3 showed no data.
   // Now: any age 1-5 maps to D3 bucket.
   if(n>=10)return 10;
   if(n>=6)return 6;
-  return 3; // age 1-5 → D3 bucket (previously 1-2 returned 0 and were dropped)
+  return 3; // age 3 → D3 bucket (previously 1-2 returned 0 and were dropped)
 }
 
 // LMODC — raw data CSV, one row = one AWB
-// Age:      Ageing_f (col A) — plain integer day count (1,2,3,6,10...)
+// Age:      Ageing (col U) — plain integer day count (1,2,3,6,10...)
 //           Fallback: 'Ageing' (col U) for older LMODC exports
 // Location: destination_name (col B)
 // Count (col M) = manifest count, NOT per-row AWB count. Each row = 1 AWB.
