@@ -10,6 +10,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-datalabels/2.2.0/chartjs-plugin-datalabels.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -3354,7 +3355,8 @@ function initPanels(){
         <div class="chead">
           <span class="ct" style="font-size:17px;font-weight:900;letter-spacing:.5px">§${i+1} · ${s.title}</span>
           <div class="cm"><span class="cc" id="cnt${i}">–</span><span class="cbg">${s.badge}</span>
-            <button class="btn bg" onclick="downloadSectionReport(${i})" style="font-size:10px;padding:4px 9px;margin-left:8px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download Excel collated report">⬇ Report</button>
+            <button class="btn bg" onclick="downloadSectionReport(${i})" style="font-size:10px;padding:4px 9px;margin-left:8px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download this section as CSV">⬇ CSV</button>
+            <button class="btn bg" onclick="downloadAllSectionsZIP()" style="font-size:10px;padding:4px 9px;margin-left:4px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download ALL sections as ZIP of CSVs">📦 ZIP</button>
             <button class="btn bg" onclick="generateSectionPDF(${i})" style="font-size:10px;padding:4px 9px;color:var(--brand);border-color:var(--bdr2)" title="Download PDF visual report with charts and tables">📄 PDF</button>
             <button class="btn bg" onclick="downloadTableImage('tbl${i}','${s.title.replace(/[^\w]/g,'_')}_table.png')" style="font-size:10px;padding:4px 9px;color:var(--gold);border-color:rgba(233,223,67,.4)" title="Download table as HD PNG">🖼 Table</button>
             <button class="btn bg" onclick="downloadFullSectionImage(${i},'${s.title.replace(/[^\w]/g,'_')}')" style="font-size:10px;padding:4px 9px;color:#fff;background:#0a4a35;border-color:#0a4a35;font-weight:800" title="Download full section (chart + table + critical sites) as HD PNG">📸 Full PNG</button>
@@ -6485,34 +6487,74 @@ function filterRawForSection(sec,idx){
    Fix: build the report from master aggregates (always available, compact) with
    async chunked row processing and yield points to keep UI responsive.
    rawData primary path is preserved for fresh-upload sessions (small datasets).  */
+/* ═══════════════════════════════════════════════════════════════════════════
+   COLLATED REPORT — CSV per section + ZIP bundle
+   WHY CSV+ZIP instead of XLSX:
+     • XLSX for 100k rows = 50-200MB JS heap → OOM / "Aw Snap"
+     • CSV is plain text: same rows = 5-15MB → browser handles easily
+     • JSZip streams each CSV into ZIP without holding all in memory at once
+     • Download is a single .zip file containing one .csv per section/age combo
+
+   STRUCTURE:
+     File: Floor_Trends_Report_2026-05-13.zip
+     ├── D3_FWD_RDC.csv        (File Date | location | age | bin | msg | os | count)
+     ├── D6_FWD_RDC.csv
+     ├── D3_LMODC.csv          (File Date | destination | age | count)
+     ├── D3_REV_RDC.csv        (File Date | location | age | client | count)
+     ├── D3_DCH.csv            (File Date | location | age | count)
+     └── … one CSV per (section × age) combination
+═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Helper: escape a single CSV cell value ── */
+function _csvCell(v){
+  const s=(v===undefined||v===null)?'':String(v);
+  // Quote if value contains comma, quote, newline or leading/trailing space
+  if(s.includes(',')||s.includes('"')||s.includes('\n')||s!==s.trim()){
+    return '"'+s.replace(/"/g,'""')+'"';
+  }
+  return s;
+}
+
+/* ── Helper: build a CSV string from array-of-arrays ── */
+function _buildCSV(rows){
+  return rows.map(row=>row.map(_csvCell).join(',')).join('\r\n');
+}
+
+/* ── Trigger a file download from a string/Blob ── */
+function _downloadBlob(blob,filename){
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download=filename;
+  document.body.appendChild(a);a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),3000);
+}
+
+/* ── Main entry point — called by ⬇ Report button ── */
 async function downloadSectionReport(idx){
   const sec=SECS[idx];
   const f=SEC_FILTERS[idx]||{age:sec.ageOpts?.[0]||3,bins:[],msgs:[]};
-  toast('⏳ Preparing report — please wait…','ti');
+  const safeTitle=sec.title.replace(/[^\w\s]/g,'_').replace(/\s+/g,'_').trim();
+  const fname=`${safeTitle}_D${f.age}_${new Date().toISOString().slice(0,10)}.csv`;
 
-  // Short yield so the toast renders before heavy processing starts
-  await new Promise(r=>setTimeout(r,100));
+  toast('⏳ Building CSV report…','ti');
+  await new Promise(r=>setTimeout(r,80));
 
   try{
-    // Try rawData first (available right after upload — small, fast)
-    const rawRows=filterRawForSection(sec,idx);
-    if(rawRows.length>0&&rawRows.length<50000){
-      // Small rawData set — process synchronously (safe)
-      _buildAndDownloadReport(sec,f,rawRows,'rawData');
-      return;
-    }
-
-    // Large or empty rawData → use master aggregates (compact, always available)
-    // Process in async chunks to avoid blocking
-    await _buildReportFromMasterAsync(sec,f);
-
+    const csvStr=await _buildSectionCSV(sec,f);
+    if(!csvStr){toast('No data — upload the matching file first','tw');return;}
+    const blob=new Blob([csvStr],{type:'text/csv;charset=utf-8;'});
+    _downloadBlob(blob,fname);
+    const lines=csvStr.split('\n').length-1;
+    toast(`⬇ CSV: ${fn(lines)} rows · ${fname}`,'tok');
   }catch(e){
-    console.error('downloadSectionReport error:',e);
+    console.error('downloadSectionReport CSV error:',e);
     toast('⚠ Report error: '+e.message,'tw');
   }
 }
 
-async function _buildReportFromMasterAsync(sec,f){
+/* ── Build CSV rows for one section + age filter (async, chunked) ── */
+async function _buildSectionCSV(sec,f){
   const isForward=sec.src==='forward';
   const all=(master[sec.src]||[]).filter(r=>{
     if(r.age!==f.age)return false;
@@ -6521,14 +6563,11 @@ async function _buildReportFromMasterAsync(sec,f){
     if(isForward&&f.bins.length>0&&r.os==='IN_MANIFEST')return false;
     return true;
   });
-  if(!all.length){toast('No data — upload the matching file first','tw');return;}
-
-  // Yield to browser before heavy processing
-  await new Promise(r=>setTimeout(r,0));
+  if(!all.length)return null;
 
   all.sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.location||a.destination||'').localeCompare(b.location||b.destination||''));
 
-  // Build column set
+  // Build column list from actual records
   const SKIP=new Set(['date']);
   const fieldSet=new Set();
   all.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP.has(k))fieldSet.add(k);}));
@@ -6536,59 +6575,100 @@ async function _buildReportFromMasterAsync(sec,f){
   const srcCols=[...priority.filter(c=>fieldSet.has(c)),...[...fieldSet].filter(c=>!priority.includes(c))];
   const allCols=['File Date',...srcCols];
 
-  // Build rows in chunks with async yields to prevent UI freeze
-  const wsRows=[allCols];
-  const CHUNK=2000;
+  // Build CSV lines in async chunks — yields UI thread every 3000 rows
+  const lines=[allCols.map(_csvCell).join(',')];
+  const CHUNK=3000;
   for(let i=0;i<all.length;i+=CHUNK){
     const end=Math.min(i+CHUNK,all.length);
     for(let j=i;j<end;j++){
       const r=all[j];
-      wsRows.push(allCols.map(col=>{
-        if(col==='File Date')return r.date||'';
+      lines.push(allCols.map(col=>{
+        if(col==='File Date')return _csvCell(r.date||'');
         const v=r[col];
-        return(v===undefined||v===null)?'':typeof v==='number'?v:String(v);
-      }));
+        return _csvCell((v===undefined||v===null)?'':typeof v==='number'?v:String(v));
+      }).join(','));
     }
-    // Yield every 2000 rows to keep UI responsive
-    if(end<all.length)await new Promise(r=>setTimeout(r,0));
+    if(end<all.length)await new Promise(r=>setTimeout(r,0)); // yield
   }
-
-  // XLSX generation (synchronous but short — only the header + built data)
-  await new Promise(r=>setTimeout(r,0));
-  const ws=XLSX.utils.aoa_to_sheet(wsRows);
-  ws['!cols']=allCols.map(c=>({wch:Math.min(35,Math.max(8,String(c).length+3))}));
-  const wb=XLSX.utils.book_new();
-  const safeTitle=sec.title.replace(/[^\w\s]/g,'_').replace(/\s+/g,'_').trim().slice(0,31);
-  XLSX.utils.book_append_sheet(wb,ws,safeTitle);
-  XLSX.writeFile(wb,`${safeTitle}_D${f.age}_${new Date().toISOString().slice(0,10)}.xlsx`);
-  const fileDates=[...new Set(all.map(r=>r.date))].length;
-  toast(`⬇ ${fn(all.length)} rows · ${allCols.length} cols · ${fileDates} file dates`,'tok');
+  return lines.join('\r\n');
 }
 
+/* ── Download ALL sections as a ZIP of CSVs ──────────────────────────────
+   Exposed via a "📦 All Sections ZIP" button (added below in the toolbar).
+   Generates one CSV per (section × age) combination and zips them together.
+   This replaces the heavy multi-sheet XLSX approach entirely.               */
+async function downloadAllSectionsZIP(){
+  if(typeof JSZip==='undefined'){
+    toast('⚠ JSZip not loaded — check internet connection','tw');
+    return;
+  }
+  toast('⏳ Building ZIP of all section CSVs…','ti');
+  await new Promise(r=>setTimeout(r,100));
+
+  try{
+    const zip=new JSZip();
+    const today=new Date().toISOString().slice(0,10);
+    let fileCount=0;
+
+    for(let si=0;si<SECS.length;si++){
+      const sec=SECS[si];
+      const ageOpts=sec.ageOpts||[sec.ageOpts?.[0]||3];
+      for(const age of (Array.isArray(ageOpts)?ageOpts:[ageOpts])){
+        const f={age,bins:[],msgs:[]};
+        setP(-1,`Building ${sec.title} D${age}…`);
+        const csvStr=await _buildSectionCSV(sec,f);
+        if(!csvStr)continue;
+        const safeTitle=sec.title.replace(/[^\w\s]/g,'_').replace(/\s+/g,'_').trim();
+        const fname=`D${age}_${safeTitle}.csv`;
+        zip.file(fname,csvStr);
+        fileCount++;
+        await new Promise(r=>setTimeout(r,0)); // yield between CSVs
+      }
+    }
+
+    if(!fileCount){toast('No data to export — upload files first','tw');return;}
+
+    setP(-1,'Compressing ZIP…');
+    const blob=await zip.generateAsync({
+      type:'blob',
+      compression:'DEFLATE',
+      compressionOptions:{level:6} // balanced speed/size
+    });
+    const zipName=`Floor_Trends_Report_${today}.zip`;
+    _downloadBlob(blob,zipName);
+    toast(`⬇ ZIP: ${fileCount} CSV files · ${(blob.size/1024).toFixed(0)}KB · ${zipName}`,'tok');
+  }catch(e){
+    console.error('downloadAllSectionsZIP error:',e);
+    toast('⚠ ZIP error: '+e.message,'tw');
+  }finally{
+    showP(false);
+  }
+}
+
+/* Legacy functions kept as aliases to avoid any other code references breaking */
+async function _buildReportFromMasterAsync(sec,f){ return downloadSectionReport(SECS.indexOf(sec)); }
 function _buildAndDownloadReport(sec,f,rawRows,source){
-  rawRows.sort((a,b)=>(a._date||'').localeCompare(b._date||'')||(a.location||a.destination||'').localeCompare(b.location||b.destination||''));
+  // Convert rawRows to CSV directly
+  rawRows.sort((a,b)=>(a._date||'').localeCompare(b._date||''));
   const SKIP=new Set(['_date']);
   const fieldSet=new Set();
   rawRows.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP.has(k))fieldSet.add(k);}));
   const priority=['location','destination','age','bin','msg','os','client','count'];
   const srcCols=[...priority.filter(c=>fieldSet.has(c)),...[...fieldSet].filter(c=>!priority.includes(c))];
   const allCols=['File Date',...srcCols];
-  const wsRows=[allCols];
+  const lines=[allCols.map(_csvCell).join(',')];
   rawRows.forEach(r=>{
-    wsRows.push(allCols.map(col=>{
-      if(col==='File Date')return r._date||'';
+    lines.push(allCols.map(col=>{
+      if(col==='File Date')return _csvCell(r._date||'');
       const v=r[col];
-      return(v===undefined||v===null)?'':typeof v==='number'?v:String(v);
-    }));
+      return _csvCell((v===undefined||v===null)?'':String(v));
+    }).join(','));
   });
-  const ws=XLSX.utils.aoa_to_sheet(wsRows);
-  ws['!cols']=allCols.map(c=>({wch:Math.min(35,Math.max(8,String(c).length+3))}));
-  const wb=XLSX.utils.book_new();
-  const safeTitle=sec.title.replace(/[^\w\s]/g,'_').replace(/\s+/g,'_').trim().slice(0,31);
-  XLSX.utils.book_append_sheet(wb,ws,safeTitle);
-  XLSX.writeFile(wb,`${safeTitle}_D${f.age}_${new Date().toISOString().slice(0,10)}.xlsx`);
-  const fileDates=[...new Set(rawRows.map(r=>r._date))].length;
-  toast(`⬇ ${fn(rawRows.length)} detailed rows · ${allCols.length} source cols · ${fileDates} file dates (${source})`,'tok');
+  const csvStr=lines.join('\r\n');
+  const blob=new Blob([csvStr],{type:'text/csv;charset=utf-8;'});
+  const safeTitle=sec.title.replace(/[^\w\s]/g,'_').replace(/\s+/g,'_').trim();
+  _downloadBlob(blob,`${safeTitle}_D${f.age}_${new Date().toISOString().slice(0,10)}.csv`);
+  toast(`⬇ CSV: ${fn(rawRows.length)} rows (${source})`,'tok');
 }
 
 /* ═══════════════════════════════════════════════
