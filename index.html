@@ -939,6 +939,29 @@ const CPALS=['#2563eb','#dc2626','#16a34a','#d97706','#7c3aed','#0891b2','#be185
 const rawData={};
 
 /* ═══════════════════════════════════════════════
+   RAW SNAPSHOT — full source rows for CSV export
+   rawData gets purged per-file after Sheets push. _rawSnap saves a copy
+   BEFORE purge so _buildSectionCSV() can produce full-column CSVs.
+   Memory: capped at _RAW_SNAP_MAX dates per type × 400 rows = safe.
+   Cleared when browser tab closes (intentional — session only).
+═══════════════════════════════════════════════ */
+const _rawSnap={};          // { [type]: { [date]: rowObjects[] } }
+const _RAW_SNAP_MAX=60;     // keep last 60 dates per type (covers ~2 months)
+
+function _captureRawSnap(type, date){
+  const rows=(rawData[type]&&rawData[type][date])||[];
+  if(!rows.length)return;
+  if(!_rawSnap[type])_rawSnap[type]={};
+  // Store a shallow copy — rawData[type][date] will be nulled by purge
+  _rawSnap[type][date]=rows.slice();
+  // Trim oldest dates if over limit (memory safety)
+  const dates=Object.keys(_rawSnap[type]).sort();
+  if(dates.length>_RAW_SNAP_MAX){
+    dates.slice(0,dates.length-_RAW_SNAP_MAX).forEach(d=>delete _rawSnap[type][d]);
+  }
+}
+
+/* ═══════════════════════════════════════════════
    ROLLING AVERAGE STORE
    Persists HISTORICAL AVERAGE per (section × site) across sessions.
    On every upload: currentAvg → historicalAvg, newAvg → currentAvg.
@@ -2529,7 +2552,12 @@ async function runFiles(files){
         }
       }
 
-      // 3. Purge rawData immediately after snapshot — no more race condition
+      // 3. Snapshot raw rows for CSV export BEFORE purge.
+      // _rawSnap keeps the full-column source rows (all original file headers)
+      // so _buildSectionCSV() can produce complete CSVs instead of count summaries.
+      _captureRawSnap(r.type, r.date);
+
+      // 4. Purge rawData immediately after snapshot — no more race condition
       purgeRawDataForDate(r.type, r.date);
 
       // 4. Push captured payloads to Sheets in background — operates on frozen arrays,
@@ -6553,9 +6581,94 @@ async function downloadSectionReport(idx){
   }
 }
 
-/* ── Build CSV rows for one section + age filter (async, chunked) ── */
+/* ── Build CSV rows for one section + age filter (async, chunked) ──────────
+   DATA SOURCES (priority order):
+   1. _rawSnap[type][date] — full source rows with ALL original file columns.
+      Available for all files uploaded in the current browser session.
+      Gives: File Date | Awb_number | Pivot | location | bin_level | message | …ALL 178 cols
+   2. master[src] aggregates — fallback for historical data from prior sessions.
+      Gives: File Date | location | age | bin | msg | os | count
+      (summary only — raw rows no longer in memory for old uploads)
+── */
 async function _buildSectionCSV(sec,f){
   const isForward=sec.src==='forward';
+
+  // ── Priority 1: _rawSnap — full source columns from uploaded files ────────
+  const snapData=_rawSnap[sec.src]||{};
+  const snapDates=Object.keys(snapData).sort();
+
+  if(snapDates.length>0){
+    // Filter dates that match the current age filter
+    // Raw rows contain original source columns — we filter by age using the
+    // same logic as pFwd/pRev/pLM (using gv() column lookups)
+    const allRows=[];
+    for(const date of snapDates){
+      const rows=snapData[date]||[];
+      for(const row of rows){
+        // Age filter: check the age in the raw row
+        let rowAge=0;
+        if(sec.src==='lmodc'){
+          rowAge=Math.round(parseLMODCAge(gv(row,'Ageing_f','ageing_f','ageing','Ageing')));
+        }else if(sec.src==='reverse'){
+          rowAge=Math.round(parseFloat(gv(row,'ageing','Ageing'))||0);
+        }else{
+          // forward / forwardShort — use Ageing_from_bag_recc or Ageing_from_Bag_Rec
+          rowAge=Math.round(gn(row,
+            'ageing_from_bag_recc','Ageing_from_bag_recc','Ageing_from_Bag_Rec',
+            'ageing_from_bag_rec','Ageing_from_Bag_Recc',
+            'ageing','Ageing'));
+        }
+        if(rowAge!==f.age)continue;
+        // Bin/message filter for forward
+        if(isForward&&f.bins.length>0){
+          const bin=Math.round(gn(row,'bin_level','bin','Bin'));
+          if(!f.bins.includes(bin))continue;
+        }
+        if(isForward&&f.msgs.length>0&&!f.msgs.includes('ALL')){
+          const msg=nv(gv(row,'message','Message','msg'));
+          if(!f.msgs.includes(msg))continue;
+        }
+        allRows.push({_date:date,...row});
+      }
+      await new Promise(r=>setTimeout(r,0)); // yield per date
+    }
+
+    if(allRows.length>0){
+      // Sort date-wise then by location/destination
+      const locKey=sec.src==='lmodc'?'destination_name':'Current_location';
+      allRows.sort((a,b)=>
+        (a._date||'').localeCompare(b._date||'')||
+        (gv(a,locKey,'location','Location')||'').localeCompare(gv(b,locKey,'location','Location')||'')
+      );
+
+      // Build column list from actual raw rows (all original source headers)
+      const SKIP=new Set(['_date']);
+      const fieldSet=new Set();
+      allRows.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP.has(k))fieldSet.add(k);}));
+      const allCols=['File Date',...fieldSet];
+
+      // Build CSV lines
+      const lines=[allCols.map(_csvCell).join(',')];
+      const CHUNK=3000;
+      for(let i=0;i<allRows.length;i+=CHUNK){
+        const end=Math.min(i+CHUNK,allRows.length);
+        for(let j=i;j<end;j++){
+          const r=allRows[j];
+          lines.push(allCols.map(col=>{
+            if(col==='File Date')return _csvCell(r._date||'');
+            const v=r[col];
+            return _csvCell((v===undefined||v===null)?'':typeof v==='number'?v:String(v));
+          }).join(','));
+        }
+        if(end<allRows.length)await new Promise(r=>setTimeout(r,0));
+      }
+      return lines.join('\r\n');
+    }
+  }
+
+  // ── Priority 2: master aggregates — fallback for pre-session historical data ──
+  // Only reached when _rawSnap has no matching data (files uploaded before this session).
+  // Returns summary columns (location | age | count) instead of full source rows.
   const all=(master[sec.src]||[]).filter(r=>{
     if(r.age!==f.age)return false;
     if(isForward&&f.bins.length>0&&!f.bins.includes(r.bin))return false;
@@ -6567,7 +6680,6 @@ async function _buildSectionCSV(sec,f){
 
   all.sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.location||a.destination||'').localeCompare(b.location||b.destination||''));
 
-  // Build column list from actual records
   const SKIP=new Set(['date']);
   const fieldSet=new Set();
   all.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP.has(k))fieldSet.add(k);}));
@@ -6575,7 +6687,6 @@ async function _buildSectionCSV(sec,f){
   const srcCols=[...priority.filter(c=>fieldSet.has(c)),...[...fieldSet].filter(c=>!priority.includes(c))];
   const allCols=['File Date',...srcCols];
 
-  // Build CSV lines in async chunks — yields UI thread every 3000 rows
   const lines=[allCols.map(_csvCell).join(',')];
   const CHUNK=3000;
   for(let i=0;i<all.length;i+=CHUNK){
@@ -6588,7 +6699,7 @@ async function _buildSectionCSV(sec,f){
         return _csvCell((v===undefined||v===null)?'':typeof v==='number'?v:String(v));
       }).join(','));
     }
-    if(end<all.length)await new Promise(r=>setTimeout(r,0)); // yield
+    if(end<all.length)await new Promise(r=>setTimeout(r,0));
   }
   return lines.join('\r\n');
 }
