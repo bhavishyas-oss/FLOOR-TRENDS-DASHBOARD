@@ -4770,7 +4770,7 @@ function renderHovCriticality(pcs,dc,pd){
     if(pv<10000)return false;
     if(age<10||age>30)return false;
     if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
-    if(dc&&dc!=='ALL'&&(r.loc||'').toUpperCase()!==dc)return false;
+    if(!_hovDCFilter((r.loc||'').toUpperCase()))return false;
     if(pd&&pd!=='ALL'&&(r.pd||'')!==pd)return false;
     return true;
   }).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
@@ -4874,7 +4874,7 @@ function renderHovD15Tab(){
   const filtRaw=sourceRaw.filter(r=>{
     const age=parseInt(r.age)||0;
     if(age<16||age>90)return false;
-    if(dc&&dc!=='ALL'&&(r.loc||'').toUpperCase()!==dc)return false;
+    if(!_hovDCFilter((r.loc||'').toUpperCase()))return false;
     return true;
   });
   const wrap=document.getElementById('hovD15Wrap');
@@ -4969,8 +4969,8 @@ function renderHovD15Tab(){
 
     // AWB detail list for this file (when DC is selected, already filtered)
     let awbDetailHtml='';
-    if(dc&&dc!=='ALL'){
-      const dcRows=g.rows.filter(r=>(r.loc||'').toUpperCase()===dc)
+    if(selDC&&selDC!=='ALL'){
+      const dcRows=g.rows.filter(r=>(r.loc||'').toUpperCase()===selDC)
         .sort((a,b)=>(parseInt(a.age)||0)-(parseInt(b.age)||0));
       if(dcRows.length){
         const awbRows=dcRows.map(r=>([
@@ -4981,7 +4981,7 @@ function renderHovD15Tab(){
         ]));
         awbDetailHtml=`
           <div style="margin-top:10px">
-            <div style="font-size:10px;font-weight:800;color:#64748b;text-transform:uppercase;margin-bottom:5px">AWB DETAIL — ${xe(dc)}</div>
+            <div style="font-size:10px;font-weight:800;color:#64748b;text-transform:uppercase;margin-bottom:5px">AWB DETAIL — ${xe(selDC)}</div>
             <div style="overflow-x:auto">${pivTbl(
               ['LOCATION','AWB NUMBER','PRODUCT VALUE','AGE','BIN LEVEL','MESSAGE','DSP BIN LEVEL','DSP MESSAGE','PRODUCT DESC'],
               awbRows,null,null
@@ -5183,7 +5183,7 @@ function renderHovPerFile(pcs){
   const pvByFile={};
   (master.hovPV||[]).forEach(r=>{
     if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return;
-    if(dc&&dc!=='ALL'&&(r.loc||'').toUpperCase()!==dc)return;
+    if(!_hovDCFilter((r.loc||'').toUpperCase()))return;
     if((parseFloat(r.pv)||0)<5000)return;
     const key=`${r.fileType}|${r.date}`;
     if(!pvByFile[key])pvByFile[key]=[];
@@ -5192,7 +5192,7 @@ function renderHovPerFile(pcs){
   (master.hovAllRaw||[]).forEach(r=>{
     if(r.fileType!=='reverse')return;
     if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return;
-    if(dc&&dc!=='ALL'&&(r.loc||'').toUpperCase()!==dc)return;
+    if(!_hovDCFilter((r.loc||'').toUpperCase()))return;
     if((parseFloat(r.pv)||0)<5000)return;
     const key=`${r.fileType}|${r.date}`;
     if(!pvByFile[key])pvByFile[key]=[];
@@ -5205,7 +5205,7 @@ function renderHovPerFile(pcs){
     const pv2=parseFloat(r.pv)||0;const age=parseInt(r.age)||0;
     if(pv2<10000||age<10||age>30)return;
     if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return;
-    if(dc&&dc!=='ALL'&&(r.loc||'').toUpperCase()!==dc)return;
+    if(!_hovDCFilter((r.loc||'').toUpperCase()))return;
     const key=`${r.fileType}|${r.date}`;
     if(!critByFile[key])critByFile[key]=[];
     critByFile[key].push(r);
@@ -6269,7 +6269,7 @@ function renderHovPVTable(pcs,dc,pd){
   const TYPE_LABELS={forward:'FWD',reverse:'REV',lmodc:'LM',forwardShort:'SHORT'};
   const pvRows=(master.hovPV||[]).filter(r=>{
     if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return false;
-    if(dc&&dc!=='ALL'&&(r.loc||'').toUpperCase()!==(dc||'').toUpperCase())return false;
+    if(!_hovDCFilter((r.loc||'').toUpperCase()))return false;
     // PD filter removed — pd is always 'ALL' now
     return(parseFloat(r.pv)||0)>=5000;
   }).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
