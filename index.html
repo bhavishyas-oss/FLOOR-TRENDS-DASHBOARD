@@ -2452,42 +2452,79 @@ async function runFiles(files){
       //   28 files × 215,000 = 6,020,000 cells for ONE section alone → hits 10M fast.
       // Fix: store only ~15 essential columns (70% cell reduction):
       // 2. Snapshot ALL source columns for Sheets.
-      // FULL-DATA FIX: The previous MIN_COLS whitelist was storing only 5-6 columns
-      // (e.g. Date, Ageing_f, destination_name, awb_number, Manifest_Status).
-      // This made the Collated Excel Report incomplete — missing all other source fields.
+      // EXACT AGE STORAGE FIX:
+      // Old code: found the FIRST section matching src, stored ALL ages into one tab, broke.
+      // Bug: a Forward file with rows of age 2,3,6 → ALL rows written to "FORWARD R DC" tab
+      //      → D3 CSV and D6 CSV both returned age-2 data from that single tab.
       //
-      // Fix: store ALL columns from rawData. The partition system (800 rows/partition,
-      // auto-rollover to _2, _3 etc.) keeps each partition at ~34k cells, so storing
-      // 43 cols × 800 rows = 34,400 cells/partition — well within Google Sheets limits.
-      // 10M limit / 34,400 = 290 partitions possible = years of data without issues.
+      // Fix: iterate EVERY section matching this file type.
+      //      For each section's age option, filter rawDateRows to EXACT age match.
+      //      Write to a sheet tab named per section + age: "FORWARD_R_DC_D3_1", etc.
+      //      Each tab contains ONLY the rows where the age column == section's age.
       //
-      // Row cap: 400 rows per upload (prevents OOM in browser during JSON serialization).
+      // Row cap: 400 rows per (section × age) push — safe for OOM.
       const SHEETS_ROW_CAP=400;
       const sheetsPayloadsBySec=[];
       if(getGsUrl()){
         const rawDateRows=(rawData[r.type]&&rawData[r.type][r.date])||[];
         if(rawDateRows.length>0){
+          // Build column set once from all rows
+          const colSet=new Set(['Date']);
+          rawDateRows.forEach(row=>Object.keys(row).forEach(k=>{colSet.add(k);}));
+          const allCols=[...colSet];
+
+          // Determine which column holds the age value for this file type
+          // (same column lookup used by each parser)
+          const sampleRow=rawDateRows[0]||{};
+          let ageColName='';
+          if(r.type==='lmodc'){
+            ageColName=['ageing','Ageing','age','Age'].find(k=>k in sampleRow)||'';
+          }else if(r.type==='reverse'){
+            ageColName=['ageing','Ageing'].find(k=>k in sampleRow)||'';
+          }else{
+            // forward / forwardShort: ageing_from_bag_recc or Ageing_from_Bag_Rec etc.
+            ageColName=['ageing_from_bag_recc','Ageing_from_bag_recc','Ageing_from_Bag_Rec',
+              'ageing_from_bag_rec','Ageing_from_Bag_Recc','ageing','Ageing']
+              .find(k=>k in sampleRow)||'';
+          }
+
+          // Loop every section and every age option — one push per (section × age)
           for(let si=0;si<SECS.length;si++){
             const sec=SECS[si];
             if(sec.src!==r.type)continue;
-            const sheetName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().slice(0,28);
-            // Collect ALL columns present in the raw rows (no filtering)
-            const colSet=new Set(['Date']);
-            rawDateRows.forEach(row=>Object.keys(row).forEach(k=>{colSet.add(k);}));
-            const allCols=[...colSet];
-            const cappedRows=rawDateRows.length>SHEETS_ROW_CAP
-              ?rawDateRows.slice(0,SHEETS_ROW_CAP):rawDateRows;
-            const rowArrs=cappedRows
-              .map(row=>allCols.map(c=>{
-                if(c==='Date')return r.date;
-                const v=row[c];
-                return(v!==undefined&&v!==null&&v!=='')?String(v):'';
-              }))
-              .filter(arr=>arr.slice(1).some(v=>v!==''));
-            console.log(`Sheets: "${sheetName}" ${allCols.length}c × ${rowArrs.length}r (all columns)`);
-            if(rowArrs.length){
-              sheetsPayloadsBySec.push({sheetName,headers:allCols,rowArrs,date:r.date});
-              break;
+            const ageOpts=sec.ageOpts||[sec.ageOpts?.[0]||3];
+
+            for(const requiredAge of (Array.isArray(ageOpts)?ageOpts:[ageOpts])){
+              // Filter to EXACT age match
+              const ageFiltered=rawDateRows.filter(row=>{
+                if(!ageColName)return true; // no age col found — include all (edge case)
+                const rawAge=row[ageColName];
+                let parsedAge=0;
+                if(r.type==='lmodc') parsedAge=parseLMODCAge(rawAge);
+                else parsedAge=Math.round(parseFloat(rawAge)||0);
+                return parsedAge===requiredAge;
+              });
+              if(!ageFiltered.length)continue; // no rows for this age — skip tab
+
+              // Sheet tab name: "FORWARD R DC D3" (section title + age, max 28 chars)
+              // This gives each (section, age) its own partition series
+              const baseTitle=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim();
+              const sheetName=`${baseTitle} D${requiredAge}`.slice(0,28);
+
+              const cappedRows=ageFiltered.length>SHEETS_ROW_CAP
+                ?ageFiltered.slice(0,SHEETS_ROW_CAP):ageFiltered;
+              const rowArrs=cappedRows
+                .map(row=>allCols.map(c=>{
+                  if(c==='Date')return r.date;
+                  const v=row[c];
+                  return(v!==undefined&&v!==null&&v!=='')?String(v):'';
+                }))
+                .filter(arr=>arr.slice(1).some(v=>v!==''));
+
+              if(rowArrs.length){
+                console.log(`Sheets: "${sheetName}" D${requiredAge} → ${rowArrs.length} rows (age-exact)`);
+                sheetsPayloadsBySec.push({sheetName,headers:allCols,rowArrs,date:r.date});
+              }
             }
           }
         }else{
@@ -7049,14 +7086,13 @@ async function _buildSectionCSV(sec,f){
   }
 
   // ── Priority 2: Google Sheets backend partition tabs ───────────────────────
-  // The section's sheet tab (e.g. "LMODC_1", "FORWARD R DC_1") stores the raw rows
-  // that were pushed during upload. The tab is section-specific (one tab per section),
-  // so ALL rows in it belong to this section — no age re-filter needed here.
-  // The age is already in the data as a column; the user can filter the CSV in Excel.
+  // Each (section × age) has its own tab: "FORWARD R DC D3_1", "LMODC D10_1" etc.
+  // This matches the exact tab name written by the sheetsPayloadsBySec builder above.
   toast('⏳ Loading from Sheets backend…','ti');
   await new Promise(r=>setTimeout(r,80));
 
-  const sheetBaseName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().substring(0,28);
+  const baseTitle=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim();
+  const sheetBaseName=`${baseTitle} D${f.age}`.slice(0,28); // e.g. "FORWARD R DC D3"
   const sheetsRows=await _fetchFromSheets(sheetBaseName);
 
   if(sheetsRows.length>0){
