@@ -658,54 +658,10 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
   ════════════════════════════════════ -->
   <div id="hovSubPanel0" style="padding:14px;display:flex;flex-direction:column;gap:14px">
 
-    <!-- Filter bar: PC + DC + grand total + PDF -->
-    <div class="card">
-      <div style="padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <span style="font-size:11px;font-weight:800;color:var(--brand);text-transform:uppercase">🔍 Filters</span>
-        <!-- PC multi-select -->
-        <div style="position:relative;display:inline-block" id="hovPCwrap">
-          <div id="hovPCtrigger" onclick="toggleHovPCDrop()"
-            style="font-size:11px;padding:5px 24px 5px 9px;border-radius:5px;border:1px solid var(--bdr2);
-              background:#fff;color:var(--tx);min-width:160px;cursor:pointer;position:relative;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-            <span id="hovPCtriggerLabel">All Categories</span>
-            <span style="position:absolute;right:6px;top:50%;transform:translateY(-50%);color:#94a3b8">▾</span>
-          </div>
-          <div id="hovPCdrop" style="display:none;position:absolute;top:100%;left:0;width:250px;max-height:240px;background:#fff;
-            border:1px solid var(--bdr2);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.18);z-index:300;margin-top:2px;flex-direction:column">
-            <div style="padding:5px 8px;border-bottom:1px solid var(--bdr)">
-              <input id="hovPCsearch" type="text" placeholder="Search…" style="width:100%;font-size:11px;padding:4px 8px;border-radius:4px;border:1px solid var(--bdr2);outline:none" oninput="filterHovPCList(this.value)">
-            </div>
-            <div style="padding:3px 8px;border-bottom:1px solid var(--bdr);display:flex;gap:8px">
-              <button onclick="hovSelectAll()" style="font-size:10px;cursor:pointer;border:none;background:none;color:var(--brand);font-weight:700">All</button>
-              <button onclick="hovClearAll()" style="font-size:10px;cursor:pointer;border:none;background:none;color:#ef4444;font-weight:700">Clear</button>
-            </div>
-            <div id="hovPClist" style="overflow-y:auto;max-height:170px;padding:3px 0"></div>
-          </div>
-        </div>
-        <!-- DC multi-select (matches PC filter style) -->
-        <div style="position:relative;display:inline-block" id="hovDCwrap">
-          <div id="hovDCtrigger" onclick="toggleHovDCDrop()"
-            style="font-size:11px;padding:5px 24px 5px 9px;border-radius:5px;border:1px solid var(--bdr2);
-              background:#fff;color:var(--tx);min-width:160px;cursor:pointer;position:relative;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-            <span id="hovDCtriggerLabel">All Sites</span>
-            <span style="position:absolute;right:6px;top:50%;transform:translateY(-50%);color:#94a3b8">▾</span>
-          </div>
-          <div id="hovDCdrop" style="display:none;position:absolute;top:100%;left:0;width:220px;max-height:260px;background:#fff;
-            border:1px solid var(--bdr2);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.18);z-index:300;margin-top:2px;flex-direction:column">
-            <div style="padding:5px 8px;border-bottom:1px solid var(--bdr)">
-              <input id="hovDCsearch" type="text" placeholder="Search site…" style="width:100%;font-size:11px;padding:4px 8px;border-radius:4px;border:1px solid var(--bdr2);outline:none" oninput="renderHovDCList(this.value)">
-            </div>
-            <div style="padding:3px 8px;border-bottom:1px solid var(--bdr);display:flex;gap:8px">
-              <button onclick="hovDCSelectAll()" style="font-size:10px;cursor:pointer;border:none;background:none;color:var(--brand);font-weight:700">All</button>
-              <button onclick="hovDCClearAll()" style="font-size:10px;cursor:pointer;border:none;background:none;color:#ef4444;font-weight:700">Clear</button>
-            </div>
-            <div id="hovDClist" style="overflow-y:auto;max-height:190px;padding:3px 0"></div>
-          </div>
-        </div>
-        <span class="cc" id="hovGrandTotal" style="margin-left:auto">–</span>
-        <button class="btn bg" onclick="generateHovPDF(0)" style="font-size:10px;padding:4px 9px;color:var(--brand);border-color:var(--bdr2)">📄 PDF</button>
-        <button class="btn bg" onclick="downloadHovSectionImage('hovPerFileWrap','HOV_Overview.png')" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG</button>
-      </div>
+    <!-- Slim toolbar: only PNG export — section-level filters are inside each file section -->
+    <div style="display:flex;align-items:center;justify-content:flex-end;padding:4px 2px;gap:8px">
+      <span style="font-size:10px;color:var(--tx3);font-style:italic">Filters available inside each section below</span>
+      <button class="btn bg" onclick="downloadHovSectionImage('hovPerFileWrap','HOV_Overview.png')" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG All</button>
     </div>
 
     <!-- Per-File sections (primary view — no combined datasets) -->
@@ -4581,7 +4537,229 @@ function buildHovDataFiltered(pcs,dc){
 }
 
 /* ── Populate DC dropdown ── */
-/* ── HOV DC multi-select state (mirrors PC filter design) ── */
+/* ── Per-File section (pf) filter state — one Set per section index ──────────
+   _pfPCState[ki] = Set of selected PC values ('ALL' = everything)
+   _pfDCState[ki] = Set of selected site values ('ALL' = everything)
+   These are initialised to 'ALL' when renderHovPerFile builds the HTML,
+   and mutated by the checkbox/button handlers below.                          */
+const _pfPCState={};
+const _pfDCState={};
+let _pfDropOpen={}; // tracks which drop is open
+
+/* ── Get filter values for section ki ── */
+function _pfGetPCs(ki){
+  const s=_pfPCState[ki];
+  if(!s||s.has('ALL')||s.size===0)return [];
+  return [...s];
+}
+function _pfGetDCs(ki){
+  const s=_pfDCState[ki];
+  if(!s||s.has('ALL')||s.size===0)return null; // null = all
+  return [...s];
+}
+
+/* ── Toggle dropdown open/close ── */
+function _pfTogglePC(ki){
+  const d=document.getElementById('hovPFpcDrop_'+ki);if(!d)return;
+  const open=d.style.display==='flex';
+  // Close all other drops first
+  document.querySelectorAll('[id^="hovPFpcDrop_"],[id^="hovPFdcDrop_"]').forEach(el=>el.style.display='none');
+  d.style.display=open?'none':'flex';
+}
+function _pfToggleDC(ki){
+  const d=document.getElementById('hovPFdcDrop_'+ki);if(!d)return;
+  const open=d.style.display==='flex';
+  document.querySelectorAll('[id^="hovPFpcDrop_"],[id^="hovPFdcDrop_"]').forEach(el=>el.style.display='none');
+  d.style.display=open?'none':'flex';
+}
+document.addEventListener('click',function(ev){
+  // Close all pf drops when clicking outside
+  if(!ev.target.closest('[id^="hovPFpcWrap_"],[id^="hovPFdcWrap_"],[id^="hovPFpcTrig_"],[id^="hovPFdcTrig_"]')){
+    document.querySelectorAll('[id^="hovPFpcDrop_"],[id^="hovPFdcDrop_"]').forEach(el=>el.style.display='none');
+  }
+});
+
+/* ── PC filter helpers ── */
+function _pfUpdatePCLabel(ki){
+  const s=_pfPCState[ki];const el=document.getElementById('hovPFpcLbl_'+ki);if(!el)return;
+  if(!s||s.has('ALL')||s.size===0)el.textContent='All Categories';
+  else if(s.size===1)el.textContent=[...s][0];
+  else el.textContent=s.size+' categories';
+}
+function _pfRenderPCList(ki,query){
+  const list=document.getElementById('hovPFpcList_'+ki);if(!list)return;
+  const s=_pfPCState[ki]||new Set(['ALL']);
+  const q=(query||'').toLowerCase();
+  // Get all PC values from the data for this section
+  const key=[...(Object.keys({}).concat||[])]; // placeholder
+  const allPCsForSection=[...new Set((master.hovPV||[]).map(r=>r.pc).filter(Boolean))].sort();
+  const filtered=allPCsForSection.filter(p=>p.toLowerCase().includes(q));
+  list.innerHTML=filtered.map(p=>{
+    const chk=s.has('ALL')||s.has(p);
+    return`<label style="display:flex;align-items:center;gap:7px;padding:6px 12px;cursor:pointer;font-size:12px;white-space:normal;word-break:break-word;background:${chk?'var(--brand-xlt)':'transparent'}">
+      <input type="checkbox" ${chk?'checked':''} data-pfpc="${ki}" data-val="${xe(p)}" onchange="_pfPCChange(${ki})"
+        style="width:13px;height:13px;flex-shrink:0;cursor:pointer;accent-color:var(--brand)">${xe(p)}
+    </label>`;
+  }).join('');
+}
+function _pfPCChange(ki){
+  const boxes=document.querySelectorAll(`[data-pfpc="${ki}"]`);
+  const sel=new Set();
+  boxes.forEach(b=>{if(b.checked)sel.add(b.getAttribute('data-val'));});
+  _pfPCState[ki]=sel.size===0?new Set(['ALL']):sel;
+  _pfUpdatePCLabel(ki);
+  _pfRerender(ki);
+}
+function _pfPCAll(ki){
+  _pfPCState[ki]=new Set(['ALL']);
+  _pfUpdatePCLabel(ki);
+  // Re-tick all checkboxes
+  document.querySelectorAll(`[data-pfpc="${ki}"]`).forEach(b=>b.checked=true);
+  _pfRerender(ki);
+}
+function _pfPCClear(ki){
+  _pfPCState[ki]=new Set();
+  _pfUpdatePCLabel(ki);
+  document.querySelectorAll(`[data-pfpc="${ki}"]`).forEach(b=>b.checked=false);
+  _pfRerender(ki);
+}
+
+/* ── DC filter helpers ── */
+function _pfUpdateDCLabel(ki){
+  const s=_pfDCState[ki];const el=document.getElementById('hovPFdcLbl_'+ki);if(!el)return;
+  if(!s||s.has('ALL')||s.size===0)el.textContent='All Sites';
+  else if(s.size===1)el.textContent=[...s][0];
+  else el.textContent=s.size+' sites';
+}
+function _pfRenderDCList(ki,query){
+  const list=document.getElementById('hovPFdcList_'+ki);if(!list)return;
+  const s=_pfDCState[ki]||new Set(['ALL']);
+  const q=(query||'').toLowerCase();
+  const allDCsForSection=[...new Set((master.hov||[]).map(r=>r.location).filter(Boolean))].sort();
+  const filtered=allDCsForSection.filter(d=>d.toLowerCase().includes(q));
+  list.innerHTML=filtered.map(d=>{
+    const chk=s.has('ALL')||s.has(d);
+    return`<label style="display:flex;align-items:center;gap:7px;padding:6px 12px;cursor:pointer;font-size:12px;background:${chk?'var(--brand-xlt)':'transparent'}">
+      <input type="checkbox" ${chk?'checked':''} data-pfdc="${ki}" data-val="${xe(d)}" onchange="_pfDCChange(${ki})"
+        style="width:13px;height:13px;flex-shrink:0;cursor:pointer;accent-color:var(--brand)">${xe(d)}
+    </label>`;
+  }).join('');
+}
+function _pfDCChange(ki){
+  const boxes=document.querySelectorAll(`[data-pfdc="${ki}"]`);
+  const sel=new Set();
+  boxes.forEach(b=>{if(b.checked)sel.add(b.getAttribute('data-val'));});
+  _pfDCState[ki]=sel.size===0?new Set(['ALL']):sel;
+  _pfUpdateDCLabel(ki);
+  _pfRerender(ki);
+}
+function _pfDCAll(ki){
+  _pfDCState[ki]=new Set(['ALL']);
+  _pfUpdateDCLabel(ki);
+  document.querySelectorAll(`[data-pfdc="${ki}"]`).forEach(b=>b.checked=true);
+  _pfRerender(ki);
+}
+function _pfDCClear(ki){
+  _pfDCState[ki]=new Set();
+  _pfUpdateDCLabel(ki);
+  document.querySelectorAll(`[data-pfdc="${ki}"]`).forEach(b=>b.checked=false);
+  _pfRerender(ki);
+}
+
+/* ── Re-render a single section's tables/charts when filter changes ── */
+function _pfRerender(ki){
+  const pcs=_pfGetPCs(ki);   // [] = all
+  const dcSel=_pfGetDCs(ki); // null = all, else array
+
+  // Get key for this section
+  const allHov=master.hov||[];
+  const fileGroups={};
+  allHov.forEach(r=>{
+    if(r.age<2||r.age>15)return;
+    const key2=`${r.fileType}|${r.date}`;
+    if(!fileGroups[key2])fileGroups[key2]={fileType:r.fileType,date:r.date,locs:{},total:0};
+    fileGroups[key2].locs[r.location]=fileGroups[key2].locs[r.location]||{};
+    fileGroups[key2].locs[r.location][r.age]=(fileGroups[key2].locs[r.location][r.age]||0)+r.count;
+    fileGroups[key2].total+=r.count;
+  });
+  const sortedK=Object.keys(fileGroups).sort();
+  if(ki>=sortedK.length)return;
+  const key=sortedK[ki];
+  const g=fileGroups[key];
+
+  // Apply DC filter to locations
+  let locs=Object.keys(g.locs).sort();
+  if(dcSel&&dcSel.length>0)locs=locs.filter(l=>dcSel.includes(l));
+
+  // Re-render D2-D15 table
+  const tblEl=document.getElementById('hovPFtbl_'+ki);
+  if(tblEl){
+    const hdrs=['LOCATION',...HOV_AGES.map(a=>`D${a}`),'TOTAL'];
+    const tblRows=locs.map(loc=>{
+      const rt=HOV_AGES.reduce((s,a)=>s+(g.locs[loc][a]||0),0);
+      const cells=[loc];
+      HOV_AGES.forEach((a,ai)=>{
+        const v=g.locs[loc][a]||0;const prev=ai>0?g.locs[loc][HOV_AGES[ai-1]]||0:null;
+        const cls=v===0?'czr':prev!==null&&v>prev?'cup':prev!==null&&v<prev?'cdn':'';
+        cells.push({__val:v===0?'–':fn(v),__cls:cls});
+      });
+      cells.push(fn(rt));return cells;
+    });
+    const cTotals=HOV_AGES.map(a=>locs.reduce((s,l)=>s+(g.locs[l][a]||0),0));
+    const foot=['TOTAL',...cTotals.map(c=>fn(c)),fn(locs.reduce((s,l)=>s+HOV_AGES.reduce((s2,a)=>s2+(g.locs[l][a]||0),0),0))];
+    tblEl.innerHTML=pivTbl(hdrs,tblRows,foot,null);
+  }
+
+  // Re-render criticality
+  const critEl=document.getElementById('hovPFcrit_'+ki);
+  if(critEl){
+    const critRows=(master.hovAllRaw||[]).filter(r=>{
+      if(`${r.fileType}|${r.date}`!==key)return false;
+      if((parseFloat(r.pv)||0)<10000)return false;
+      if((parseInt(r.age)||0)<10||(parseInt(r.age)||0)>30)return false;
+      if(pcs.length>0&&!pcs.includes(r.pc))return false;
+      if(dcSel&&dcSel.length>0&&!dcSel.includes(r.loc))return false;
+      return true;
+    }).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
+    critEl.innerHTML=critRows.length===0
+      ?`<div style="padding:8px;color:#94a3b8;font-size:11px;font-style:italic">No criticality entries for this filter</div>`
+      :pivTbl(['LOCATION','AWB NUMBER','PRODUCT VALUE','AGE','PRODUCT DESC'],
+          critRows.map(r=>([r.loc||'–',r.awb||'–',
+            r.pv&&parseFloat(r.pv)>0?`₹${fn(Math.round(parseFloat(r.pv)||0))}`:'–',
+            `D${r.age||'?'}`,r.pd||'–'])),
+          [`${fn(critRows.length)} AWBs`,'','','',''],null);
+  }
+
+  // Re-render PV table
+  const pvEl=document.getElementById('hovPFpv_'+ki);
+  if(pvEl){
+    const pvRows=(master.hovPV||[]).filter(r=>{
+      if(`${r.fileType}|${r.date}`!==key)return false;
+      if((parseFloat(r.pv)||0)<5000)return false;
+      if(pcs.length>0&&!pcs.includes(r.pc))return false;
+      if(dcSel&&dcSel.length>0&&!dcSel.includes(r.loc))return false;
+      return true;
+    }).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
+    pvEl.innerHTML=pvRows.length===0
+      ?`<div style="padding:8px;color:#94a3b8;font-size:11px;font-style:italic">No PV ≥ ₹5,000 for this filter</div>`
+      :pivTbl(['LOCATION','AWB NUMBER','PRODUCT VALUE','PRODUCT CATEGORY','PRODUCT DESC'],
+          pvRows.map(r=>([r.loc||'–',r.awb||'–',
+            r.pv&&parseFloat(r.pv)>0?`₹${fn(Math.round(parseFloat(r.pv)||0))}`:'–',
+            r.pc||'–',r.pd||'–'])),
+          [`${fn(pvRows.length)} AWBs`,'','','',''],null);
+  }
+
+  // Re-render donut chart
+  const donutId='hovPerDonut_'+ki;
+  const locTotals={};
+  locs.forEach(l=>{locTotals[l]=HOV_AGES.reduce((s,a)=>s+(g.locs[l][a]||0),0);});
+  const locLabels=Object.keys(locTotals).sort((a,b)=>locTotals[b]-locTotals[a]);
+  renderHovDonut('hov_pf_'+ki,donutId,locLabels,locLabels.map(l=>locTotals[l]),'HOV AWBs by Site');
+
+  // Re-render bar chart
+  const barId='hovPerBar_'+ki;
+  renderHovBar(barId,locLabels,locLabels.map(l=>locTotals[l]));
+}
 let _hovDCselected=new Set(['ALL']);
 let _hovDCDropOpen=false;
 let _hovDCall=[];
@@ -5221,6 +5399,7 @@ function renderHovPerFile(pcs){
   const sectionsHTML=sortedKeys.map((key,ki)=>{
     const g=fileGroups[key];
     const locs=Object.keys(g.locs).sort();
+    const sectionLocs=locs; // alias for the dropdown template
     const color=TYPE_BADGE[g.fileType]||'#64748b';
     const donutId=`hovPerDonut_${ki}`;
     canvasIds.push({id:donutId,key});
@@ -5278,21 +5457,68 @@ function renderHovPerFile(pcs){
 
       <div id="hovPFSection_${ki}" style="padding:16px;display:flex;flex-direction:column;gap:16px">
 
-        <!-- b. DROPDOWN FILTERS — Site Name + Product Category -->
-        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:10px 14px;background:#f0f9f7;border-radius:7px;border:1px solid #c8dfd9">
-          <span style="font-size:10px;font-weight:800;color:${color};text-transform:uppercase;letter-spacing:.5px">🔍 FILTERS</span>
+        <!-- b. DROPDOWN FILTERS — Site Name + Product Category (Excel-style multi-select) -->
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;padding:10px 14px;background:#f0f9f7;border-radius:7px;border:1px solid #c8dfd9">
+          <span style="font-size:10px;font-weight:800;color:${color};text-transform:uppercase;letter-spacing:.5px;align-self:center">🔍 FILTERS</span>
+
+          <!-- SITE multi-select -->
           <div style="display:flex;flex-direction:column;gap:2px">
             <span style="font-size:9px;font-weight:700;color:#64748b;text-transform:uppercase">SITE NAME</span>
-            <select class="dc-select" id="hovPFdc_${ki}" style="font-size:11px;min-width:150px" onchange="renderHovPerFileSingle(${ki})">
-              ${sectionDCOpts}
-            </select>
+            <div style="position:relative" id="hovPFdcWrap_${ki}">
+              <div onclick="_pfToggleDC(${ki})" id="hovPFdcTrig_${ki}"
+                style="font-size:11px;padding:5px 24px 5px 9px;border-radius:5px;border:1px solid var(--bdr2);
+                  background:#fff;color:var(--tx);min-width:160px;cursor:pointer;position:relative;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+                <span id="hovPFdcLbl_${ki}">All Sites</span>
+                <span style="position:absolute;right:6px;top:50%;transform:translateY(-50%);color:#94a3b8">▾</span>
+              </div>
+              <div id="hovPFdcDrop_${ki}" style="display:none;position:absolute;top:100%;left:0;width:220px;max-height:260px;
+                background:#fff;border:1px solid var(--bdr2);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.18);z-index:400;margin-top:2px;flex-direction:column">
+                <div style="padding:5px 8px;border-bottom:1px solid var(--bdr)">
+                  <input type="text" placeholder="Search site…" style="width:100%;font-size:11px;padding:4px 8px;border-radius:4px;border:1px solid var(--bdr2);outline:none"
+                    oninput="_pfRenderDCList(${ki},this.value)">
+                </div>
+                <div style="padding:3px 8px;border-bottom:1px solid var(--bdr);display:flex;gap:8px">
+                  <button onclick="_pfDCAll(${ki})" style="font-size:10px;cursor:pointer;border:none;background:none;color:var(--brand);font-weight:700">All</button>
+                  <button onclick="_pfDCClear(${ki})" style="font-size:10px;cursor:pointer;border:none;background:none;color:#ef4444;font-weight:700">Clear</button>
+                </div>
+                <div id="hovPFdcList_${ki}" style="overflow-y:auto;max-height:190px;padding:3px 0">
+                  ${sectionLocs.map(loc=>`<label style="display:flex;align-items:center;gap:7px;padding:6px 12px;cursor:pointer;font-size:12px">
+                    <input type="checkbox" checked data-pfdc="${ki}" data-val="${xe(loc)}" onchange="_pfDCChange(${ki})"
+                      style="width:13px;height:13px;cursor:pointer;accent-color:var(--brand)">${xe(loc)}
+                  </label>`).join('')}
+                </div>
+              </div>
+            </div>
           </div>
+
+          <!-- PRODUCT CATEGORY multi-select -->
           <div style="display:flex;flex-direction:column;gap:2px">
             <span style="font-size:9px;font-weight:700;color:#64748b;text-transform:uppercase">PRODUCT CATEGORY</span>
-            <select class="dc-select" id="hovPFpc_${ki}" style="font-size:11px;min-width:150px" onchange="renderHovPerFileSingle(${ki})">
-              <option value="ALL">All Categories</option>
-              ${allPCs.map(p=>`<option value="${xe(p)}">${xe(p)}</option>`).join('')}
-            </select>
+            <div style="position:relative" id="hovPFpcWrap_${ki}">
+              <div onclick="_pfTogglePC(${ki})" id="hovPFpcTrig_${ki}"
+                style="font-size:11px;padding:5px 24px 5px 9px;border-radius:5px;border:1px solid var(--bdr2);
+                  background:#fff;color:var(--tx);min-width:180px;cursor:pointer;position:relative;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+                <span id="hovPFpcLbl_${ki}">All Categories</span>
+                <span style="position:absolute;right:6px;top:50%;transform:translateY(-50%);color:#94a3b8">▾</span>
+              </div>
+              <div id="hovPFpcDrop_${ki}" style="display:none;position:absolute;top:100%;left:0;width:260px;max-height:280px;
+                background:#fff;border:1px solid var(--bdr2);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.18);z-index:400;margin-top:2px;flex-direction:column">
+                <div style="padding:5px 8px;border-bottom:1px solid var(--bdr)">
+                  <input type="text" placeholder="Search category…" style="width:100%;font-size:11px;padding:4px 8px;border-radius:4px;border:1px solid var(--bdr2);outline:none"
+                    oninput="_pfRenderPCList(${ki},this.value)">
+                </div>
+                <div style="padding:3px 8px;border-bottom:1px solid var(--bdr);display:flex;gap:8px">
+                  <button onclick="_pfPCAll(${ki})" style="font-size:10px;cursor:pointer;border:none;background:none;color:var(--brand);font-weight:700">All</button>
+                  <button onclick="_pfPCClear(${ki})" style="font-size:10px;cursor:pointer;border:none;background:none;color:#ef4444;font-weight:700">Clear</button>
+                </div>
+                <div id="hovPFpcList_${ki}" style="overflow-y:auto;max-height:200px;padding:3px 0">
+                  ${allPCs.map(p=>`<label style="display:flex;align-items:center;gap:7px;padding:6px 12px;cursor:pointer;font-size:12px;white-space:normal;word-break:break-word">
+                    <input type="checkbox" checked data-pfpc="${ki}" data-val="${xe(p)}" onchange="_pfPCChange(${ki})"
+                      style="width:13px;height:13px;flex-shrink:0;cursor:pointer;accent-color:var(--brand)">${xe(p)}
+                  </label>`).join('')}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
