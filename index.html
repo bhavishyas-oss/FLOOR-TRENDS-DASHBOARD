@@ -4671,94 +4671,167 @@ function _pfRerender(ki){
   const pcs=_pfGetPCs(ki);   // [] = all
   const dcSel=_pfGetDCs(ki); // null = all, else array
 
-  // Get key for this section
-  const allHov=master.hov||[];
-  const fileGroups={};
-  allHov.forEach(r=>{
-    if(r.age<2||r.age>15)return;
-    const key2=`${r.fileType}|${r.date}`;
-    if(!fileGroups[key2])fileGroups[key2]={fileType:r.fileType,date:r.date,locs:{},total:0};
-    fileGroups[key2].locs[r.location]=fileGroups[key2].locs[r.location]||{};
-    fileGroups[key2].locs[r.location][r.age]=(fileGroups[key2].locs[r.location][r.age]||0)+r.count;
-    fileGroups[key2].total+=r.count;
-  });
-  const sortedK=Object.keys(fileGroups).sort();
+  // Build key from sortedKeys (same ordering as renderHovPerFile)
+  const allHov2=master.hov||[];
+  const fgKeys=new Set();
+  allHov2.forEach(r=>{if(r.age>=2&&r.age<=15)fgKeys.add(`${r.fileType}|${r.date}`);});
+  const sortedK=[...fgKeys].sort();
   if(ki>=sortedK.length)return;
   const key=sortedK[ki];
-  const g=fileGroups[key];
+  const [kFileType,kDate]=key.split('|');
 
-  // Apply DC filter to locations
-  let locs=Object.keys(g.locs).sort();
-  if(dcSel&&dcSel.length>0)locs=locs.filter(l=>dcSel.includes(l));
-
-  // Re-render D2-D15 table
+  // ── D2-D15 TABLE — rebuild from hovAllRaw so PC filter actually works ─────
+  // master.hov only stores (loc, age, count) aggregates — no PC field.
+  // To filter by PC we must recount from hovAllRaw (the raw row store).
   const tblEl=document.getElementById('hovPFtbl_'+ki);
   if(tblEl){
+    // Recount from raw data with both PC and DC filters applied
+    const locAgeMap={};   // {loc: {age: count}}
+    (master.hovAllRaw||[]).forEach(r=>{
+      if(r.fileType!==kFileType||r.date!==kDate)return;
+      const age=parseInt(r.age)||0;
+      if(age<2||age>15)return;
+      if(pcs.length>0&&!pcs.includes(r.pc))return;        // PC filter
+      if(dcSel&&dcSel.length>0&&!dcSel.includes(r.loc))return; // DC filter
+      if(!locAgeMap[r.loc])locAgeMap[r.loc]={};
+      locAgeMap[r.loc][age]=(locAgeMap[r.loc][age]||0)+1; // each raw row = 1 AWB
+    });
+
+    // Sort locations by TOTAL descending (highest first)
+    const locs=Object.keys(locAgeMap).sort((a,b)=>{
+      const ta=HOV_AGES.reduce((s,ag)=>s+(locAgeMap[a][ag]||0),0);
+      const tb=HOV_AGES.reduce((s,ag)=>s+(locAgeMap[b][ag]||0),0);
+      return tb-ta;
+    });
+
     const hdrs=['LOCATION',...HOV_AGES.map(a=>`D${a}`),'TOTAL'];
     const tblRows=locs.map(loc=>{
-      const rt=HOV_AGES.reduce((s,a)=>s+(g.locs[loc][a]||0),0);
+      const rt=HOV_AGES.reduce((s,a)=>s+(locAgeMap[loc][a]||0),0);
       const cells=[loc];
       HOV_AGES.forEach((a,ai)=>{
-        const v=g.locs[loc][a]||0;const prev=ai>0?g.locs[loc][HOV_AGES[ai-1]]||0:null;
+        const v=locAgeMap[loc][a]||0;
+        const prev=ai>0?locAgeMap[loc][HOV_AGES[ai-1]]||0:null;
         const cls=v===0?'czr':prev!==null&&v>prev?'cup':prev!==null&&v<prev?'cdn':'';
         cells.push({__val:v===0?'–':fn(v),__cls:cls});
       });
       cells.push(fn(rt));return cells;
     });
-    const cTotals=HOV_AGES.map(a=>locs.reduce((s,l)=>s+(g.locs[l][a]||0),0));
-    const foot=['TOTAL',...cTotals.map(c=>fn(c)),fn(locs.reduce((s,l)=>s+HOV_AGES.reduce((s2,a)=>s2+(g.locs[l][a]||0),0),0))];
+    const cTotals=HOV_AGES.map(a=>locs.reduce((s,l)=>s+(locAgeMap[l][a]||0),0));
+    const grandTotal=locs.reduce((s,l)=>s+HOV_AGES.reduce((s2,a)=>s2+(locAgeMap[l][a]||0),0),0);
+    const foot=['TOTAL',...cTotals.map(c=>fn(c)),fn(grandTotal)];
     tblEl.innerHTML=pivTbl(hdrs,tblRows,foot,null);
   }
 
-  // Re-render criticality
+  // ── CRITICALITY — age D10-D30, PV ≥ 10000 ────────────────────────────────
   const critEl=document.getElementById('hovPFcrit_'+ki);
   if(critEl){
     const critRows=(master.hovAllRaw||[]).filter(r=>{
-      if(`${r.fileType}|${r.date}`!==key)return false;
+      if(r.fileType!==kFileType||r.date!==kDate)return false;
       if((parseFloat(r.pv)||0)<10000)return false;
-      if((parseInt(r.age)||0)<10||(parseInt(r.age)||0)>30)return false;
+      const age=parseInt(r.age)||0;
+      if(age<10||age>30)return false;
       if(pcs.length>0&&!pcs.includes(r.pc))return false;
       if(dcSel&&dcSel.length>0&&!dcSel.includes(r.loc))return false;
       return true;
     }).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
     critEl.innerHTML=critRows.length===0
       ?`<div style="padding:8px;color:#94a3b8;font-size:11px;font-style:italic">No criticality entries for this filter</div>`
-      :pivTbl(['LOCATION','AWB NUMBER','PRODUCT VALUE','AGE','PRODUCT DESC'],
+      :pivTbl(['CURRENT LOCATION','AWB NUMBER','AGE','PRODUCT VALUE','PRODUCT DESCRIPTION'],
           critRows.map(r=>([r.loc||'–',r.awb||'–',
+            `D${r.age||'?'}`,
             r.pv&&parseFloat(r.pv)>0?`₹${fn(Math.round(parseFloat(r.pv)||0))}`:'–',
-            `D${r.age||'?'}`,r.pd||'–'])),
+            r.pd||'–'])),
           [`${fn(critRows.length)} AWBs`,'','','',''],null);
   }
 
-  // Re-render PV table
+  // ── PRODUCT VALUE TABLE — D2-D30, PV ≥ 5000 ─────────────────────────────
+  // Layout: CURRENT LOCATION | AWB NUMBER | AGE | PRODUCT VALUE | PRODUCT DESCRIPTION
   const pvEl=document.getElementById('hovPFpv_'+ki);
   if(pvEl){
-    const pvRows=(master.hovPV||[]).filter(r=>{
-      if(`${r.fileType}|${r.date}`!==key)return false;
+    const pvRows=(master.hovAllRaw||[]).filter(r=>{
+      if(r.fileType!==kFileType||r.date!==kDate)return false;
       if((parseFloat(r.pv)||0)<5000)return false;
+      const age=parseInt(r.age)||0;
+      if(age<2||age>30)return false;
       if(pcs.length>0&&!pcs.includes(r.pc))return false;
       if(dcSel&&dcSel.length>0&&!dcSel.includes(r.loc))return false;
       return true;
     }).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
     pvEl.innerHTML=pvRows.length===0
-      ?`<div style="padding:8px;color:#94a3b8;font-size:11px;font-style:italic">No PV ≥ ₹5,000 for this filter</div>`
-      :pivTbl(['LOCATION','AWB NUMBER','PRODUCT VALUE','PRODUCT CATEGORY','PRODUCT DESC'],
+      ?`<div style="padding:8px;color:#94a3b8;font-size:11px;font-style:italic">No PV ≥ ₹5,000 (D2–D30) for this filter</div>`
+      :pivTbl(['CURRENT LOCATION','AWB NUMBER','AGE','PRODUCT VALUE','PRODUCT DESCRIPTION'],
           pvRows.map(r=>([r.loc||'–',r.awb||'–',
+            `D${r.age||'?'}`,
             r.pv&&parseFloat(r.pv)>0?`₹${fn(Math.round(parseFloat(r.pv)||0))}`:'–',
-            r.pc||'–',r.pd||'–'])),
+            r.pd||'–'])),
           [`${fn(pvRows.length)} AWBs`,'','','',''],null);
   }
 
-  // Re-render donut chart
-  const donutId='hovPerDonut_'+ki;
-  const locTotals={};
-  locs.forEach(l=>{locTotals[l]=HOV_AGES.reduce((s,a)=>s+(g.locs[l][a]||0),0);});
-  const locLabels=Object.keys(locTotals).sort((a,b)=>locTotals[b]-locTotals[a]);
-  renderHovDonut('hov_pf_'+ki,donutId,locLabels,locLabels.map(l=>locTotals[l]),'HOV AWBs by Site');
+  // ── CHARTS — rebuild from filtered locs ───────────────────────────────────
+  // Use locAgeMap built above (via hovAllRaw + PC/DC filters)
+  // Fallback to master.hov if hovAllRaw empty (no PC filter in that case)
+  let chartLocs={};
+  if(tblEl){
+    // reuse already-computed locAgeMap
+    const lam={};
+    (master.hovAllRaw||[]).forEach(r=>{
+      if(r.fileType!==kFileType||r.date!==kDate)return;
+      const age=parseInt(r.age)||0;if(age<2||age>15)return;
+      if(pcs.length>0&&!pcs.includes(r.pc))return;
+      if(dcSel&&dcSel.length>0&&!dcSel.includes(r.loc))return;
+      if(!lam[r.loc])lam[r.loc]=0;
+      lam[r.loc]++;
+    });
+    chartLocs=lam;
+  }
+  const locLabels=Object.keys(chartLocs).sort((a,b)=>chartLocs[b]-chartLocs[a]);
+  const locVals=locLabels.map(l=>chartLocs[l]);
+  renderHovDonut('hov_pf_'+ki,'hovPerDonut_'+ki,locLabels,locVals,'HOV AWBs by Site');
+  renderHovBar('hovPerBar_'+ki,locLabels,locVals);
+}
 
-  // Re-render bar chart
-  const barId='hovPerBar_'+ki;
-  renderHovBar(barId,locLabels,locLabels.map(l=>locTotals[l]));
+/* ── Keyboard support for per-section dropdowns ─────────────────────────────
+   ENTER = close dropdown (confirm)
+   UP/DOWN = move focus between checkboxes
+   SPACE = toggle focused checkbox
+   Searching text in the search box already triggers oninput → _pfRenderXXList  */
+function _pfDropKeydown(e,ki,type){
+  const dropId=type==='pc'?`hovPFpcDrop_${ki}`:`hovPFdcDrop_${ki}`;
+  const drop=document.getElementById(dropId);
+  if(!drop||drop.style.display==='none')return;
+
+  if(e.key==='Enter'||e.key==='Escape'){
+    // Confirm/close the dropdown
+    drop.style.display='none';
+    e.preventDefault();
+    return;
+  }
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+    const checkboxes=[...drop.querySelectorAll('input[type="checkbox"]')];
+    const idx=checkboxes.indexOf(document.activeElement);
+    const next=e.key==='ArrowDown'?Math.min(idx+1,checkboxes.length-1):Math.max(idx-1,0);
+    if(checkboxes[next])checkboxes[next].focus();
+    e.preventDefault();
+    return;
+  }
+  if(e.key===' '&&document.activeElement.type==='checkbox'){
+    document.activeElement.click();
+    e.preventDefault();
+  }
+}
+// Attach keydown to search inputs and checkboxes on drop open
+function _pfAttachKeyboard(ki){
+  ['pc','dc'].forEach(type=>{
+    const trigId=type==='pc'?`hovPFpcTrig_${ki}`:`hovPFdcTrig_${ki}`;
+    const dropId=type==='pc'?`hovPFpcDrop_${ki}`:`hovPFdcDrop_${ki}`;
+    const trig=document.getElementById(trigId);
+    const drop=document.getElementById(dropId);
+    if(!drop)return;
+    // Add keydown listener to the whole dropdown container
+    drop.addEventListener('keydown',ev=>_pfDropKeydown(ev,ki,type));
+    // Add keydown on trigger too (to handle Enter when trigger is focused)
+    if(trig)trig.addEventListener('keydown',ev=>{if(ev.key==='Enter')_pfTogglePC(ki);});
+  });
 }
 let _hovDCselected=new Set(['ALL']);
 let _hovDCDropOpen=false;
@@ -5404,9 +5477,15 @@ function renderHovPerFile(pcs){
     const donutId=`hovPerDonut_${ki}`;
     canvasIds.push({id:donutId,key});
 
-    // ── D2-D15 pivot table (Age as column, Location as row) — no scroll
+    // ── D2-D15 pivot table — sorted DESCENDING by total (highest AWBs first)
     const hdrs=['LOCATION',...HOV_AGES.map(a=>`D${a}`),'TOTAL'];
-    const tblRows=locs.map(loc=>{
+    // Sort locs by total descending
+    const locsSorted=[...locs].sort((a,b)=>{
+      const ta=HOV_AGES.reduce((s,ag)=>s+(g.locs[a][ag]||0),0);
+      const tb=HOV_AGES.reduce((s,ag)=>s+(g.locs[b][ag]||0),0);
+      return tb-ta;
+    });
+    const tblRows=locsSorted.map(loc=>{
       const rt=HOV_AGES.reduce((s,a)=>s+(g.locs[loc][a]||0),0);
       const cells=[loc];
       HOV_AGES.forEach((a,ai)=>{
@@ -5417,7 +5496,7 @@ function renderHovPerFile(pcs){
       });
       cells.push(fn(rt));return cells;
     });
-    const cTotals=HOV_AGES.map(a=>locs.reduce((s,l)=>s+(g.locs[l][a]||0),0));
+    const cTotals=HOV_AGES.map(a=>locsSorted.reduce((s,l)=>s+(g.locs[l][a]||0),0));
     const foot=['TOTAL',...cTotals.map(c=>fn(c)),fn(g.total)];
     const tblHtml=pivTbl(hdrs,tblRows,foot,null); // no maxHeight — fully visible
 
@@ -5432,14 +5511,23 @@ function renderHovPerFile(pcs){
             `D${r.age||'?'}`,r.binLevel||'–',r.msg||'–',r.dspBin||'–',r.dspMsg||'–',r.pd||'–'])),
           [`${fn(critRows.length)} AWBs`,'','','','','','','',''],null);
 
-    // ── Product Value — full expand, no scroll
-    const pvRows=(pvByFile[key]||[]).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
-    const pvHtml=pvRows.length===0
-      ?`<div style="padding:8px;color:#94a3b8;font-size:11px;font-style:italic">No PV ≥ ₹5,000 for this file</div>`
+    // ── Product Value — CURRENT LOCATION | AWB NUMBER | AGE | PRODUCT VALUE | PRODUCT DESCRIPTION
+    // Uses hovAllRaw for age column; D2–D30; PV ≥ 5000; sorted highest first
+    const pvRawRows=(master.hovAllRaw||[]).filter(r=>{
+      if(`${r.fileType}|${r.date}`!==key)return false;
+      if((parseFloat(r.pv)||0)<5000)return false;
+      const age=parseInt(r.age)||0;
+      return age>=2&&age<=30;
+    }).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
+    const pvHtml=pvRawRows.length===0
+      ?`<div style="padding:8px;color:#94a3b8;font-size:11px;font-style:italic">No PV ≥ ₹5,000 (D2–D30) for this file</div>`
       :pivTbl(
-          ['LOCATION','AWB NUMBER','PRODUCT VALUE','PRODUCT DESCRIPTION'],
-          pvRows.map(r=>([r.loc||'–',r.awb||'–',`₹${fn(Math.round(parseFloat(r.pv)||0))}`,r.pd||'–'])),
-          null,null);
+          ['CURRENT LOCATION','AWB NUMBER','AGE','PRODUCT VALUE','PRODUCT DESCRIPTION'],
+          pvRawRows.map(r=>([r.loc||'–',r.awb||'–',
+            `D${r.age||'?'}`,
+            r.pv&&parseFloat(r.pv)>0?`₹${fn(Math.round(parseFloat(r.pv)||0))}`:'–',
+            r.pd||'–'])),
+          [`${fn(pvRawRows.length)} AWBs`,'','','',''],null);
 
     // ── Site dropdown for this section (per-file DC filter)
     const sectionDCOpts='<option value="ALL">All Sites</option>'+locs.map(l=>`<option value="${l}">${xe(l)}</option>`).join('');
@@ -5591,6 +5679,8 @@ function renderHovPerFile(pcs){
   }).join('');
 
   wrap.innerHTML=sectionsHTML;
+  // Wire keyboard support for all per-section dropdowns
+  for(let ki2=0;ki2<sortedKeys.length;ki2++) _pfAttachKeyboard(ki2);
 
   // Render donuts + bar charts after DOM is ready
   requestAnimationFrame(()=>{
