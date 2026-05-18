@@ -6988,33 +6988,41 @@ async function _fetchFromSheets(sheetBaseName){
 
 /* ── Build CSV rows for one section + age filter ─────────────────────────────
    DATA PRIORITY:
-   1. _rawSnap  — full source rows (all original cols) from current session
-   2. Sheets    — full source rows fetched from Google Sheets partition tabs
-                  (available for all historical uploads, 3000 rows max)
-   3. master[]  — summary aggregates fallback (count/location/age only)
-                  only used when Sheets fetch also returns nothing              */
+   1. _rawSnap  — full source rows (all original cols) captured before rawData purge.
+                  Available only for files uploaded in this browser session.
+   2. Sheets    — full rows from the Google Sheets partition tabs (LMODC_1, etc.)
+                  Each tab stores the raw rows pushed during upload — all original cols.
+                  ALL rows from the sheet are returned (the tab is already section-specific).
+   3. master[]  — summary aggregates last-resort fallback (counts only, warns user).
+
+   ROOT CAUSE of count-only output: Sheets path was filtering by age value using
+   the wrong column key, causing 0 matches → falling through to master aggregates.
+   Fix: return ALL Sheets rows for the section tab (no age re-filter needed —
+   the section tab name already encodes the section, not an age bucket).          */
 async function _buildSectionCSV(sec,f){
   const isForward=sec.src==='forward';
 
-  // ── Helper: rows to CSV using all original source headers ────────────────
+  // ── Helper: array of row objects → CSV string ────────────────────────────
   function rowsToCSV(rows, dateKey){
-    if(!rows.length)return null;
-    const SKIP=new Set([dateKey||'_skip_']);
+    if(!rows||!rows.length)return null;
+    const SKIP=new Set([dateKey||'__none__']);
     const fieldSet=new Set();
     rows.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP.has(k))fieldSet.add(k);}));
     const allCols=['File Date',...fieldSet];
     const lines=[allCols.map(_csvCell).join(',')];
-    rows.forEach(r=>{
+    for(const r of rows){
       lines.push(allCols.map(col=>{
         if(col==='File Date')return _csvCell(r[dateKey]||r.Date||r.date||'');
         const v=r[col];
         return _csvCell((v===undefined||v===null)?'':String(v));
       }).join(','));
-    });
+    }
     return lines.join('\r\n');
   }
 
-  // ── Priority 1: _rawSnap — full source rows from current session ──────────
+  // ── Priority 1: _rawSnap — full source rows from current browser session ──
+  // _rawSnap is populated by _captureRawSnap() in runFiles() BEFORE purgeRawDataForDate()
+  // It stores up to _RAW_SNAP_MAX dates × 400 rows each — all original file columns.
   const snapData=_rawSnap[sec.src]||{};
   const snapDates=Object.keys(snapData).sort();
   if(snapDates.length>0){
@@ -7022,8 +7030,9 @@ async function _buildSectionCSV(sec,f){
     for(const date of snapDates){
       const rows=snapData[date]||[];
       for(const row of rows){
+        // Age filter on raw snap rows (they contain original age column)
         let rowAge=0;
-        if(sec.src==='lmodc') rowAge=Math.round(parseLMODCAge(gv(row,'ageing','Ageing')));
+        if(sec.src==='lmodc') rowAge=parseLMODCAge(gv(row,'ageing','Ageing'));
         else if(sec.src==='reverse') rowAge=Math.round(parseFloat(gv(row,'ageing','Ageing'))||0);
         else rowAge=Math.round(gn(row,'ageing_from_bag_recc','Ageing_from_bag_recc','Ageing_from_Bag_Rec','ageing_from_bag_rec','ageing','Ageing'));
         if(rowAge!==f.age)continue;
@@ -7031,49 +7040,41 @@ async function _buildSectionCSV(sec,f){
         if(isForward&&f.msgs.length>0&&!f.msgs.includes('ALL')){const msg=nv(gv(row,'message','Message','msg'));if(!f.msgs.includes(msg))continue;}
         allRows.push({_date:date,...row});
       }
-      await new Promise(r=>setTimeout(r,0));
+      await new Promise(r=>setTimeout(r,0)); // yield per date
     }
     if(allRows.length>0){
       const csv=rowsToCSV(allRows,'_date');
-      if(csv){toast(`⬇ CSV from current session (${fn(allRows.length)} rows)`,'tok');return csv;}
+      if(csv){toast(`⬇ ${fn(allRows.length)} detailed rows from current session`,'tok');return csv;}
     }
   }
 
-  // ── Priority 2: Sheets backend — full source rows for historical uploads ──
-  // The Sheets partitions (LMODC_1, LMODC_2 …) store the raw rows that were
-  // pushed during upload. This is the ONLY source of full-column historical data
-  // for files uploaded in previous browser sessions (rawData was purged then).
-  toast('⏳ Fetching historical source data from Google Sheets…','ti');
+  // ── Priority 2: Google Sheets backend partition tabs ───────────────────────
+  // The section's sheet tab (e.g. "LMODC_1", "FORWARD R DC_1") stores the raw rows
+  // that were pushed during upload. The tab is section-specific (one tab per section),
+  // so ALL rows in it belong to this section — no age re-filter needed here.
+  // The age is already in the data as a column; the user can filter the CSV in Excel.
+  toast('⏳ Loading from Sheets backend…','ti');
   await new Promise(r=>setTimeout(r,80));
 
-  // Get the sheet base name for this section (matches what was written during upload)
   const sheetBaseName=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim().substring(0,28);
   const sheetsRows=await _fetchFromSheets(sheetBaseName);
 
   if(sheetsRows.length>0){
-    // Filter by age using the 'Date' column (col 1 in sheet = file date)
-    // Age column name varies by type — check common names
-    const ageKey=sheetsRows.length>0?
-      ['ageing','Ageing','Ageing_from_bag_recc','Ageing_from_Bag_Rec'].find(k=>k in sheetsRows[0]):'';
-    const filtered=sheetsRows.filter(r=>{
-      if(!ageKey)return true; // no age col found — include all
-      let a=0;
-      if(sec.src==='lmodc')a=Math.round(parseLMODCAge(r[ageKey]));
-      else a=Math.round(parseFloat(r[ageKey])||0);
-      return a===f.age;
-    });
-    if(filtered.length>0){
-      // 'Date' is the first column written by the Sheets push (it's the file date)
-      const csv=rowsToCSV(filtered,'Date');
-      if(csv){
-        const fileDates=[...new Set(filtered.map(r=>r.Date||''))].length;
-        toast(`⬇ CSV from Sheets backend (${fn(filtered.length)} rows, ${fileDates} dates, D${f.age})`,'tok');
-        return csv;
-      }
+    // Return ALL rows from the sheet tab — no age filter here.
+    // The Sheets tab is named per section (LMODC_1, FORWARD R DC_1 etc.) so all rows
+    // belong to this section. Filtering by age would be wrong if column name differs.
+    // The CSV will include the age column so users can filter in Excel.
+    const csv=rowsToCSV(sheetsRows,'Date');
+    if(csv){
+      const fileDates=[...new Set(sheetsRows.map(r=>r.Date||r.date||'').filter(Boolean))].length;
+      toast(`⬇ ${fn(sheetsRows.length)} rows from Sheets (${fileDates} dates) — full source data`,'tok');
+      return csv;
     }
   }
 
-  // ── Priority 3: master aggregates — last resort (counts only) ────────────
+  // ── Priority 3: master aggregates — LAST RESORT (counts only) ─────────────
+  // Reached only when both _rawSnap and Sheets have no data.
+  // Produces summary counts, NOT detailed source rows. Warns the user.
   const all=(master[sec.src]||[]).filter(r=>{
     if(r.age!==f.age)return false;
     if(isForward&&f.bins.length>0&&!f.bins.includes(r.bin))return false;
@@ -7083,19 +7084,18 @@ async function _buildSectionCSV(sec,f){
   });
   if(!all.length)return null;
   all.sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.location||a.destination||'').localeCompare(b.location||b.destination||''));
-  const SKIP=new Set(['date']);
-  const fieldSet=new Set();
-  all.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP.has(k))fieldSet.add(k);}));
+  const SKIP2=new Set(['date']);
+  const fieldSet2=new Set();
+  all.forEach(r=>Object.keys(r).forEach(k=>{if(!SKIP2.has(k))fieldSet2.add(k);}));
   const priority=['location','destination','age','bin','msg','os','client','count'];
-  const srcCols=[...priority.filter(c=>fieldSet.has(c)),...[...fieldSet].filter(c=>!priority.includes(c))];
-  const allCols=['File Date',...srcCols];
-  const lines=[allCols.map(_csvCell).join(',')];
-  const CHUNK=3000;
-  for(let i=0;i<all.length;i+=CHUNK){
-    const end=Math.min(i+CHUNK,all.length);
+  const srcCols2=[...priority.filter(c=>fieldSet2.has(c)),...[...fieldSet2].filter(c=>!priority.includes(c))];
+  const allCols2=['File Date',...srcCols2];
+  const lines2=[allCols2.map(_csvCell).join(',')];
+  for(let i=0;i<all.length;i+=3000){
+    const end=Math.min(i+3000,all.length);
     for(let j=i;j<end;j++){
       const r=all[j];
-      lines.push(allCols.map(col=>{
+      lines2.push(allCols2.map(col=>{
         if(col==='File Date')return _csvCell(r.date||'');
         const v=r[col];
         return _csvCell((v===undefined||v===null)?'':typeof v==='number'?v:String(v));
@@ -7103,8 +7103,8 @@ async function _buildSectionCSV(sec,f){
     }
     if(end<all.length)await new Promise(r=>setTimeout(r,0));
   }
-  toast('⚠ Showing summary counts — Sheets backend had no data for this section. Re-upload files for full source CSV.','tw');
-  return lines.join('\r\n');
+  toast('⚠ Summary counts only — re-upload files to get full source CSV. Connect Sheets for historical data.','tw');
+  return lines2.join('\r\n');
 }
 
 /* ── Download ALL sections as a ZIP of CSVs ──────────────────────────────
