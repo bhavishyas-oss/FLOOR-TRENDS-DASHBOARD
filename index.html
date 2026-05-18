@@ -1504,56 +1504,34 @@ function pRev(row,date,agg){
   agg[k].count++;
 }
 
-/* ── LMODC age parser ──────────────────────────
-   Reads from 'Ageing' column U (actual day count).
-   'Ageing_f' column A is a category code — NOT used.
-   Day count → bucket:  3 → D3 · 6 → D6 · 10 → D10
-──────────────────────────────────────────────── */
+/* ── LMODC age: EXACT INTEGER from 'Ageing' column U ──────────────
+   Returns the integer value exactly as stored in the source file.
+   AGE 3  → only rows where Ageing == 3
+   AGE 6  → only rows where Ageing == 6
+   AGE 10 → only rows where Ageing == 10
+   NO bucket mapping. NO ranges. NO grouping. Exact match only.
+─────────────────────────────────────────────────────────────── */
 function parseLMODCAge(s){
-  s=String(s==null?'':s).trim();
-  if(!s||s==='0')return 0;
-  // Parse numeric value from the string
-  let n=NaN;
-  // Pure integer or decimal: "1","3","6","10","3.0"
-  if(/^\d+(\.\d+)?$/.test(s)){n=parseFloat(s);}
-  // Range "X to Y" or "X-Y": use upper bound ("6 to 10" → 10, "4-6" → 6)
-  else{const rng=s.match(/(\d+)\s*(?:to|-)\s*(\d+)/i);if(rng)n=parseInt(rng[2]);}
-  // "X+" bucket ("6+" → 6, "10+" → 10)
-  if(isNaN(n)){const plus=s.match(/^(\d+)\s*\+/);if(plus)n=parseInt(plus[1]);}
-  // Fallback: largest number found
-  if(isNaN(n)){const nums=[...s.matchAll(/\d+/g)].map(m=>parseInt(m[0]));n=nums.length?Math.max(...nums):NaN;}
-  if(isNaN(n)||n<=0)return 0;
-  // BUCKET MAPPING — LMODC uses three buckets:
-  // D3  = age 3 day  (Ageing value 3)
-  // D6  = age 6 day  (Ageing value 6)
-  // D10 = age 10 day  (Ageing value 10)
-  // FIX: previously age=1,2 returned 0 → filtered out → D3 showed no data.
-  // Now: any age 1-5 maps to D3 bucket.
-  if(n>=10)return 10;
-  if(n>=6)return 6;
-  return 3; // age 3 → D3 bucket (previously 1-2 returned 0 and were dropped)
+  const n=parseInt(String(s==null?'':s).trim(),10);
+  return isNaN(n)||n<=0?0:n;
 }
 
 // LMODC — raw data CSV, one row = one AWB
-// Age:      Ageing (col U) — plain integer day count (1,2,3,6,10...)
+// Age:      Ageing_f (col A) — plain integer day count (1,2,3,6,10...)
 //           Fallback: 'Ageing' (col U) for older LMODC exports
 // Location: destination_name (col B)
 // Count (col M) = manifest count, NOT per-row AWB count. Each row = 1 AWB.
 function pLM(row,date,agg){
-  // ── SHEETS RECORDING FIX ───────────────────────────────────────────────────
-  // captureRaw called FIRST — before age check — so ALL LMODC rows are stored
-  // for Google Sheet backend recording. The age filter below only controls
-  // which rows contribute to the dashboard pivot aggregates.
   captureRaw('lmodc',row,date);
 
-  // AGEING FIX: use 'Ageing' column U (actual day count: 1,2,3,6,10...).
-  // DO NOT use 'Ageing_f' column A — that is a category code (e.g. always "1"),
-  // NOT the actual pendency day count. Using Ageing_f caused D6/D10 to show zero.
-  const ageStr=gv(row,
-    'ageing','Ageing',         // Column U — correct field (day count e.g. 3,6,10)
-    'age','Age');              // generic fallback only
+  // AGEING: read 'Ageing' column U directly. parseInt gives exact value.
+  // No bucket mapping. No ranges. Exact integer only.
+  // AGE=3 → shows only rows where Ageing==3 in source file
+  // AGE=6 → shows only rows where Ageing==6 in source file
+  // AGE=10→ shows only rows where Ageing==10 in source file
+  const ageStr=gv(row,'ageing','Ageing','age','Age');
   const age=parseLMODCAge(ageStr);
-  if(age<=0)return; // skip aggregation only; Sheets row captured above
+  if(age<=0)return;
   const dest=(gv(row,
     'destination_name','destination name','destinationname',
     'Destination_name','Destination_Name','DestinationName',
