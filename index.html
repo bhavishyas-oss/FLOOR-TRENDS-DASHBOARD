@@ -659,9 +659,10 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
   ════════════════════════════════════ -->
   <div id="hovSubPanel0" style="padding:14px;display:flex;flex-direction:column;gap:14px">
 
-    <!-- Slim toolbar: only PNG export — section-level filters are inside each file section -->
+    <!-- Slim toolbar: PDF export + PNG export — section-level filters are inside each file section -->
     <div style="display:flex;align-items:center;justify-content:flex-end;padding:4px 2px;gap:8px">
       <span style="font-size:10px;color:var(--tx3);font-style:italic">Filters available inside each section below</span>
+      <button class="btn bg" onclick="generateHovOverallPDF()" style="font-size:10px;padding:3px 8px;color:var(--brand);border-color:var(--bdr2)">📄 Overall PDF</button>
       <button class="btn bg" onclick="downloadHovSectionImage('hovPerFileWrap','HOV_Overview.png')" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG All</button>
     </div>
 
@@ -840,6 +841,11 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
        TAB 4: REGION OVERVIEW
   ════════════════════════════════════ -->
   <div id="hovSubPanel4" style="display:none;padding:14px;flex-direction:column;gap:20px">
+    <!-- Region Overview export toolbar -->
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:2px 0">
+      <button class="btn bg" onclick="generateHovPDF(4)" style="font-size:10px;padding:3px 8px;color:var(--brand);border-color:var(--bdr2)">📄 Overall PDF</button>
+      <button class="btn bg" onclick="downloadHovSectionImage('hovSubPanel4','HOV_Region_Overview.png')" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG All</button>
+    </div>
 
     <!-- FORWARD R@DC -->
     <div class="card" style="border-left:5px solid #1e40af;padding:0;overflow:visible">
@@ -4910,8 +4916,14 @@ function _pfDropKeydown(e,ki,type){
   const drop=document.getElementById(dropId);
   if(!drop||drop.style.display==='none')return;
 
-  if(e.key==='Enter'||e.key==='Escape'){
-    // Confirm/close the dropdown
+  if(e.key==='Enter'){
+    // Confirm/apply — close the dropdown and trigger re-render
+    drop.style.display='none';
+    _pfRerender(ki);
+    e.preventDefault();
+    return;
+  }
+  if(e.key==='Escape'){
     drop.style.display='none';
     e.preventDefault();
     return;
@@ -5244,7 +5256,13 @@ function renderHovD15Tab(){
       wrap.innerHTML=`<div class="empty" style="padding:20px"><div class="et">No D16+ data</div>
         <div class="em">No AWBs with age D16–D90 found in current session.</div></div>`;
     }else{
-      const locs=[...new Set(filtRaw.map(r=>(r.loc||'UNKNOWN').toUpperCase()))].sort();
+      // Sort locations by total descending
+      const _locSet=[...new Set(filtRaw.map(r=>(r.loc||'UNKNOWN').toUpperCase()))];
+      const locs=_locSet.sort((a,b)=>{
+        const ta=filtRaw.filter(r=>(r.loc||'').toUpperCase()===a).length;
+        const tb=filtRaw.filter(r=>(r.loc||'').toUpperCase()===b).length;
+        return tb-ta;
+      });
       const agesUsed=[...new Set(filtRaw.map(r=>parseInt(r.age)||0))].filter(a=>a>=16&&a<=90).sort((a,b)=>a-b);
       const grid={};const rowTots={};const colTots={};
       locs.forEach(l=>{grid[l]={};agesUsed.forEach(a=>{grid[l][a]=0;});rowTots[l]=0;});
@@ -5282,14 +5300,19 @@ function renderHovD15Tab(){
       if(!dcRows.length){
         awbWrap.innerHTML=`<div class="empty" style="padding:16px"><div class="et">No D16+ AWBs for ${xe(dc)}</div></div>`;
       }else{
+        // Sort: Forward first then Reverse, then by age asc
+        const FILE_TYPE_LABELS={forward:'FORWARD R@DC',reverse:'REVERSE R@DC',lmodc:'LMODC',forwardShort:'DCH'};
+        const ftOrder={forward:0,reverse:1,lmodc:2,forwardShort:3};
+        dcRows.sort((a,b)=>(ftOrder[a.fileType]||9)-(ftOrder[b.fileType]||9)||(parseInt(a.age)||0)-(parseInt(b.age)||0));
         const tblRows=dcRows.slice(0,500).map(r=>([
+          FILE_TYPE_LABELS[r.fileType]||r.fileType||'–',
           r.loc||'–',r.awb||'–',
           r.pv&&parseFloat(r.pv)>0?`₹${fn(Math.round(parseFloat(r.pv)||0))}`:'–',
           r.age!==undefined?`D${r.age}`:'–',
           r.binLevel||'–',r.msg||'–',r.dspBin||'–',r.dspMsg||'–',r.pd||'–'
         ]));
         awbWrap.innerHTML=pivTbl(
-          ['CURRENT LOCATION','AWB NUMBER','PRODUCT VALUE','AGE','BIN LEVEL','MESSAGE','DSP BIN LEVEL','DSP MESSAGE','PRODUCT DESC'],
+          ['FILE TYPE','CURRENT LOCATION','AWB NUMBER','PRODUCT VALUE','AGE','BIN LEVEL','MESSAGE','DSP BIN LEVEL','DSP MESSAGE','PRODUCT DESC'],
           tblRows,null,'460px'
         );
       }
@@ -6487,101 +6510,69 @@ function renderHovSiteDetail(dc){
   );
 }
 
-/* ── PDF generation — full scrollable content, multi-page ── */
+/* ── PDF generation — full scrollable content, no cropping ── */
 function generateHovPDF(tabIdx){
-  const tabNames=['HOV_Overview','HOV_Detailed','D15plus_Tracking','Action_User_Trends'];
+  const tabNames=['HOV_Overview','HOV_Detailed','D15plus_Tracking','Action_User_Trends','Region_Overview'];
   const panelId=`hovSubPanel${tabIdx}`;
   const panel=document.getElementById(panelId);
   if(!panel){toast('Tab not found','tw');return;}
   if(typeof html2canvas==='undefined'){toast('⚠ html2canvas not loaded','tw');return;}
-  toast('⏳ Generating full-content PDF…','ti');
+  toast('⏳ Generating full PDF…','ti');
 
-  // Temporarily make panel visible and fully expanded for capture
-  const origOverflow=panel.style.overflow;
-  const origMaxH=panel.style.maxHeight;
-  panel.style.overflow='visible';
-  panel.style.maxHeight='none';
+  // Temporarily expand all containers before capture
+  const saved=[];
+  const expandEl=el=>{
+    saved.push({el,ov:el.style.overflow,mh:el.style.maxHeight,ow:el.style.overflowX});
+    el.style.overflow='visible';el.style.maxHeight='none';el.style.overflowX='visible';
+  };
+  expandEl(panel);
+  panel.querySelectorAll('[style*="overflow"],[style*="max-height"]').forEach(expandEl);
 
-  // Also expand all inner scrollable containers
-  const scrollables=panel.querySelectorAll('[style*="overflow"]');
-  const savedStyles=[];
-  scrollables.forEach(el=>{
-    savedStyles.push({el,overflow:el.style.overflow,maxH:el.style.maxHeight});
-    el.style.overflow='visible';
-    el.style.maxHeight='none';
-  });
-
-  // Full dimensions including scroll
-  const W=Math.max(panel.scrollWidth,1200);
+  const W=Math.max(panel.scrollWidth,1400); // wide enough to prevent right-side crop
   const H=panel.scrollHeight;
 
   html2canvas(panel,{
-    scale:1.5,
-    backgroundColor:'#f0f7f5',
-    useCORS:true,
-    allowTaint:true,
-    width:W,
-    height:H,
-    windowWidth:W+100,
-    windowHeight:H+100,
-    logging:false,
+    scale:1.5, backgroundColor:'#f0f7f5', useCORS:true, allowTaint:true,
+    width:W, height:H, windowWidth:W+100, windowHeight:H+100, logging:false,
     onclone(doc){
-      // Remove all overflow constraints in the clone
       doc.querySelectorAll('*').forEach(el=>{
-        el.style.overflow='visible';
-        el.style.maxHeight='none';
-        el.style.overflowX='visible';
-        el.style.overflowY='visible';
-        // Ensure wrap-text
-        if(el.tagName==='TD'||el.tagName==='TH'){
-          el.style.whiteSpace='normal';
-          el.style.wordBreak='break-word';
-        }
+        el.style.overflow='visible'; el.style.maxHeight='none';
+        el.style.overflowX='visible'; el.style.overflowY='visible';
+        if(el.tagName==='TD'||el.tagName==='TH'){el.style.whiteSpace='normal';el.style.wordBreak='break-word';}
       });
     }
   }).then(canvas=>{
-    // Restore original styles
-    panel.style.overflow=origOverflow;
-    panel.style.maxHeight=origMaxH;
-    savedStyles.forEach(({el,overflow,maxH})=>{el.style.overflow=overflow;el.style.maxHeight=maxH;});
-
+    // Restore
+    saved.forEach(({el,ov,mh,ow})=>{el.style.overflow=ov;el.style.maxHeight=mh;el.style.overflowX=ow;});
     const imgData=canvas.toDataURL('image/jpeg',0.88);
     const filename=`${tabNames[tabIdx]||'HOV_Report'}_${new Date().toISOString().slice(0,10)}.pdf`;
-
-    // Open print window with full-size image — browser handles pagination
-    const win=window.open('','_blank','width=900,height=700');
+    const win=window.open('','_blank','width=1200,height=900');
     if(!win){toast('⚠ Allow pop-ups for PDF','tw');return;}
-    const imgW=canvas.width;
-    const imgH=canvas.height;
-    // A4 ratio at 96dpi: 794px wide. Scale to fit.
+    // Use landscape A4 so wide tables aren't cropped
     win.document.write(`<!DOCTYPE html><html><head><title>${filename}</title><style>
-      *{margin:0;padding:0;box-sizing:border-box}
-      body{background:#fff;font-family:sans-serif}
-      img{width:100%;height:auto;display:block;page-break-inside:avoid}
-      @media print{
-        html,body{width:100%;margin:0;padding:0}
-        @page{margin:8mm;size:A4 portrait}
-        img{width:100%;height:auto;page-break-before:auto;page-break-after:auto}
-      }
+      *{margin:0;padding:0;box-sizing:border-box}body{background:#fff}
+      img{width:100%;height:auto;display:block}
+      @media print{html,body{width:100%;margin:0;padding:0}
+        @page{margin:5mm;size:A4 landscape}
+        img{width:100%;height:auto;page-break-before:auto;page-break-after:auto}}
     </style></head><body>
       <img src="${imgData}" alt="HOV Report">
-      <script>
-        window.onload=function(){
-          setTimeout(function(){window.print();},600);
-          window.onafterprint=function(){window.close();};
-        };
-      <\/script>
+      <script>window.onload=function(){setTimeout(function(){window.print();},700);window.onafterprint=function(){window.close();};};<\/script>
     </body></html>`);
     win.document.close();
-    toast(`📄 PDF ready — ${tabNames[tabIdx]} (${fn(Math.round(imgH/96))} inches tall)`,'tok');
+    toast(`📄 PDF ready — ${tabNames[tabIdx]}`,'tok');
   }).catch(e=>{
-    // Restore styles on error
-    panel.style.overflow=origOverflow;
-    panel.style.maxHeight=origMaxH;
-    savedStyles.forEach(({el,overflow,maxH})=>{el.style.overflow=overflow;el.style.maxHeight=maxH;});
+    saved.forEach(({el,ov,mh,ow})=>{el.style.overflow=ov;el.style.maxHeight=mh;el.style.overflowX=ow;});
     console.warn('PDF error:',e);
-    toast('PDF failed — try PNG export instead','te');
+    toast('PDF failed — try PNG instead','te');
   });
+}
+
+/* ── Overall HOV Collated PDF — all visible sections ── */
+function generateHovOverallPDF(){
+  const wrap=document.getElementById('hovPerFileWrap');
+  if(!wrap){toast('No HOV data to export','tw');return;}
+  generateHovPDF(0); // reuse tab0 PDF with the full panel
 }
 
 /* ── Helper: isNA ── */
@@ -6643,9 +6634,10 @@ function renderHovFwdPivot(dc){
       }
     });
 
-    // ROWS = Message, COLUMNS = Age D1…D15, last col = TOTAL
+    // ROWS = Message, COLUMNS = Age D1…D15, last col = TOTAL — sorted by TOTAL desc
     const hdrs=['MESSAGE',...ages.map(a=>`D${a}`),'TOTAL'];
-    const tblRows=activeMsgs.map(msg=>{
+    const activeMsgsSorted=[...activeMsgs].sort((a,b)=>(msgTotals[b]||0)-(msgTotals[a]||0));
+    const tblRows=activeMsgsSorted.map(msg=>{
       const tot=msgTotals[msg]||0;
       return [msg,...ages.map(a=>({__val:(grid[msg][a]||0)===0?'–':fn(grid[msg][a]),__cls:(grid[msg][a]||0)>0?'':'czr'})),fn(tot)];
     });
@@ -6692,7 +6684,8 @@ function renderHovRevPivot(dc){
       if(grid[msg]&&grid[msg][age]!==undefined){grid[msg][age]++;ageTot[age]++;msgTot[msg]++;}
     });
     const hdrs=['MESSAGE',...ages.map(a=>`D${a}`),'TOTAL'];
-    const tblRows=msgs.map(msg=>[msg,...ages.map(a=>({__val:grid[msg][a]===0?'–':fn(grid[msg][a]),__cls:grid[msg][a]>0?'':'czr'})),fn(msgTot[msg]||0)]);
+    const msgsSorted=[...msgs].sort((a,b)=>(msgTot[b]||0)-(msgTot[a]||0));
+    const tblRows=msgsSorted.map(msg=>[msg,...ages.map(a=>({__val:grid[msg][a]===0?'–':fn(grid[msg][a]),__cls:grid[msg][a]>0?'':'czr'})),fn(msgTot[msg]||0)]);
     const grand=msgs.reduce((s,m)=>s+(msgTot[m]||0),0);
     const foot=['TOTAL',...ages.map(a=>fn(ageTot[a]||0)),fn(grand)];
     return pivTbl(hdrs,tblRows,foot,null); // no maxHeight
