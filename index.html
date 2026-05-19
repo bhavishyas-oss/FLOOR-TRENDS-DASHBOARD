@@ -839,31 +839,70 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
   <!-- ════════════════════════════════════
        TAB 4: REGION OVERVIEW
   ════════════════════════════════════ -->
-  <div id="hovSubPanel4" style="display:none;padding:14px;flex-direction:column;gap:14px">
-    <div class="card" style="padding:12px 16px">
-      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-        <span style="font-size:11px;font-weight:800;color:var(--brand);text-transform:uppercase;letter-spacing:.5px">🗺 REGION FILTER</span>
-        <div style="position:relative;display:inline-block" id="hovRegWrap">
-          <div onclick="toggleHovRegDrop()" id="hovRegTrigger"
-            style="font-size:11px;padding:5px 28px 5px 10px;border-radius:5px;border:1px solid var(--bdr2);
-              background:#fff;color:var(--tx);min-width:200px;cursor:pointer;position:relative">
-            <span id="hovRegLabel">All Regions</span>
-            <span style="position:absolute;right:8px;top:50%;transform:translateY(-50%);color:#94a3b8">▾</span>
+  <div id="hovSubPanel4" style="display:none;padding:14px;flex-direction:column;gap:20px">
+
+    <!-- FORWARD R@DC -->
+    <div class="card" style="border-left:5px solid #1e40af;padding:0;overflow:visible">
+      <div style="background:#1e40af;padding:11px 18px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <span style="font-size:12px;font-weight:900;color:#fff;text-transform:uppercase;letter-spacing:.7px">📦 FORWARD R@DC — REGION OVERVIEW</span>
+        <button class="btn" onclick="downloadHovSectionImage('hovRegFwdContent','HOV_Fwd_Region.png')" style="font-size:10px;padding:3px 9px;color:#bfdbfe;border-color:rgba(255,255,255,.35)">🖼 PNG</button>
+      </div>
+      <div style="padding:10px 16px;border-bottom:1px solid #dbeafe;display:flex;align-items:center;gap:10px;flex-wrap:wrap;position:relative;z-index:110;overflow:visible">
+        <span style="font-size:10px;font-weight:800;color:#1e40af;text-transform:uppercase">Select Region</span>
+        <div style="position:relative" id="hovRegFwdWrap">
+          <div onclick="_regToggle('fwd')" id="hovRegFwdTrig"
+            style="font-size:11px;padding:6px 30px 6px 11px;border-radius:5px;border:1.5px solid #1e40af;background:#fff;
+              color:#1e3a6e;min-width:210px;cursor:pointer;position:relative;font-weight:700;white-space:nowrap">
+            <span id="hovRegFwdLabel">— choose region —</span>
+            <span style="position:absolute;right:9px;top:50%;transform:translateY(-50%);color:#1e40af">▾</span>
           </div>
-          <div id="hovRegDrop" style="display:none;position:absolute;top:100%;left:0;width:230px;background:#fff;
-            border:1px solid var(--bdr2);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.18);z-index:400;margin-top:2px;flex-direction:column">
-            <div style="padding:5px 10px;border-bottom:1px solid var(--bdr);display:flex;gap:8px">
-              <button onclick="hovRegAll()" style="font-size:10px;cursor:pointer;border:none;background:none;color:var(--brand);font-weight:700">All</button>
-              <button onclick="hovRegClear()" style="font-size:10px;cursor:pointer;border:none;background:none;color:#ef4444;font-weight:700">Clear</button>
+          <div id="hovRegFwdDrop" style="display:none;position:absolute;top:calc(100% + 5px);left:0;width:250px;background:#fff;
+            border:1.5px solid #1e40af;border-radius:7px;box-shadow:0 10px 32px rgba(30,64,175,.22);z-index:9999;flex-direction:column">
+            <div style="padding:7px 10px;border-bottom:1px solid #dbeafe">
+              <input id="hovRegFwdSearch" type="text" placeholder="Search region…" autocomplete="off"
+                style="width:100%;font-size:11px;padding:5px 9px;border-radius:4px;border:1px solid #bfdbfe;outline:none;color:#1e3a6e;box-sizing:border-box"
+                oninput="_regRenderList('fwd',this.value)">
             </div>
-            <div id="hovRegList" style="overflow-y:auto;max-height:220px;padding:3px 0"></div>
+            <div id="hovRegFwdList" style="overflow-y:auto;max-height:220px;padding:3px 0"></div>
           </div>
         </div>
-        <button class="btn bg" onclick="downloadHovSectionImage('hovRegionContent','HOV_Region_Overview.png')"
-          style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4);margin-left:auto">🖼 PNG</button>
+      </div>
+      <div id="hovRegFwdContent" style="padding:14px 16px;min-height:50px">
+        <div style="color:#94a3b8;font-size:11px;font-style:italic">Select a region above to view Forward R@DC data.</div>
       </div>
     </div>
-    <div id="hovRegionContent" style="display:flex;flex-direction:column;gap:16px"></div>
+
+    <!-- REVERSE R@DC -->
+    <div class="card" style="border-left:5px solid #065f46;padding:0;overflow:visible">
+      <div style="background:#065f46;padding:11px 18px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <span style="font-size:12px;font-weight:900;color:#fff;text-transform:uppercase;letter-spacing:.7px">🔄 REVERSE R@DC — REGION OVERVIEW</span>
+        <button class="btn" onclick="downloadHovSectionImage('hovRegRevContent','HOV_Rev_Region.png')" style="font-size:10px;padding:3px 9px;color:#a7f3d0;border-color:rgba(255,255,255,.35)">🖼 PNG</button>
+      </div>
+      <div style="padding:10px 16px;border-bottom:1px solid #d1fae5;display:flex;align-items:center;gap:10px;flex-wrap:wrap;position:relative;z-index:105;overflow:visible">
+        <span style="font-size:10px;font-weight:800;color:#065f46;text-transform:uppercase">Select Region</span>
+        <div style="position:relative" id="hovRegRevWrap">
+          <div onclick="_regToggle('rev')" id="hovRegRevTrig"
+            style="font-size:11px;padding:6px 30px 6px 11px;border-radius:5px;border:1.5px solid #065f46;background:#fff;
+              color:#052e16;min-width:210px;cursor:pointer;position:relative;font-weight:700;white-space:nowrap">
+            <span id="hovRegRevLabel">— choose region —</span>
+            <span style="position:absolute;right:9px;top:50%;transform:translateY(-50%);color:#065f46">▾</span>
+          </div>
+          <div id="hovRegRevDrop" style="display:none;position:absolute;top:calc(100% + 5px);left:0;width:250px;background:#fff;
+            border:1.5px solid #065f46;border-radius:7px;box-shadow:0 10px 32px rgba(6,95,70,.22);z-index:9999;flex-direction:column">
+            <div style="padding:7px 10px;border-bottom:1px solid #d1fae5">
+              <input id="hovRegRevSearch" type="text" placeholder="Search region…" autocomplete="off"
+                style="width:100%;font-size:11px;padding:5px 9px;border-radius:4px;border:1px solid #a7f3d0;outline:none;color:#052e16;box-sizing:border-box"
+                oninput="_regRenderList('rev',this.value)">
+            </div>
+            <div id="hovRegRevList" style="overflow-y:auto;max-height:220px;padding:3px 0"></div>
+          </div>
+        </div>
+      </div>
+      <div id="hovRegRevContent" style="padding:14px 16px;min-height:50px">
+        <div style="color:#94a3b8;font-size:11px;font-style:italic">Select a region above to view Reverse R@DC data.</div>
+      </div>
+    </div>
+
   </div>
 </div>
 <div id="toast"></div>
@@ -6021,161 +6060,168 @@ function switchHovSubTab(idx){
 ════════════════════════════════════════════════════════════════════════ */
 
 /* All five canonical regions */
+/* ════════════════════════════════════════════════════════════════
+   REGION OVERVIEW — separate Forward / Reverse (Tab 4)
+   _regToggle(type)       : open/close the dropdown for 'fwd' or 'rev'
+   _regRenderList(type,q) : populate the searchable region list
+   _regSelectRegion(type,rg): select a region and render its table
+   renderHovRegionOverview() : called by switchHovSubTab(4)
+════════════════════════════════════════════════════════════════ */
 const HOV_REGIONS=['NORTH','SOUTH','EAST','WEST','NCR REGION'];
+const REGION_COLOR={NORTH:'#1e40af',SOUTH:'#065f46',EAST:'#9a3412',WEST:'#6b21a8','NCR REGION':'#0e7490'};
 
-/* ── Region filter state ── */
-let _hovRegSelected=new Set(['ALL']);
-let _hovRegDropOpen=false;
+let _regSelFwd=''; // selected region for Forward section
+let _regSelRev=''; // selected region for Reverse section
 
-function toggleHovRegDrop(){
-  const d=document.getElementById('hovRegDrop');
+/* ── Toggle dropdown open / close ── */
+function _regToggle(type){
+  const dropId=type==='fwd'?'hovRegFwdDrop':'hovRegRevDrop';
+  const d=document.getElementById(dropId);
   if(!d)return;
-  _hovRegDropOpen=!_hovRegDropOpen;
-  d.style.display=_hovRegDropOpen?'flex':'none';
-  if(_hovRegDropOpen)_renderHovRegList();
+  const opening=d.style.display!=='flex';
+  // Close all region drops first
+  ['hovRegFwdDrop','hovRegRevDrop'].forEach(id=>{
+    const el=document.getElementById(id);if(el)el.style.display='none';
+  });
+  if(opening){
+    d.style.display='flex';
+    _regRenderList(type,'');
+    const inp=document.getElementById(type==='fwd'?'hovRegFwdSearch':'hovRegRevSearch');
+    if(inp){inp.value='';setTimeout(()=>inp.focus(),60);}
+  }
 }
 document.addEventListener('click',function(ev){
-  const w=document.getElementById('hovRegWrap');
-  if(w&&!w.contains(ev.target)&&_hovRegDropOpen){
-    _hovRegDropOpen=false;
-    const d=document.getElementById('hovRegDrop');if(d)d.style.display='none';
-  }
+  ['fwd','rev'].forEach(type=>{
+    const wrapId=type==='fwd'?'hovRegFwdWrap':'hovRegRevWrap';
+    const dropId=type==='fwd'?'hovRegFwdDrop':'hovRegRevDrop';
+    const wrap=document.getElementById(wrapId);
+    const drop=document.getElementById(dropId);
+    if(wrap&&drop&&!wrap.contains(ev.target))drop.style.display='none';
+  });
 });
-function _updateHovRegLabel(){
-  const el=document.getElementById('hovRegLabel');if(!el)return;
-  if(_hovRegSelected.has('ALL')||_hovRegSelected.size===0)el.textContent='All Regions';
-  else if(_hovRegSelected.size===1)el.textContent=[..._hovRegSelected][0];
-  else el.textContent=_hovRegSelected.size+' regions selected';
-}
-function _renderHovRegList(){
-  // Build region list from actual data + the 5 canonical ones
+
+/* ── Render searchable region list ── */
+function _regRenderList(type,query){
+  const listId=type==='fwd'?'hovRegFwdList':'hovRegRevList';
+  const list=document.getElementById(listId);if(!list)return;
+  const fileType=type==='fwd'?'forward':'reverse';
   const raw=master.hovAllRaw||[];
-  const dataRegions=new Set(raw.map(r=>(r.region||'').toUpperCase().trim()).filter(Boolean));
-  HOV_REGIONS.forEach(rg=>dataRegions.add(rg));
-  const regions=[...dataRegions].sort((a,b)=>HOV_REGIONS.indexOf(a)-HOV_REGIONS.indexOf(b)||(a>b?1:-1));
-  const list=document.getElementById('hovRegList');if(!list)return;
-  list.innerHTML=regions.map(rg=>{
-    const chk=_hovRegSelected.has('ALL')||_hovRegSelected.has(rg);
-    return`<label style="display:flex;align-items:center;gap:8px;padding:7px 12px;cursor:pointer;font-size:12px;
-        background:${chk?'var(--brand-xlt)':'transparent'};font-weight:${chk?'700':'400'}"
-        onmouseover="this.style.background='var(--brand-xlt)'"
-        onmouseout="this.style.background='${chk?'var(--brand-xlt)':'transparent'}'">
-      <input type="checkbox" ${chk?'checked':''} onchange="toggleHovRegion('${rg.replace(/'/,"\\'")}')"
-        style="width:13px;height:13px;cursor:pointer;accent-color:var(--brand)">${xe(rg)}
-    </label>`;
-  }).join('');
+  // Collect regions present in this file type's data
+  const dataRgs=new Set(raw.filter(r=>r.fileType===fileType).map(r=>(r.region||'').toUpperCase().trim()).filter(Boolean));
+  HOV_REGIONS.forEach(rg=>dataRgs.add(rg));
+  const all=[...dataRgs].sort((a,b)=>HOV_REGIONS.indexOf(a)-HOV_REGIONS.indexOf(b)||(a>b?1:-1));
+  const q=(query||'').toLowerCase().trim();
+  const filtered=q?all.filter(rg=>rg.toLowerCase().includes(q)):all;
+  const sel=type==='fwd'?_regSelFwd:_regSelRev;
+  const color=type==='fwd'?'#1e40af':'#065f46';
+  list.innerHTML=filtered.length===0
+    ?'<div style="padding:10px 14px;font-size:11px;color:#94a3b8">No regions found</div>'
+    :filtered.map(rg=>{
+      const isSelected=rg===sel;
+      return`<div onclick="_regSelectRegion('${type}','${rg.replace(/'/g,"\'")}')"
+        style="padding:9px 14px;cursor:pointer;font-size:12px;font-weight:${isSelected?'800':'500'};
+          color:${isSelected?color:'#1e293b'};background:${isSelected?'#eff6ff':'transparent'};
+          border-left:3px solid ${isSelected?color:'transparent'}"
+        onmouseover="this.style.background='#f8fafc'"
+        onmouseout="this.style.background='${isSelected?'#eff6ff':'transparent'}'">
+        ${isSelected?'✓ ':''} ${xe(rg)}
+      </div>`;
+    }).join('');
 }
-function toggleHovRegion(rg){
-  _hovRegSelected.delete('ALL');
-  if(_hovRegSelected.has(rg))_hovRegSelected.delete(rg);
-  else _hovRegSelected.add(rg);
-  if(_hovRegSelected.size===0)_hovRegSelected=new Set(['ALL']);
-  _updateHovRegLabel();
-  _renderHovRegList();
-  renderHovRegionOverview();
+
+/* ── User selects a region ── */
+function _regSelectRegion(type,rg){
+  if(type==='fwd') _regSelFwd=rg;
+  else _regSelRev=rg;
+  // Update trigger label
+  const lblId=type==='fwd'?'hovRegFwdLabel':'hovRegRevLabel';
+  const lbl=document.getElementById(lblId);if(lbl)lbl.textContent=rg;
+  // Close dropdown
+  const dropId=type==='fwd'?'hovRegFwdDrop':'hovRegRevDrop';
+  const d=document.getElementById(dropId);if(d)d.style.display='none';
+  // Render the region table
+  _regRenderTable(type,rg);
 }
-function hovRegAll(){_hovRegSelected=new Set(['ALL']);_updateHovRegLabel();_renderHovRegList();renderHovRegionOverview();}
-function hovRegClear(){_hovRegSelected=new Set(['ALL']);_updateHovRegLabel();_renderHovRegList();renderHovRegionOverview();}
 
-/* ── Main render function ── */
-function renderHovRegionOverview(){
-  const content=document.getElementById('hovRegionContent');
-  if(!content)return;
-
+/* ── Render the pivot table for one fileType × region ── */
+function _regRenderTable(type,rg){
+  const contentId=type==='fwd'?'hovRegFwdContent':'hovRegRevContent';
+  const el=document.getElementById(contentId);if(!el)return;
+  const fileType=type==='fwd'?'forward':'reverse';
+  const color=REGION_COLOR[rg]||'#334155';
   const raw=master.hovAllRaw||[];
-  if(!raw.length){
-    content.innerHTML=`<div class="empty" style="padding:32px"><div class="ei">🗺</div>
-      <div class="et">No HOV data yet</div>
-      <div class="em">Upload Forward or Reverse HOV files — region data will appear here.</div></div>`;
-    return;
-  }
 
-  // Determine which regions to show
-  const showAll=_hovRegSelected.has('ALL')||_hovRegSelected.size===0;
-  const dataRegions=new Set(raw.map(r=>(r.region||'').toUpperCase().trim()).filter(Boolean));
-  HOV_REGIONS.forEach(rg=>dataRegions.add(rg));
-  const allRegions=[...dataRegions].sort((a,b)=>HOV_REGIONS.indexOf(a)-HOV_REGIONS.indexOf(b)||(a>b?1:-1));
-  const toRender=allRegions.filter(rg=>showAll||_hovRegSelected.has(rg));
-
-  if(!toRender.length){
-    content.innerHTML=`<div style="padding:20px;color:#94a3b8;text-align:center">No regions match the current filter.</div>`;
-    return;
-  }
-
-  // Group raw by REGION → LOCATION
-  // { region: { loc: { awbCount, pvSum } } }
-  const regionMap={};
-  raw.forEach(r=>{
-    const rg=(r.region||'').toUpperCase().trim()||'UNASSIGNED';
-    const loc=(r.loc||r.location||'UNKNOWN').toUpperCase().trim();
-    const pv=parseFloat(r.pv)||0;
-    if(!regionMap[rg])regionMap[rg]={};
-    if(!regionMap[rg][loc])regionMap[rg][loc]={awb:0,pv:0};
-    regionMap[rg][loc].awb++;
-    regionMap[rg][loc].pv+=pv;
+  // Filter rows by fileType AND region (case-insensitive)
+  const rgNorm=rg.toUpperCase().trim();
+  const rows=raw.filter(r=>{
+    if(r.fileType!==fileType)return false;
+    return(r.region||'').toUpperCase().trim()===rgNorm;
   });
 
-  // Region badge colours
-  const REGION_COLOR={
-    'NORTH':'#1e40af','SOUTH':'#065f46','EAST':'#9a3412','WEST':'#6b21a8','NCR REGION':'#0e7490'
-  };
-
-  const html=toRender.map(rg=>{
-    const locs=regionMap[rg]||{};
-    const locList=Object.keys(locs).sort((a,b)=>locs[b].awb-locs[a].awb); // sort by AWB desc
-    const color=REGION_COLOR[rg]||'#334155';
-
-    if(!locList.length){
-      return`<div class="card" style="border-left:4px solid ${color}">
-        <div style="padding:12px 16px;font-size:12px;font-weight:800;color:${color};text-transform:uppercase">${xe(rg)}</div>
-        <div style="padding:8px 16px;font-size:11px;color:#94a3b8;font-style:italic">No HOV data for this region in uploaded files.</div>
-      </div>`;
-    }
-
-    const totalAWB=locList.reduce((s,l)=>s+locs[l].awb,0);
-    const totalPV=locList.reduce((s,l)=>s+locs[l].pv,0);
-    const CELL_HD=`padding:10px 14px;text-align:center;font-size:11px;font-weight:800;color:#fff;border:1px solid rgba(255,255,255,.2);white-space:nowrap`;
-    const CELL_HD_L=`padding:10px 14px;text-align:left;font-size:11px;font-weight:800;color:#fff;border:1px solid rgba(255,255,255,.2);white-space:nowrap`;
-    const CELL=`padding:9px 14px;text-align:center;font-size:11px;font-weight:700;border:1px solid #e2e8f0;white-space:nowrap`;
-    const CELL_L=`padding:9px 14px;text-align:left;font-size:11px;font-weight:700;border:1px solid #e2e8f0;white-space:nowrap`;
-
-    const rows=locList.map((loc,idx)=>{
-      const d=locs[loc];
-      const rowBg=idx%2===0?'#fff':'#f8fafc';
-      return`<tr style="background:${rowBg}">
-        <td style="${CELL}color:#64748b">${idx+1}</td>
-        <td style="${CELL_L}color:#0f2b25">${xe(loc)}</td>
-        <td style="${CELL}color:#0a4a35;font-size:13px">${fn(d.awb)}</td>
-        <td style="${CELL}color:#1e40af">₹${fn(Math.round(d.pv))}</td>
-      </tr>`;
-    }).join('');
-
-    return`<div class="card" style="border-left:5px solid ${color};overflow:hidden">
-      <div style="background:${color};padding:12px 18px;display:flex;align-items:center;justify-content:space-between">
-        <span style="font-size:13px;font-weight:900;color:#fff;text-transform:uppercase;letter-spacing:.8px">🗺 ${xe(rg)}</span>
-        <span style="font-size:11px;color:rgba(255,255,255,.85);font-weight:700">${fn(locList.length)} sites · ${fn(totalAWB)} AWBs · ₹${fn(Math.round(totalPV))}</span>
-      </div>
-      <div style="overflow-x:auto">
-        <table style="border-collapse:collapse;width:100%;font-family:var(--sans)">
-          <thead><tr style="background:${color}cc">
-            <th style="${CELL_HD};min-width:44px">S.NO</th>
-            <th style="${CELL_HD_L};min-width:160px">CURRENT LOCATION</th>
-            <th style="${CELL_HD};min-width:100px">TOTAL AWB COUNT</th>
-            <th style="${CELL_HD};min-width:120px">SUM OF PRODUCT VALUE</th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-          <tfoot><tr style="background:${color};color:#fff">
-            <td style="${CELL_HD}" colspan="2">GRAND TOTAL &nbsp;·&nbsp; ${fn(locList.length)} sites</td>
-            <td style="${CELL_HD};font-size:13px">${fn(totalAWB)}</td>
-            <td style="${CELL_HD};font-size:12px">₹${fn(Math.round(totalPV))}</td>
-          </tr></tfoot>
-        </table>
-      </div>
+  if(!rows.length){
+    el.innerHTML=`<div style="padding:12px;color:#94a3b8;font-size:11px;font-style:italic">
+      No HOV data found for <strong>${xe(rg)}</strong> in ${type==='fwd'?'Forward':'Reverse'} R@DC files.<br>
+      Ensure the uploaded file has a <strong>REGION</strong> column with matching values.
     </div>`;
+    return;
+  }
+
+  // Group by location → {awb count, pv sum}
+  const locMap={};
+  rows.forEach(r=>{
+    const loc=(r.loc||r.location||'UNKNOWN').toUpperCase().trim();
+    const pv=parseFloat(r.pv)||0;
+    if(!locMap[loc])locMap[loc]={awb:0,pv:0};
+    locMap[loc].awb++;locMap[loc].pv+=pv;
+  });
+  const locs=Object.keys(locMap).sort((a,b)=>locMap[b].awb-locMap[a].awb);
+  const totalAWB=locs.reduce((s,l)=>s+locMap[l].awb,0);
+  const totalPV=locs.reduce((s,l)=>s+locMap[l].pv,0);
+
+  const rowsHtml=locs.map((loc,i)=>{
+    const bg=i%2===0?'#fff':'#f8fafc';
+    return`<tr style="background:${bg}">
+      <td style="padding:9px 14px;text-align:center;font-size:11px;font-weight:700;border:1px solid #e2e8f0;color:#64748b">${i+1}</td>
+      <td style="padding:9px 14px;text-align:left;font-size:11px;font-weight:700;border:1px solid #e2e8f0;color:#0f2b25;white-space:nowrap">${xe(loc)}</td>
+      <td style="padding:9px 14px;text-align:center;font-size:12px;font-weight:800;border:1px solid #e2e8f0;color:#0a4a35">${fn(locMap[loc].awb)}</td>
+      <td style="padding:9px 14px;text-align:center;font-size:11px;font-weight:700;border:1px solid #e2e8f0;color:#1e40af">₹${fn(Math.round(locMap[loc].pv))}</td>
+    </tr>`;
   }).join('');
 
-  content.innerHTML=html||`<div style="padding:20px;color:#94a3b8;text-align:center">No data available for selected regions.</div>`;
+  el.innerHTML=`
+    <div style="margin-bottom:10px;font-size:12px;font-weight:900;color:${color};text-transform:uppercase;letter-spacing:.5px">
+      ${xe(rg)} &nbsp;·&nbsp; <span style="font-size:11px;font-weight:600;color:#64748b">${fn(locs.length)} sites · ${fn(totalAWB)} AWBs</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table style="border-collapse:collapse;width:100%;font-family:var(--sans);font-size:11px">
+        <thead><tr style="background:${color}">
+          <th style="padding:10px 14px;text-align:center;font-size:11px;font-weight:800;color:#fff;border:1px solid rgba(255,255,255,.2);white-space:nowrap;min-width:44px">S.NO</th>
+          <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:800;color:#fff;border:1px solid rgba(255,255,255,.2);white-space:nowrap;min-width:160px">CURRENT LOCATION</th>
+          <th style="padding:10px 14px;text-align:center;font-size:11px;font-weight:800;color:#fff;border:1px solid rgba(255,255,255,.2);white-space:nowrap;min-width:120px">TOTAL AWB COUNT</th>
+          <th style="padding:10px 14px;text-align:center;font-size:11px;font-weight:800;color:#fff;border:1px solid rgba(255,255,255,.2);white-space:nowrap;min-width:140px">SUM OF PRODUCT VALUE</th>
+        </tr></thead>
+        <tbody>${rowsHtml}</tbody>
+        <tfoot><tr style="background:${color}">
+          <td colspan="2" style="padding:10px 14px;text-align:left;font-size:11px;font-weight:900;color:#fff;border:1px solid rgba(255,255,255,.2)">
+            GRAND TOTAL &nbsp;·&nbsp; ${fn(locs.length)} sites
+          </td>
+          <td style="padding:10px 14px;text-align:center;font-size:13px;font-weight:900;color:#fff;border:1px solid rgba(255,255,255,.2)">${fn(totalAWB)}</td>
+          <td style="padding:10px 14px;text-align:center;font-size:12px;font-weight:900;color:#fff;border:1px solid rgba(255,255,255,.2)">₹${fn(Math.round(totalPV))}</td>
+        </tr></tfoot>
+      </table>
+    </div>`;
 }
+
+/* ── Called by switchHovSubTab(4) ── */
+function renderHovRegionOverview(){
+  // Populate region lists if a region is already selected
+  _regRenderList('fwd','');
+  _regRenderList('rev','');
+  // Re-render current selection (if any)
+  if(_regSelFwd)_regRenderTable('fwd',_regSelFwd);
+  if(_regSelRev)_regRenderTable('rev',_regSelRev);
+}
+
 
 /* ── HOV Overview structured PDF report ── */
 function generateHovPDF(tabIdx){
