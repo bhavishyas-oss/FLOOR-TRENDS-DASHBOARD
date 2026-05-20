@@ -8355,15 +8355,29 @@ function doGet(e) {
     }
   }
 
-  /* ── getMaster — reads ALL MASTER SNAPSHOT partitions ── */
-  if (action === 'getMaster') {
+  /* ── getMasterJSON — returns master data as JSON, for direct fetch by any device ── */
+  if (action === 'getMasterJSON' || action === 'getMaster') {
     try {
       var ss  = getSS();
       var res = getMasterFromAllPartitions(ss);
       var selfUrl = res.selfUrl || '';
       try{selfUrl=ScriptApp.getService().getUrl();}catch(e){}
-      if(res.n===0) return buildResponse(JSON.stringify({ok:false,reason:'no_snapshot',appScriptUrl:selfUrl}));
-      return buildResponse(JSON.stringify({ok:true,master:JSON.stringify(res.master),appScriptUrl:selfUrl}));
+      if(res.n===0) return buildResponse(JSON.stringify({ok:false,reason:'no_snapshot',appScriptUrl:selfUrl,n:0}));
+      return buildResponse(JSON.stringify({ok:true,master:JSON.stringify(res.master),appScriptUrl:selfUrl,n:res.n}));
+    }catch(err){return buildResponse(JSON.stringify({ok:false,error:err.message}));}
+  }
+
+  /* ── getMasterRaw — returns each master record as a separate JSON line (NDJSON)
+     Easier to parse for large datasets. No auth. Returns newline-delimited JSON.   */
+  if (action === 'getMasterRaw') {
+    try {
+      var ss3 = getSS();
+      var rows3 = getAllLightweightRows(ss3, 'MASTER SNAPSHOT');
+      var selfUrl3 = '';
+      try{selfUrl3=ScriptApp.getService().getUrl();}catch(e){}
+      // Return all rows as JSON array (skip __url__ sentinel rows)
+      var dataRows=rows3.filter(function(r){return String(r[0]).trim()!=='__url__'&&r[0];});
+      return buildResponse(JSON.stringify({ok:true,appScriptUrl:selfUrl3,rows:dataRows,n:dataRows.length}));
     }catch(err){return buildResponse(JSON.stringify({ok:false,error:err.message}));}
   }
 
@@ -9430,32 +9444,81 @@ async function pushMasterSnapshot(){
 
 const GS_GVIZ_BASE=`https://docs.google.com/spreadsheets/d/${GS_SHEET_ID}/gviz/tq`;
 
-/* Fetch one sheet's data as array-of-arrays via gviz CSV (fastest, no parsing issues) */
+/* ── Fetch a sheet's CSV data — multiple strategies for cross-device reliability ──
+   Strategy A: Google Sheets API v4 (no API key needed for publicly shared sheets)
+   Strategy B: gviz CSV with no-cors mode → read via readable response
+   Strategy C: export?format=csv (works for published sheets)
+   Returns array-of-arrays (row[0] = headers), or null if all fail.            */
 async function _gvizCSV(sheetName){
-  const url=`${GS_GVIZ_BASE}?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+  const encoded=encodeURIComponent(sheetName);
+
+  // Strategy A: Sheets API v4 — works for "Anyone with link can view" spreadsheets
+  // No API key needed for public sheets. Returns JSON with rows array.
   try{
-    const resp=await fetch(url,{cache:'no-cache',mode:'cors'});
-    if(!resp.ok)return null;
-    const text=await resp.text();
-    if(!text||text.length<5)return null;
-    // Simple CSV parser (handles quoted fields)
-    const rows=[];
-    let line='',inQ=false;
-    const cells=[];
-    for(let i=0;i<text.length;i++){
-      const ch=text[i];
-      if(ch==='"'){inQ=!inQ;}
-      else if(ch===','&&!inQ){cells.push(line.replace(/^"|"$/g,'').replace(/""/g,'"'));line='';}
-      else if((ch==='\n'||ch==='\r')&&!inQ){
-        cells.push(line.replace(/^"|"$/g,'').replace(/""/g,'"'));line='';
-        if(cells.some(c=>c!==''))rows.push([...cells]);
-        cells.length=0;
-        if(ch==='\r'&&text[i+1]==='\n')i++;
-      }else{line+=ch;}
+    const apiUrl=`https://sheets.googleapis.com/v4/spreadsheets/${GS_SHEET_ID}/values/${encoded}`;
+    const r=await fetch(apiUrl,{cache:'no-cache'});
+    if(r.ok){
+      const j=await r.json();
+      if(j.values&&j.values.length>1)return j.values; // j.values[0] = headers
     }
-    if(cells.some(c=>c!==''))rows.push(cells.map(c=>c.replace(/^"|"$/g,'').replace(/""/g,'"')));
-    return rows.length>1?rows:null; // first row is header
-  }catch(e){return null;}
+  }catch(e){console.log(`Sheets API v4 failed for "${sheetName}":`,e.message);}
+
+  // Strategy B: gviz CSV — works for publicly shared sheets
+  try{
+    const url=`${GS_GVIZ_BASE}?tqx=out:csv&sheet=${encoded}`;
+    const r=await fetch(url,{cache:'no-cache',credentials:'omit'});
+    if(r.ok){
+      const text=await r.text();
+      if(text&&text.length>10&&!text.includes('<!DOCTYPE')&&!text.includes('<html')){
+        return _parseCSVText(text);
+      }
+    }
+  }catch(e){console.log(`gviz CSV failed for "${sheetName}":`,e.message);}
+
+  // Strategy C: gviz JSON with JSONP-style strip
+  try{
+    const url=`${GS_GVIZ_BASE}?tqx=out:json&sheet=${encoded}`;
+    const r=await fetch(url,{cache:'no-cache',credentials:'omit'});
+    if(r.ok){
+      const text=await r.text();
+      // gviz wraps JSON in /*O_o*/google.visualization.Query.setResponse(...)
+      const match=text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\)/);
+      const clean=match?match[1]:text.replace(/^[^(]+\(/,'').replace(/\);?\s*$/,'');
+      const data=JSON.parse(clean);
+      const rows2=data?.table?.rows||[];
+      const cols=(data?.table?.cols||[]).map(c=>c.label||c.id||'');
+      if(cols.length&&rows2.length){
+        const out=[cols];
+        rows2.forEach(row=>{
+          out.push((row.c||[]).map(cell=>cell?String(cell.v??cell.f??''):''));
+        });
+        return out;
+      }
+    }
+  }catch(e){console.log(`gviz JSON failed for "${sheetName}":`,e.message);}
+
+  return null;
+}
+
+/* Parse CSV text into array-of-arrays */
+function _parseCSVText(text){
+  const rows=[];
+  let line='',inQ=false;
+  const cells=[];
+  const flush=()=>{cells.push(line.replace(/^"|"$/g,'').replace(/""/g,'"'));line='';};
+  for(let i=0;i<text.length;i++){
+    const ch=text[i];
+    if(ch==='"'){inQ=!inQ;}
+    else if(ch===','&&!inQ){flush();}
+    else if((ch==='\n'||ch==='\r')&&!inQ){
+      flush();
+      if(cells.some(c=>c!==''))rows.push([...cells]);
+      cells.length=0;
+      if(ch==='\r'&&text[i+1]==='\n')i++;
+    }else{line+=ch;}
+  }
+  flush();if(cells.some(c=>c!==''))rows.push([...cells]);
+  return rows.length>1?rows:null;
 }
 
 /* Parse MASTER SNAPSHOT CSV rows into master[] */
@@ -9515,25 +9578,32 @@ function _parseAvgCSV(rows){
    Works on ANY device, ANY browser, ANY Google account.
    No AppScript URL required. Spreadsheet must be shared "Anyone with link".   */
 async function _fetchMasterFromGviz(){
-  // Try partitioned sheet first, then legacy
-  const sheetNames=['MASTER SNAPSHOT_1','MASTER SNAPSHOT'];
+  // Try all known MASTER SNAPSHOT partition names (both legacy and numbered)
+  const sheetNames=['MASTER SNAPSHOT_1','MASTER SNAPSHOT_2','MASTER SNAPSHOT_3','MASTER SNAPSHOT'];
   let allRows=[];
+  let sheetsRead=0;
+
   for(const sn of sheetNames){
     const rows=await _gvizCSV(sn);
-    if(rows){allRows=allRows.concat(rows.slice(1));} // skip header row of each partition
+    if(rows&&rows.length>1){
+      allRows=allRows.concat(rows.slice(1)); // skip header of each partition
+      sheetsRead++;
+      console.log(`gviz: read ${rows.length-1} rows from "${sn}"`);
+    }
   }
-  if(!allRows.length){console.log('gviz: no MASTER SNAPSHOT data found');return false;}
 
-  // Parse master data
+  if(!allRows.length){
+    console.log(`gviz: no MASTER SNAPSHOT data found in any sheet (tried ${sheetNames.length} names)`);
+    console.log('gviz: ensure spreadsheet is shared as "Anyone with link can view"');
+    return false;
+  }
+
   const parsed=_parseMasterCSV([['Type','Date','Count','Locations','Bins','Messages','LastUpdated'],...allRows]);
-  if(parsed.n===0){console.log('gviz: snapshot empty');return false;}
+  console.log(`gviz: parsed ${parsed.n} master records from ${sheetsRead} partition(s)`);
 
-  console.log(`gviz: parsed ${parsed.n} master records from spreadsheet`);
-
-  // Cache discovered AppScript URL if present in sentinel row
+  if(parsed.n===0)return false;
   if(parsed.selfUrl)_cacheAppScriptUrl(parsed.selfUrl);
 
-  // Merge into master (higher-count wins per date)
   const types=['forward','reverse','lmodc','forwardShort'];
   let changed=false;
   const localTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
@@ -9548,20 +9618,17 @@ async function _fetchMasterFromGviz(){
       else if((r.count||0)>(local.count||0)){const idx=master[type].findIndex(lr=>lr.date===r.date);if(idx>=0){master[type][idx]=r;changed=true;}}
     });
   });
-
-  if(changed){
-    try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){}
-  }
+  if(changed)try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){}
   return true;
 }
 
 /* ── Restore rolling averages from SITE AVERAGES sheet via gviz ── */
 async function _fetchAvgsFromGviz(){
-  const sheetNames=['SITE AVERAGES_1','SITE AVERAGES'];
+  const sheetNames=['SITE AVERAGES_1','SITE AVERAGES_2','SITE AVERAGES'];
   let total=0;
   for(const sn of sheetNames){
     const rows=await _gvizCSV(sn);
-    if(rows)total+=_parseAvgCSV(rows);
+    if(rows&&rows.length>1){total+=_parseAvgCSV(rows);console.log(`gviz: restored averages from "${sn}"`);}
   }
   if(total>0){
     try{localStorage.setItem(RA_KEY,JSON.stringify(_rollingAvg));}catch(e){}
@@ -9574,86 +9641,69 @@ async function fetchMasterFromSheets(){
   const url=getGsUrl();
   if(!url)return false;
   try{
+    // Try getMaster first (returns parsed master object)
     const resp=await fetch(url+'?action=getMaster',{
-      method:'GET',
-      headers:{'Accept':'application/json'},
-      cache:'no-cache'
+      method:'GET',headers:{'Accept':'application/json'},cache:'no-cache'
     });
-    if(!resp.ok){console.warn('fetchMasterFromSheets: HTTP',resp.status);return false;}
+    if(!resp.ok){
+      // Try getMasterRaw (returns raw rows — more reliable if master object is large)
+      console.warn('fetchMasterFromSheets: getMaster HTTP',resp.status,'— trying getMasterRaw');
+      const r2=await fetch(url+'?action=getMasterRaw',{method:'GET',cache:'no-cache'});
+      if(!r2.ok)return false;
+      const j2=await r2.json();
+      if(j2.appScriptUrl)_cacheAppScriptUrl(j2.appScriptUrl);
+      if(!j2.ok||!j2.rows||!j2.rows.length)return false;
+      // Parse raw rows into master
+      const parsed=_parseMasterCSV([['Type','Date','Count','Locations','Bins','Messages','LastUpdated'],...j2.rows.map(r=>r.map(String))]);
+      if(!parsed.n)return false;
+      return _applyFetchedMaster(parsed.master,parsed.n);
+    }
+
     const json=await resp.json();
-
-    // CROSS-DEVICE FIX: AppScript now returns its own URL in every response.
-    // Cache it so other devices that discover this master can also push data.
-    if(json.appScriptUrl) _cacheAppScriptUrl(json.appScriptUrl);
-
-    if(!json.ok||!json.master){console.log('fetchMasterFromSheets: no snapshot available');return false;}
+    if(json.appScriptUrl)_cacheAppScriptUrl(json.appScriptUrl);
+    if(!json.ok||!json.master)return false;
 
     let fetched;
     try{fetched=typeof json.master==='string'?JSON.parse(json.master):json.master;}
-    catch{console.warn('fetchMasterFromSheets: snapshot parse failed');return false;}
+    catch{return false;}
 
-    // Count AWBs in Sheets vs local
-    const sheetsTotal=Object.values(fetched).reduce((s,arr)=>s+(arr||[]).reduce((s2,r)=>s2+(r.count||0),0),0);
-    const localTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+r.count,0),0);
-
-    if(sheetsTotal===0){console.log('fetchMasterFromSheets: snapshot is empty');return false;}
-
-    // STRATEGY: Use Sheets data if it has equal-or-more AWBs than local.
-    // If local is empty → full replace.
-    // If Sheets has more or equal → merge by taking the superset (all dates from both).
-    // Never reduce data — always grow.
-    const types=['forward','reverse','lmodc','forwardShort'];
-    let didChange=false;
-
-    if(localTotal===0){
-      // Local master is empty — fully restore from Sheets snapshot
-      types.forEach(type=>{
-        const fetchedArr=fetched[type]||[];
-        if(fetchedArr.length){
-          master[type]=[...fetchedArr];
-          didChange=true;
-        }
-      });
-      console.log(`fetchMasterFromSheets: FULL RESTORE — ${sheetsTotal} AWBs from Sheets snapshot`);
-    }else{
-      // Local has data — merge: add dates from Sheets that aren't local, update dates where Sheets has more AWBs
-      types.forEach(type=>{
-        const fetchedArr=fetched[type]||[];
-        if(!fetchedArr.length)return;
-        const localMap=new Map((master[type]||[]).map(r=>[r.date,r]));
-
-        fetchedArr.forEach(r=>{
-          const local=localMap.get(r.date);
-          if(!local){
-            // Date missing locally — add from Sheets
-            (master[type]=master[type]||[]).push(r);
-            didChange=true;
-          }else if((r.count||0)>(local.count||0)){
-            // Sheets has higher count for this date — replace local record
-            const idx=master[type].findIndex(lr=>lr.date===r.date);
-            if(idx>=0){master[type][idx]=r;didChange=true;}
-          }
-        });
-      });
-      if(didChange){
-        console.log(`fetchMasterFromSheets: MERGED — added/updated records (local: ${localTotal}, sheets: ${sheetsTotal})`);
-      }else{
-        console.log('fetchMasterFromSheets: local data up to date');
-      }
-    }
-
-    if(didChange||localTotal===0){
-      // Always persist merged master to localStorage for next boot
-      try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){console.warn('localStorage master write:',e.message);}
-    }
-
-    // Return true any time we got a valid response — always trigger re-render
-    return true;
+    return _applyFetchedMaster(fetched,json.n||1);
   }catch(e){
     console.warn('fetchMasterFromSheets failed (non-fatal):',e.message);
     return false;
   }
 }
+
+/* Apply fetched master data into master[] — shared logic for getMaster + getMasterRaw */
+function _applyFetchedMaster(fetched,n){
+  const sheetsTotal=Object.values(fetched).reduce((s,arr)=>s+(arr||[]).reduce((s2,r)=>s2+(r.count||0),0),0);
+  const localTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
+  if(sheetsTotal===0)return false;
+
+  const types=['forward','reverse','lmodc','forwardShort'];
+  let didChange=false;
+  if(localTotal===0){
+    types.forEach(type=>{const a=fetched[type]||[];if(a.length){master[type]=[...a];didChange=true;}});
+    console.log(`fetchMasterFromSheets: FULL RESTORE — ${sheetsTotal} AWBs`);
+  }else{
+    types.forEach(type=>{
+      const fetchedArr=fetched[type]||[];
+      if(!fetchedArr.length)return;
+      const localMap=new Map((master[type]||[]).map(r=>[r.date,r]));
+      fetchedArr.forEach(r=>{
+        const local=localMap.get(r.date);
+        if(!local){(master[type]=master[type]||[]).push(r);didChange=true;}
+        else if((r.count||0)>(local.count||0)){const idx=master[type].findIndex(lr=>lr.date===r.date);if(idx>=0){master[type][idx]=r;didChange=true;}}
+      });
+    });
+    if(didChange)console.log(`fetchMasterFromSheets: MERGED (local:${localTotal}, sheets:${sheetsTotal})`);
+  }
+  if(didChange||localTotal===0){
+    try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){}
+  }
+  return true;
+}
+
 
 /* ═══════════════════════════════════════════════════════════════
    ROLE-BASED ACCESS CONTROL
