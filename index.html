@@ -6137,7 +6137,16 @@ function _regRenderList(type,query){
   const filtered=q?all.filter(rg=>rg.toLowerCase().includes(q)):all;
   const sel=type==='fwd'?_regSelFwd:_regSelRev;
   const color=type==='fwd'?'#1e40af':'#065f46';
-  list.innerHTML=filtered.length===0
+  // Add SELECT ALL as first item
+  const selectAllHtml=`<div onclick="_regSelectRegion('${type}','__ALL__')"
+    style="padding:9px 14px;cursor:pointer;font-size:12px;font-weight:${sel==='__ALL__'?'900':'700'};
+      color:${color};background:${sel==='__ALL__'?'#eff6ff':'#f8fafc'};
+      border-bottom:2px solid ${color};letter-spacing:.4px"
+    onmouseover="this.style.background='#dbeafe'"
+    onmouseout="this.style.background='${sel==='__ALL__'?'#eff6ff':'#f8fafc'}'">
+    ${sel==='__ALL__'?'✓ ':''} ★ SELECT ALL REGIONS
+  </div>`;
+  list.innerHTML=selectAllHtml+(filtered.length===0
     ?'<div style="padding:10px 14px;font-size:11px;color:#94a3b8">No regions found</div>'
     :filtered.map(rg=>{
       const isSelected=rg===sel;
@@ -6149,47 +6158,53 @@ function _regRenderList(type,query){
         onmouseout="this.style.background='${isSelected?'#eff6ff':'transparent'}'">
         ${isSelected?'✓ ':''} ${xe(rg)}
       </div>`;
-    }).join('');
+    }).join(''));
 }
 
 /* ── User selects a region ── */
 function _regSelectRegion(type,rg){
   if(type==='fwd') _regSelFwd=rg;
   else _regSelRev=rg;
-  // Update trigger label
   const lblId=type==='fwd'?'hovRegFwdLabel':'hovRegRevLabel';
-  const lbl=document.getElementById(lblId);if(lbl)lbl.textContent=rg;
-  // Close dropdown
+  const lbl=document.getElementById(lblId);
+  if(lbl)lbl.textContent=rg==='__ALL__'?'All Regions':rg;
   const dropId=type==='fwd'?'hovRegFwdDrop':'hovRegRevDrop';
   const d=document.getElementById(dropId);if(d)d.style.display='none';
-  // Render the region table
   _regRenderTable(type,rg);
 }
 
-/* ── Render the pivot table for one fileType × region ── */
+/* ── Render: handles single region OR '__ALL__' (all 5 regions) ── */
 function _regRenderTable(type,rg){
   const contentId=type==='fwd'?'hovRegFwdContent':'hovRegRevContent';
   const el=document.getElementById(contentId);if(!el)return;
   const fileType=type==='fwd'?'forward':'reverse';
-  const color=REGION_COLOR[rg]||'#334155';
   const raw=master.hovAllRaw||[];
 
-  // Filter rows by fileType AND region (case-insensitive)
-  const rgNorm=rg.toUpperCase().trim();
-  const rows=raw.filter(r=>{
-    if(r.fileType!==fileType)return false;
-    return(r.region||'').toUpperCase().trim()===rgNorm;
-  });
-
-  if(!rows.length){
-    el.innerHTML=`<div style="padding:12px;color:#94a3b8;font-size:11px;font-style:italic">
-      No HOV data found for <strong>${xe(rg)}</strong> in ${type==='fwd'?'Forward':'Reverse'} R@DC files.<br>
-      Ensure the uploaded file has a <strong>REGION</strong> column with matching values.
-    </div>`;
+  // ── SELECT ALL: render all 5 regions stacked ────────────────────────────
+  if(rg==='__ALL__'){
+    const dataRgs=new Set(raw.filter(r=>r.fileType===fileType).map(r=>(r.region||'').toUpperCase().trim()).filter(Boolean));
+    HOV_REGIONS.forEach(r2=>dataRgs.add(r2));
+    const allRgs=[...dataRgs].sort((a,b)=>HOV_REGIONS.indexOf(a)-HOV_REGIONS.indexOf(b)||(a>b?1:-1));
+    const sections=allRgs.map(rgName=>_regBuildTable(raw,fileType,rgName)).join('');
+    el.innerHTML=sections||`<div style="padding:12px;color:#94a3b8;font-size:11px;font-style:italic">No HOV data found in ${type==='fwd'?'Forward':'Reverse'} R@DC files.</div>`;
     return;
   }
 
-  // Group by location → {awb count, pv sum}
+  // ── Single region ────────────────────────────────────────────────────────
+  el.innerHTML=_regBuildTable(raw,fileType,rg);
+}
+
+/* ── Build HTML for one fileType × region ── */
+function _regBuildTable(raw,fileType,rg){
+  const color=REGION_COLOR[rg]||'#334155';
+  const rgNorm=rg.toUpperCase().trim();
+  const rows=raw.filter(r=>r.fileType===fileType&&(r.region||'').toUpperCase().trim()===rgNorm);
+
+  if(!rows.length){
+    return`<div style="padding:8px 12px;margin-bottom:8px;border-left:3px solid ${color};color:#94a3b8;font-size:11px;font-style:italic">
+      No data for <strong>${xe(rg)}</strong> — ensure uploaded file has a REGION column.</div>`;
+  }
+
   const locMap={};
   rows.forEach(r=>{
     const loc=(r.loc||r.location||'UNKNOWN').toUpperCase().trim();
@@ -6201,38 +6216,35 @@ function _regRenderTable(type,rg){
   const totalAWB=locs.reduce((s,l)=>s+locMap[l].awb,0);
   const totalPV=locs.reduce((s,l)=>s+locMap[l].pv,0);
 
-  const rowsHtml=locs.map((loc,i)=>{
-    const bg=i%2===0?'#fff':'#f8fafc';
-    return`<tr style="background:${bg}">
-      <td style="padding:9px 14px;text-align:center;font-size:11px;font-weight:700;border:1px solid #e2e8f0;color:#64748b">${i+1}</td>
-      <td style="padding:9px 14px;text-align:left;font-size:11px;font-weight:700;border:1px solid #e2e8f0;color:#0f2b25;white-space:nowrap">${xe(loc)}</td>
-      <td style="padding:9px 14px;text-align:center;font-size:12px;font-weight:800;border:1px solid #e2e8f0;color:#0a4a35">${fn(locMap[loc].awb)}</td>
-      <td style="padding:9px 14px;text-align:center;font-size:11px;font-weight:700;border:1px solid #e2e8f0;color:#1e40af">₹${fn(Math.round(locMap[loc].pv))}</td>
-    </tr>`;
-  }).join('');
+  const rowsHtml=locs.map((loc,i)=>`<tr style="background:${i%2===0?'#fff':'#f8fafc'}">
+    <td style="padding:9px 14px;text-align:center;font-size:11px;font-weight:700;border:1px solid #e2e8f0;color:#64748b">${i+1}</td>
+    <td style="padding:9px 14px;text-align:left;font-size:11px;font-weight:700;border:1px solid #e2e8f0;color:#0f2b25;white-space:nowrap">${xe(loc)}</td>
+    <td style="padding:9px 14px;text-align:center;font-size:12px;font-weight:800;border:1px solid #e2e8f0;color:#0a4a35">${fn(locMap[loc].awb)}</td>
+    <td style="padding:9px 14px;text-align:center;font-size:11px;font-weight:700;border:1px solid #e2e8f0;color:#1e40af">₹${fn(Math.round(locMap[loc].pv))}</td>
+  </tr>`).join('');
 
-  el.innerHTML=`
-    <div style="margin-bottom:10px;font-size:12px;font-weight:900;color:${color};text-transform:uppercase;letter-spacing:.5px">
-      ${xe(rg)} &nbsp;·&nbsp; <span style="font-size:11px;font-weight:600;color:#64748b">${fn(locs.length)} sites · ${fn(totalAWB)} AWBs</span>
+  return`<div style="margin-bottom:16px">
+    <div style="background:${color};padding:9px 14px;border-radius:6px 6px 0 0;display:flex;justify-content:space-between;align-items:center">
+      <span style="font-size:12px;font-weight:900;color:#fff;text-transform:uppercase;letter-spacing:.5px">🗺 ${xe(rg)}</span>
+      <span style="font-size:11px;color:rgba(255,255,255,.85);font-weight:600">${fn(locs.length)} sites · ${fn(totalAWB)} AWBs</span>
     </div>
-    <div style="overflow-x:auto">
+    <div style="overflow-x:auto;border:1px solid ${color};border-top:none;border-radius:0 0 6px 6px">
       <table style="border-collapse:collapse;width:100%;font-family:var(--sans);font-size:11px">
-        <thead><tr style="background:${color}">
-          <th style="padding:10px 14px;text-align:center;font-size:11px;font-weight:800;color:#fff;border:1px solid rgba(255,255,255,.2);white-space:nowrap;min-width:44px">S.NO</th>
-          <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:800;color:#fff;border:1px solid rgba(255,255,255,.2);white-space:nowrap;min-width:160px">CURRENT LOCATION</th>
-          <th style="padding:10px 14px;text-align:center;font-size:11px;font-weight:800;color:#fff;border:1px solid rgba(255,255,255,.2);white-space:nowrap;min-width:120px">TOTAL AWB COUNT</th>
-          <th style="padding:10px 14px;text-align:center;font-size:11px;font-weight:800;color:#fff;border:1px solid rgba(255,255,255,.2);white-space:nowrap;min-width:140px">SUM OF PRODUCT VALUE</th>
+        <thead><tr style="background:${color}cc">
+          <th style="padding:9px 14px;text-align:center;font-size:11px;font-weight:800;color:#fff;border:1px solid rgba(255,255,255,.2);white-space:nowrap;min-width:44px">S.NO</th>
+          <th style="padding:9px 14px;text-align:left;font-size:11px;font-weight:800;color:#fff;border:1px solid rgba(255,255,255,.2);white-space:nowrap;min-width:160px">CURRENT LOCATION</th>
+          <th style="padding:9px 14px;text-align:center;font-size:11px;font-weight:800;color:#fff;border:1px solid rgba(255,255,255,.2);white-space:nowrap;min-width:120px">TOTAL AWB COUNT</th>
+          <th style="padding:9px 14px;text-align:center;font-size:11px;font-weight:800;color:#fff;border:1px solid rgba(255,255,255,.2);white-space:nowrap;min-width:140px">SUM OF PRODUCT VALUE</th>
         </tr></thead>
         <tbody>${rowsHtml}</tbody>
         <tfoot><tr style="background:${color}">
-          <td colspan="2" style="padding:10px 14px;text-align:left;font-size:11px;font-weight:900;color:#fff;border:1px solid rgba(255,255,255,.2)">
-            GRAND TOTAL &nbsp;·&nbsp; ${fn(locs.length)} sites
-          </td>
-          <td style="padding:10px 14px;text-align:center;font-size:13px;font-weight:900;color:#fff;border:1px solid rgba(255,255,255,.2)">${fn(totalAWB)}</td>
-          <td style="padding:10px 14px;text-align:center;font-size:12px;font-weight:900;color:#fff;border:1px solid rgba(255,255,255,.2)">₹${fn(Math.round(totalPV))}</td>
+          <td colspan="2" style="padding:9px 14px;text-align:left;font-size:11px;font-weight:900;color:#fff;border:1px solid rgba(255,255,255,.2)">GRAND TOTAL · ${fn(locs.length)} sites</td>
+          <td style="padding:9px 14px;text-align:center;font-size:13px;font-weight:900;color:#fff;border:1px solid rgba(255,255,255,.2)">${fn(totalAWB)}</td>
+          <td style="padding:9px 14px;text-align:center;font-size:12px;font-weight:900;color:#fff;border:1px solid rgba(255,255,255,.2)">₹${fn(Math.round(totalPV))}</td>
         </tr></tfoot>
       </table>
-    </div>`;
+    </div>
+  </div>`;
 }
 
 /* ── Called by switchHovSubTab(4) ── */
@@ -6528,7 +6540,7 @@ function generateHovPDF(tabIdx){
   expandEl(panel);
   panel.querySelectorAll('[style*="overflow"],[style*="max-height"]').forEach(expandEl);
 
-  const W=Math.max(panel.scrollWidth,1400); // wide enough to prevent right-side crop
+  const W=Math.max(panel.scrollWidth,2400); // match PNG capture width — prevents right-side crop
   const H=panel.scrollHeight;
 
   html2canvas(panel,{
@@ -7055,11 +7067,67 @@ async function runHovFiles(files){
 function onHovSave(){if(!requireAdmin('Save HOV Data'))return;if(persistM())toast('✅ HOV data saved to master','tok');}
 function onHovClear(){
   if(!requireAdmin('Clear HOV Data'))return;
-  if(!confirm('Clear all HOV data?'))return;
-  master.hov=[];master.hovPV=[];persistM();
+  if(!confirm('Clear ALL HOV data? This resets all HOV tabs, charts, tables, and cached data.'))return;
+
+  // 1. Clear master HOV data stores (aggregates + raw + PV)
+  master.hov=[];master.hovPV=[];master.hovAllRaw=[];
+  master.hovFwdRaw=[];master.hovRevRaw=[];master.hovLMRaw=[];master.hovShRaw=[];
+  persistM();
+
+  // 2. Clear file breadcrumb display
   const b=document.getElementById('hovBrow');
-  if(b)b.innerHTML='<span style="color:#94a3b8;font-size:11px">HOV data cleared</span>';
-  renderHovTab();toast('🗑 HOV data cleared','tw');
+  if(b)b.innerHTML='<span style="color:#94a3b8;font-size:11px">No HOV files loaded</span>';
+
+  // 3. Reset per-section filter states (_pfPCState, _pfDCState)
+  Object.keys(_pfPCState).forEach(k=>{delete _pfPCState[k];});
+  Object.keys(_pfDCState).forEach(k=>{delete _pfDCState[k];});
+
+  // 4. Reset HOV global DC/PC filter state
+  _hovDCselected=new Set(['ALL']);_hovDCall=[];
+  if(document.getElementById('hovDCtriggerLabel'))document.getElementById('hovDCtriggerLabel').textContent='All Sites';
+
+  // 5. Reset Region Overview state
+  _regSelFwd='';_regSelRev='';
+  ['hovRegFwdLabel','hovRegRevLabel'].forEach(id=>{const el=document.getElementById(id);if(el)el.textContent='— choose region —';});
+  ['hovRegFwdContent','hovRegRevContent'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el)el.innerHTML='<div style="color:#94a3b8;font-size:11px;font-style:italic">Select a region above to view data.</div>';
+  });
+
+  // 6. Reset all panel content areas
+  const clearIds=[
+    'hovPerFileWrap',        // HOV Overview per-file sections
+    'hovFwdBin1Wrap','hovFwdBin2Wrap',   // HOV Detailed forward
+    'hovRevFLMBin1Wrap','hovRevFLMBin2Wrap','hovRevRLMBin1Wrap','hovRevRLMBin2Wrap','hovRevNoLandWrap',
+    'hovSiteDetailWrap',     // HOV Detailed site detail
+    'hovD15Wrap','hovD15PerFileWrap','hovD15AWBWrap',  // D15+
+    'hovAUContent',          // Action User Trends
+    'hovRegFwdContent','hovRegRevContent'  // Region Overview
+  ];
+  clearIds.forEach(id=>{const el=document.getElementById(id);if(el)el.innerHTML='';});
+
+  // 7. Hide site detail card
+  const sdc=document.getElementById('hovSiteDetailCard');if(sdc)sdc.style.display='none';
+  const d15awbc=document.getElementById('hovD15AWBCard');if(d15awbc)d15awbc.style.display='none';
+
+  // 8. Re-render HOV Overview tab (shows empty state)
+  renderHovTab();
+
+  // 9. Force-refresh current active HOV sub-tab if not Overview
+  const activeIdx=[0,1,2,3,4].find(i=>{
+    const p=document.getElementById(`hovSubPanel${i}`);
+    return p&&p.style.display!=='none';
+  });
+  if(activeIdx!==undefined&&activeIdx!==0){
+    if(activeIdx===1)renderHovDetailed();
+    if(activeIdx===2)renderHovD15Tab();
+    if(activeIdx===3)renderHovActionUser();
+    if(activeIdx===4)renderHovRegionOverview();
+  }
+
+  // 10. Update summary bar (Grand Total etc.)
+  updateSummary();
+  toast('🗑 All HOV data cleared completely','tw');
 }
 
 /* HOV file input */
