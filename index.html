@@ -5641,7 +5641,8 @@ function renderHovPerFile(pcs){
     if(!pvByFile[key].some(e=>e.awb===r.awb))pvByFile[key].push(r);
   });
 
-  // Criticality by file — ALL AWBs matching PV≥10000, age D10-D30 (no dedup limit)
+  // Criticality by file — ALL AWBs matching PV≥10000, age D10-D30
+  // Dedup by AWB number PER FILE KEY to avoid cross-file duplicates only
   const critByFile={};
   (master.hovAllRaw||[]).forEach(r=>{
     const pv2=parseFloat(r.pv)||0;const age=parseInt(r.age)||0;
@@ -5649,9 +5650,13 @@ function renderHovPerFile(pcs){
     if(pcs&&pcs.length>0&&!pcs.includes(r.pc))return;
     if(!_hovDCFilter((r.loc||'').toUpperCase()))return;
     const key=`${r.fileType}|${r.date}`;
-    if(!critByFile[key])critByFile[key]=[];
-    // Dedup by AWB number only — prevent exact duplicate rows from double-processing
-    if(!critByFile[key].some(e=>e.awb&&e.awb===r.awb))critByFile[key].push(r);
+    if(!critByFile[key])critByFile[key]={rows:[],seenAwbs:new Set()};
+    // Dedup by AWB number within each file section only
+    const awbKey=r.awb||`${r.loc}|${r.pd}|${age}|${pv2}`;
+    if(!critByFile[key].seenAwbs.has(awbKey)){
+      critByFile[key].seenAwbs.add(awbKey);
+      critByFile[key].rows.push(r);
+    }
   });
 
   // Collect all unique PC values across all HOV data for per-section dropdowns
@@ -5693,7 +5698,7 @@ function renderHovPerFile(pcs){
     const tblHtml=pivTbl(hdrs,tblRows,foot,null); // no maxHeight — fully visible
 
     // ── Criticality — full expand, no scroll
-    const critRows=(critByFile[key]||[]).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
+    const critRows=((critByFile[key]||{}).rows||[]).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
     const critHtml=critRows.length===0
       ?`<div style="padding:8px;color:#94a3b8;font-size:11px;font-style:italic">No criticality entries (Age D10–D30 · PV ≥ ₹10,000)</div>`
       :pivTbl(
@@ -6147,36 +6152,57 @@ function switchHovSubTab(idx){
 ════════════════════════════════════════════════════════════════════════════ */
 
 /* Product normaliser — maps raw descriptions to canonical product groups */
+/* ── Product type normaliser ───────────────────────────────────────────────
+   ORDER MATTERS — more specific patterns first.
+   Uses \b word boundaries to prevent partial-word matches.
+   Examples prevented:
+     "HAIR CONDITIONER" → should NOT match "air.*condition" → now caught by hair-care first
+     "EARBUDS" → caught by earbud before any 'bud' partial match
+   Each raw description is tested against patterns IN ORDER; first match wins.  */
 const _PT_MAP=[
-  [/mobile|phone|smartphone|iphone|samsung.*m|oneplus|realme|poco|vivo|oppo|motorola|tecno/i,'Mobile Phones'],
-  [/earbud|earphone|airpod|tws|wireless.*ear|bluetooth.*ear/i,'Earbuds / TWS'],
-  [/headphone|headset|neckband|over.ear/i,'Headphones'],
-  [/laptop|macbook|notebook|chromebook/i,'Laptops'],
-  [/tablet|ipad/i,'Tablets'],
-  [/watch|smartwatch|fitbit|garmin|wearable/i,'Smartwatches'],
-  [/mattress|mattres/i,'Mattresses'],
-  [/television|tv\b|smart\s*tv|qled|oled/i,'Televisions'],
-  [/refrigerator|fridge|cooler/i,'Refrigerators'],
-  [/washing.*machine|washer/i,'Washing Machines'],
-  [/air.*condition|ac\b|split.*ac/i,'Air Conditioners'],
-  [/speaker|soundbar|subwoofer|bluetooth.*speak/i,'Speakers'],
-  [/camera|dslr|mirrorless/i,'Cameras'],
-  [/charger|adapter|power.*bank|powerbank/i,'Chargers / Power Banks'],
-  [/shoe|footwear|sneaker|sandal/i,'Footwear'],
-  [/cloth|t.shirt|shirt|trouser|kurta|saree|jeans|apparel|dress/i,'Apparel'],
-  [/bag|backpack|luggage|handbag|wallet|purse/i,'Bags / Luggage'],
-  [/toy|game|puzzle|doll/i,'Toys / Games'],
-  [/book|novel|diary|stationery/i,'Books / Stationery'],
-  [/mpsr/i,'MPSR Items'],
-  [/cosmetic|beauty|skincare|makeup|serum|cream|shampoo/i,'Beauty / Personal Care'],
-  [/supplement|protein|vitamin|health/i,'Health Supplements'],
-  [/kitchen|cookware|vessel|pan|cooker/i,'Kitchen Appliances'],
-  [/jewel|ring|necklace|bracelet|earring|pendant/i,'Jewellery'],
+  // Hair / personal care MUST come before Air Conditioner to avoid partial match
+  [/\bhair\b.*conditioner|conditioner.*\bhair\b|hair\s*care|hair\s*oil|hair\s*serum|hair\s*color|hair\s*dye|hair\s*mask|shampoo|conditioner/i,'Hair Care'],
+  // Mobile phones — word boundary on 'phone' to avoid 'headphone'
+  [/\bsmartphone\b|\biphone\b|mobile\s*phone|\boneplus\b|\brealme\b|\bpoco\b|\bvivo\b|\boppo\b|\bmotorola\b|\btecno\b|samsung\s*galaxy|samsung\s*m\d|samsung\s*a\d|\bxiaomi\b|\bnarzo\b/i,'Mobile Phones'],
+  // Must test 'phone' alone AFTER 'headphone' rule below; use negative lookbehind
+  [/(?<!head)\bphone\b(?!.*\bhead)/i,'Mobile Phones'],
+  // Earbuds — before 'bud' partial matches
+  [/\bearbud|earphone|\bairpod|\btws\b|wireless\s*ear|bluetooth\s*ear/i,'Earbuds / TWS'],
+  // Headphones — before generic 'phone' rule
+  [/\bheadphone|\bheadset|\bneckband\b|over\s*ear\s*head/i,'Headphones'],
+  [/\blaptop\b|\bmacbook\b|\bnotebook\b|\bchromebook\b/i,'Laptops'],
+  [/\btablet\b|\bipad\b/i,'Tablets'],
+  [/\bsmart\s*watch|\bfitbit\b|\bgarmin\b|\bwearable\b/i,'Smartwatches'],
+  // Mattresses
+  [/\bmattress|\bmattres\b/i,'Mattresses'],
+  [/\btelevision\b|\bsmart\s*tv\b|\bqled\b|\boled\b|\b\d{2,3}\s*inch\s*tv\b/i,'Televisions'],
+  // Must come before standalone 'tv' to avoid hitting brand names
+  [/\btv\b/i,'Televisions'],
+  [/\brefrigerator\b|\bfridge\b/i,'Refrigerators'],
+  [/\bwashing\s*machine\b|\bwasher\b/i,'Washing Machines'],
+  // Air Conditioner — uses \bair\b to avoid partial match in words like 'chair','hair'
+  [/\bair\s*condition|\bsplit\s*ac\b|\bwindow\s*ac\b|\binverter\s*ac\b/i,'Air Conditioners'],
+  [/\bac\b\s*(ton|hp|\d)/i,'Air Conditioners'],
+  [/\bspeaker\b|\bsoundbar\b|\bsubwoofer\b/i,'Speakers'],
+  [/\bcamera\b|\bdslr\b|\bmirrorless\b|\baction\s*cam\b/i,'Cameras'],
+  [/\bcharger\b|\badapter\b|\bpower\s*bank\b|\bpowerbank\b/i,'Chargers / Power Banks'],
+  [/\bshoe\b|\bfootwear\b|\bsneaker\b|\bsandal\b|\bchappal\b/i,'Footwear'],
+  [/\bt[\-\s]?shirt\b|\btrouser\b|\bkurta\b|\bsaree\b|\bjeans\b|\bapparel\b|\bdress\b|\blegging\b/i,'Apparel'],
+  [/\bbackpack\b|\bluggage\b|\bhandbag\b|\bwallet\b|\bpurse\b|\bsling\s*bag\b/i,'Bags / Luggage'],
+  [/\btoy\b|\bpuzzle\b|\bdoll\b|\bfidget\b/i,'Toys / Games'],
+  [/\bnovel\b|\bdiary\b|\bstationery\b|\bnotebook\s*paper\b/i,'Books / Stationery'],
+  [/\bmpsr\b/i,'MPSR Items'],
+  // Cosmetics / beauty — after hair care to avoid double-classify
+  [/\bcosmetic\b|\bskincare\b|\bmakeup\b|\bserum\b|\bcream\b|\bfoundation\b|\blipstick\b|\bperfume\b|\bdeodor/i,'Beauty / Personal Care'],
+  [/\bsupplement\b|\bprotein\b|\bvitamin\b|\bhealth\s*drink\b/i,'Health Supplements'],
+  [/\bcookware\b|\bvessel\b|\bkadai\b|\bpressure\s*cook\b/i,'Kitchen Appliances'],
+  [/\bjewel\b|\bring\b|\bnecklace\b|\bbracelet\b|\bearring\b|\bpendant\b|\bgold\b|\bsilver\b/i,'Jewellery'],
 ];
 
 function _normProduct(pd){
   if(!pd)return'Other';
-  for(const[re,label]of _PT_MAP)if(re.test(pd))return label;
+  const s=pd.trim();
+  for(const[re,label]of _PT_MAP)if(re.test(s))return label;
   return'Other';
 }
 
@@ -6186,30 +6212,55 @@ const _THEFT_RISK_TYPES=new Set(['Mobile Phones','Earbuds / TWS','Headphones','S
 
 function _isTheftRiskProduct(pt){return _THEFT_RISK_TYPES.has(pt);}
 
-/* ── Build aggregates from hovAllRaw for a specific fileType ─────────────── */
+/* ── Build aggregates from hovAllRaw for a specific fileType ─────────────────
+   DEDUP: each AWB number is counted ONCE per map (no double-counting if
+   multiple partial row sources produce duplicate AWBs).
+   REVERSE FALLBACK: for Reverse files, prefer DSP values; fall back to
+   ACTION USER / BIN LEVEL / MESSAGE when DSP values are blank or #N/A.        */
+function _isNA(v){return!v||v==='#N/A'||v==='-'||v==='NA'||v==='N/A'||v.trim()===''}
+
 function _buildAIAgg(fileType){
   const rows=(master.hovAllRaw||[]).filter(r=>r.fileType===fileType);
   if(!rows.length)return null;
 
-  // Maps
-  const clientMap={};   // client → {awbs,pv,sites,ages,products}
-  const productMap={};  // productType → {awbs,pv,sites,clients,ages,actionUsers}
-  const actionMap={};   // actionUser → {awbs,pv,productTypes,sites,clients}
-  const binRiskRows=[];  // rows with theft-risk indicators
-  const mpsrRows=[];     // MPSR rows
+  const isReverse=fileType==='reverse';
+
+  // AWB-level dedup sets — each AWB counted exactly once per analysis dimension
+  const seenAWBs=new Set();
+
+  const clientMap={};
+  const productMap={};
+  const actionMap={};
+  const binRiskRows=[];
+  const mpsrRows=[];
 
   rows.forEach(r=>{
+    const awbKey=r.awb||(r.loc+'|'+r.pd+'|'+r.age); // fallback key if AWB not set
+    if(seenAWBs.has(awbKey))return; // dedup — count each AWB only once
+    seenAWBs.add(awbKey);
+
     const loc=(r.loc||'UNKNOWN').toUpperCase();
     const age=parseInt(r.age)||0;
     const pv=parseFloat(r.pv)||0;
-    // CLIENT: use the actual 'client' field from the source file (column after REGION).
-    // Do NOT use r.pc (Product Category) — they are separate fields.
     const client=(r.client||'').toUpperCase().trim()||'UNKNOWN';
     const pd=String(r.pd||'');
     const pt=_normProduct(pd);
-    const au=(r.actionUser||'').toUpperCase().trim();
-    const msg=String(r.msg||r.binLevel||'').toUpperCase();
-    const bin=String(r.binLevel||'').toUpperCase();
+
+    // REVERSE FALLBACK LOGIC:
+    // Prefer DSP ACTION USER / DSP BIN LEVEL / DSP MESSAGE.
+    // Fall back to ACTION USER / BIN LEVEL / MESSAGE if DSP is blank/#N/A.
+    let effectiveAU, effectiveBin, effectiveMsg;
+    if(isReverse){
+      effectiveAU=(!_isNA(r.dspActionUser)?r.dspActionUser:r.actionUser)||'';
+      effectiveBin=(!_isNA(r.dspBin)?r.dspBin:r.binLevel)||'';
+      effectiveMsg=(!_isNA(r.dspMsg)?r.dspMsg:r.msg)||'';
+    }else{
+      effectiveAU=r.actionUser||'';
+      effectiveBin=r.binLevel||'';
+      effectiveMsg=r.msg||'';
+    }
+    const au=effectiveAU.toUpperCase().trim();
+    const msg=effectiveMsg.toUpperCase();
 
     // Client map
     if(!clientMap[client])clientMap[client]={awbs:0,pv:0,sites:new Set(),ages:[],products:new Set()};
@@ -6223,14 +6274,14 @@ function _buildAIAgg(fileType){
     if(au)p.actionUsers.add(au);
 
     // Action user map
-    if(au){
+    if(au&&au!=='UNKNOWN'){
       if(!actionMap[au])actionMap[au]={awbs:0,pv:0,productTypes:new Set(),sites:new Set(),clients:new Set()};
       const a=actionMap[au];
       a.awbs++;a.pv+=pv;a.productTypes.add(pt);a.sites.add(loc);a.clients.add(client);
     }
 
-    // BIN theft risk
-    const isSuccessBin=/BIN[12].*SUCCESS|SUCCESS.*BIN[12]/i.test(msg)||/BIN[12].*CFGR|CFGR.*BIN[12]/i.test(msg)||/success/i.test(msg)||/cfgr/i.test(msg);
+    // BIN theft risk (using effective values)
+    const isSuccessBin=/SUCCESS/i.test(msg)||/CFGR/i.test(msg);
     if(isSuccessBin&&age>6&&_isTheftRiskProduct(pt)){
       binRiskRows.push({loc,age,pv,client,pt,pd,au,msg});
     }
@@ -6241,7 +6292,7 @@ function _buildAIAgg(fileType){
     }
   });
 
-  return{clientMap,productMap,actionMap,binRiskRows,mpsrRows,total:rows.length};
+  return{clientMap,productMap,actionMap,binRiskRows,mpsrRows,total:seenAWBs.size};
 }
 
 /* ── Format currency ── */
@@ -6273,22 +6324,29 @@ function _buildInsightSection(fileType,typeLabel,color){
 
   const noData=`<div style="padding:6px 14px;font-size:11px;color:#94a3b8;font-style:italic">No significant patterns detected in current data.</div>`;
 
+  /* ── Format site list for brackets display ── */
+  const _siteList=(siteSet,max)=>{
+    const arr=[...siteSet].slice(0,max);
+    return arr.length>0?` (${arr.join(', ')}${siteSet.size>max?'…':''})`:'';
+  };
+
   /* ── 1. CLIENT TRENDS ── */
   sections.push(secHdr('CLIENT-WISE PENDENCY TRENDS','👥'));
   const topClients=Object.entries(clientMap)
     .filter(([c])=>c&&c!=='UNKNOWN')
-    .map(([client,d])=>({client,awbs:d.awbs,pv:d.pv,sites:d.sites.size,avgAge:_avgAge(d.ages),products:[...d.products].filter(p=>p!=='Other')}))
+    .map(([client,d])=>({client,awbs:d.awbs,pv:d.pv,sites:d.sites.size,siteNames:d.sites,avgAge:_avgAge(d.ages),products:[...d.products].filter(p=>p!=='Other')}))
     .filter(d=>d.sites>=3||d.awbs>=10)
     .sort((a,b)=>b.sites-a.sites||b.awbs-a.awbs)
     .slice(0,6);
   if(topClients.length){
-    topClients.forEach(({client,awbs,pv,sites,avgAge,products})=>{
+    topClients.forEach(({client,awbs,pv,sites,siteNames,avgAge,products})=>{
       const prodList=products.slice(0,3).join(', ')||'Mixed products';
       const reason=sites>=8?'indicating widespread multi-DC operational blockage':
         sites>=5?'indicating regional transit dependency or product handling issue':
         'indicating localised operational bottleneck';
       const pvNote=pv>100000?` with total product value ${_fmt(pv)}`:'';
-      sections.push(bullet(`<strong>${xe(client)}</strong> has <strong>${awbs} HOV AWBs</strong> pending across <strong>${sites} sites</strong>${pvNote}, avg ageing D${avgAge}. Products: ${xe(prodList)}. — ${reason}.`,'👤'));
+      const siteStr=`${sites} site${sites!==1?'s':''}${_siteList(siteNames,5)}`;
+      sections.push(bullet(`<strong>${xe(client)}</strong> has <strong>${awbs} HOV AWBs</strong> pending across <strong>${siteStr}</strong>${pvNote}, avg ageing D${avgAge}. Products: ${xe(prodList)}. — ${reason}.`,'👤'));
     });
   }else{sections.push(noData);}
 
@@ -6296,21 +6354,21 @@ function _buildInsightSection(fileType,typeLabel,color){
   sections.push(secHdr('PRODUCT DESCRIPTION / TYPE TRENDS','📦'));
   const topProducts=Object.entries(productMap)
     .filter(([pt])=>pt!=='Other')
-    .map(([pt,d])=>({pt,awbs:d.awbs,pv:d.pv,sites:d.sites.size,clients:d.clients.size,avgAge:_avgAge(d.ages)}))
+    .map(([pt,d])=>({pt,awbs:d.awbs,pv:d.pv,sites:d.sites.size,siteNames:d.sites,clients:d.clients.size,avgAge:_avgAge(d.ages)}))
     .filter(d=>d.sites>=2||d.awbs>=5)
     .sort((a,b)=>b.awbs-a.awbs)
     .slice(0,8);
   if(topProducts.length){
-    topProducts.forEach(({pt,awbs,pv,sites,clients,avgAge})=>{
+    topProducts.forEach(({pt,awbs,pv,sites,siteNames,clients,avgAge})=>{
       const pvStr=pv>0?` — total value ${_fmt(pv)}`:'';
-      sections.push(bullet(`<strong>${xe(pt)}</strong>: ${awbs} AWBs across ${sites} sites, ${clients} client(s), avg ageing D${avgAge}${pvStr}.`,'📦'));
+      const siteStr=`${sites} site${sites!==1?'s':''}${_siteList(siteNames,4)}`;
+      sections.push(bullet(`<strong>${xe(pt)}</strong>: ${awbs} AWBs across ${siteStr}, ${clients} client(s), avg ageing D${avgAge}${pvStr}.`,'📦'));
     });
   }else{sections.push(noData);}
 
   /* ── 3. THEFT-RISK ANALYSIS ── */
   sections.push(secHdr('POTENTIAL THEFT-RISK PATTERNS (OPERATIONAL)','⚠️'));
   if(binRiskRows.length){
-    // Group by product type
     const riskByPT={};
     binRiskRows.forEach(r=>{
       if(!riskByPT[r.pt])riskByPT[r.pt]={awbs:0,pv:0,sites:new Set(),maxAge:0};
@@ -6319,9 +6377,10 @@ function _buildInsightSection(fileType,typeLabel,color){
     });
     Object.entries(riskByPT).sort((a,b)=>b[1].awbs-a[1].awbs).slice(0,5).forEach(([pt,d])=>{
       const pvStr=d.pv>0?`, value ${_fmt(d.pv)}`:'';
-      sections.push(bullet(`<strong>${xe(pt)}</strong> — ${d.awbs} AWBs with BIN-SUCCESS/CFGR status ageing above D6 (max D${d.maxAge}) across ${d.sites.size} sites${pvStr}. Elevated operational exposure risk — verify physical inventory.`,'🔴'));
+      const siteStr=`${d.sites.size} site${d.sites.size!==1?'s':''}${_siteList(d.sites,4)}`;
+      sections.push(bullet(`<strong>${xe(pt)}</strong> — ${d.awbs} AWBs with SUCCESS/CFGR status ageing above D6 (max D${d.maxAge}) across ${siteStr}${pvStr}. Elevated operational exposure — verify physical inventory.`,'🔴'));
     });
-    sections.push(bullet(`<em>Note: These are operational risk observations based on ageing + BIN status patterns. Physical verification at DC level is recommended.</em>`,'ℹ️'));
+    sections.push(bullet(`<em>Note: Operational risk observations based on ageing + BIN status patterns. Physical DC verification recommended.</em>`,'ℹ️'));
   }else{
     sections.push(`<div style="padding:6px 14px;font-size:11px;color:#059669;font-style:italic">✅ No high-risk BIN + ageing patterns detected in current data.</div>`);
   }
@@ -6330,15 +6389,16 @@ function _buildInsightSection(fileType,typeLabel,color){
   sections.push(secHdr('ACTION USER + PRODUCT + VALUE TRENDS','👷'));
   const topAU=Object.entries(actionMap)
     .filter(([au])=>au&&au!=='UNKNOWN'&&au.length>2)
-    .map(([au,d])=>({au,awbs:d.awbs,pv:d.pv,sites:d.sites.size,types:[...d.productTypes].filter(t=>t!=='Other').slice(0,3)}))
+    .map(([au,d])=>({au,awbs:d.awbs,pv:d.pv,sites:d.sites.size,siteNames:d.sites,types:[...d.productTypes].filter(t=>t!=='Other').slice(0,3)}))
     .filter(d=>d.awbs>=5||d.sites>=3)
     .sort((a,b)=>b.pv-a.pv||b.awbs-a.awbs)
     .slice(0,5);
   if(topAU.length){
-    topAU.forEach(({au,awbs,pv,sites,types})=>{
+    topAU.forEach(({au,awbs,pv,sites,siteNames,types})=>{
       const typeStr=types.join(', ')||'various products';
       const pvStr=pv>0?`, value ${_fmt(pv)}`:'';
-      sections.push(bullet(`<strong>${xe(au)}</strong> handled ${awbs} HOV AWBs across ${sites} site(s)${pvStr}. Products: ${xe(typeStr)}. — Monitor for repeated pendency under same action user.`,'👷'));
+      const siteStr=`${sites} site${sites!==1?'s':''}${_siteList(siteNames,4)}`;
+      sections.push(bullet(`<strong>${xe(au)}</strong> handled ${awbs} HOV AWBs across ${siteStr}${pvStr}. Products: ${xe(typeStr)}. — Monitor for repeated pendency under same action user.`,'👷'));
     });
   }else{sections.push(noData);}
 
@@ -6348,14 +6408,15 @@ function _buildInsightSection(fileType,typeLabel,color){
   Object.entries(clientMap).filter(([c])=>c&&c!=='UNKNOWN').forEach(([client,d])=>{
     const topPt=[...d.products].filter(p=>p!=='Other')[0]||'Mixed';
     if(d.pv>5000&&d.sites.size>=2){
-      clientProd.push({client,pv:d.pv,awbs:d.awbs,sites:d.sites.size,pt:topPt,avgAge:_avgAge(d.ages)});
+      clientProd.push({client,pv:d.pv,awbs:d.awbs,sites:d.sites.size,siteNames:d.sites,pt:topPt,avgAge:_avgAge(d.ages)});
     }
   });
-  clientProd.sort((a,b)=>b.pv-a.pv).slice(0,5).forEach(({client,pv,awbs,sites,pt,avgAge})=>{
+  clientProd.sort((a,b)=>b.pv-a.pv).slice(0,5).forEach(({client,pv,awbs,sites,siteNames,pt,avgAge})=>{
     const reason=pt==='Mattresses'?'possible bulky-product transit bottleneck':
       _isTheftRiskProduct(pt)?'high-value product exposure across multiple DCs — verify inventory':
       'possible repeated return failure or quality issue';
-    sections.push(bullet(`<strong>${xe(client)}</strong> — ${awbs} AWBs of <strong>${xe(pt)}</strong> across ${sites} sites, value ${_fmt(pv)}, avg age D${avgAge}. — ${reason}.`,'💰'));
+    const siteStr=`${sites} site${sites!==1?'s':''}${_siteList(siteNames,4)}`;
+    sections.push(bullet(`<strong>${xe(client)}</strong> — ${awbs} AWBs of <strong>${xe(pt)}</strong> across ${siteStr}, value ${_fmt(pv)}, avg age D${avgAge}. — ${reason}.`,'💰'));
   });
   if(!clientProd.length)sections.push(noData);
 
@@ -6371,10 +6432,11 @@ function _buildInsightSection(fileType,typeLabel,color){
     if(mpsrHigh.length){
       const mpsrSites=new Set(mpsrHigh.map(r=>r.loc));
       const mpsrPV=mpsrHigh.reduce((s,r)=>s+r.pv,0);
-      sections.push(bullet(`<strong>${mpsrHigh.length} MPSR AWBs</strong> ageing above D7 across <strong>${mpsrSites.size} sites</strong>${mpsrPV>0?`, value ${_fmt(mpsrPV)}`:''}. Concentrated in: ${[...mpsrSites].slice(0,5).join(', ')}. — Escalate for MPSR resolution to reduce ageing.`,'📋'));
+      const siteStr=`${mpsrSites.size} site${mpsrSites.size!==1?'s':''}${_siteList(mpsrSites,5)}`;
+      sections.push(bullet(`<strong>${mpsrHigh.length} MPSR AWBs</strong> ageing above D7 across <strong>${siteStr}</strong>${mpsrPV>0?`, value ${_fmt(mpsrPV)}`:''}. — Escalate for MPSR resolution to reduce ageing.`,'📋'));
     }
     const mpsrPTs=new Set(mpsrRows.map(r=>r.pt));
-    if(mpsrPTs.size)sections.push(bullet(`MPSR products include: ${[...mpsrPTs].filter(p=>p!=='Other').slice(0,5).join(', ') || 'various categories'}.`,'📋'));
+    if(mpsrPTs.size)sections.push(bullet(`MPSR products include: ${[...mpsrPTs].filter(p=>p!=='Other').slice(0,5).join(', ')||'various categories'}.`,'📋'));
   }else{
     sections.push(`<div style="padding:6px 14px;font-size:11px;color:#059669;font-style:italic">✅ No MPSR items detected in current data.</div>`);
   }
@@ -6610,270 +6672,7 @@ function renderHovRegionOverview(){
 
 
 /* ── HOV Overview structured PDF report ── */
-function generateHovPDF(tabIdx){
-  // Build full structured HTML report for the selected tab
-  // Uses data directly from master — not the dashboard UI (no scroll limits)
-  const win=window.open('','_blank','width=1100,height=900,scrollbars=yes');
-  if(!win){toast('Allow pop-ups for report export','tw');return;}
 
-  const date=new Date().toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
-  const tabTitles=['HOV TRACKING OVERVIEW','HOV DETAILED','D15+ TRACKING','ACTION USER TRENDS'];
-  const title=tabTitles[tabIdx]||'HOV Report';
-
-  let body='';
-
-  if(tabIdx===0){
-    // Per-file structured sections
-    const allHov=master.hov||[];
-    const fileGroups={};
-    allHov.forEach(r=>{
-      const key=`${r.fileType}|${r.date}`;
-      if(!fileGroups[key])fileGroups[key]={fileType:r.fileType,date:r.date,locs:{},total:0};
-      const g=fileGroups[key];
-      if(!g.locs[r.location])g.locs[r.location]={};
-      g.locs[r.location][r.age]=(g.locs[r.location][r.age]||0)+r.count;
-      g.total+=r.count;
-    });
-
-    const TYPE_FULL={forward:'📦 FORWARD R@DC HOV TRENDS (D2–D15)',reverse:'🔄 REVERSE R@DC HOV TRENDS (D2–D15)',lmodc:'🏪 LMODC HOV TRENDS (D2–D15)',forwardShort:'⚡ FORWARD SHORT SHIPMENT HOV TRENDS (D2–D15)'};
-
-    Object.entries(fileGroups).sort((a,b)=>a[0].localeCompare(b[0])).forEach(([key,g])=>{
-      const locs=Object.keys(g.locs).sort();
-      const ages=HOV_AGES;
-
-      // D2-D15 table
-      let tbl=`<table border="1" cellpadding="7" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:12px;margin-bottom:8px">
-        <thead><tr style="background:#0f2b25;color:#fff"><th>LOCATION</th>${ages.map(a=>`<th>D${a}</th>`).join('')}<th>TOTAL</th></tr></thead><tbody>`;
-      locs.forEach(loc=>{
-        const rt=ages.reduce((s,a)=>s+(g.locs[loc][a]||0),0);
-        tbl+=`<tr><td>${xe(loc)}</td>${ages.map(a=>{const v=g.locs[loc][a]||0;return`<td style="text-align:center">${v||'–'}</td>`;}).join('')}<td style="text-align:center;font-weight:bold">${fn(rt)}</td></tr>`;
-      });
-      const colTots=ages.map(a=>locs.reduce((s,l)=>s+(g.locs[l][a]||0),0));
-      tbl+=`<tr style="background:#0a2520;color:#fff;font-weight:bold"><td>TOTAL</td>${colTots.map(c=>`<td style="text-align:center">${fn(c)}</td>`).join('')}<td style="text-align:center">${fn(g.total)}</td></tr>`;
-      tbl+=`</tbody></table>`;
-
-      // PV table for this file (all rows, no scroll limit)
-      const pvRows=(master.hovPV||[]).filter(r=>r.fileType===g.fileType&&r.date===g.date&&(parseFloat(r.pv)||0)>=5000)
-        .sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
-      // Also supplement reverse with hovAllRaw for PD
-      const pvExtra=g.fileType==='reverse'?(master.hovAllRaw||[]).filter(r=>r.fileType==='reverse'&&r.date===g.date&&(parseFloat(r.pv)||0)>=5000&&!pvRows.some(p=>p.awb===r.awb)):[];
-      const allPV=[...pvRows,...pvExtra].sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
-      let pvTbl='';
-      if(allPV.length){
-        pvTbl=`<h4 style="color:#dc2626;margin:12px 0 4px">Product Value ≥ ₹5,000 (${fn(allPV.length)} AWBs)</h4>
-          <table border="1" cellpadding="7" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:12px">
-          <thead><tr style="background:#0f2b25;color:#fff"><th>LOCATION</th><th>AWB NUMBER</th><th>PRODUCT VALUE</th><th>PRODUCT DESCRIPTION</th></tr></thead><tbody>`;
-        allPV.forEach((r,i)=>{const bg=i%2===0?'#fff':'#f3faf7';pvTbl+=`<tr style="background:${bg}"><td>${xe(r.loc||'–')}</td><td>${xe(r.awb||'–')}</td><td style="text-align:right">₹${fn(Math.round(parseFloat(r.pv)||0))}</td><td>${xe(r.pd||'–')}</td></tr>`;});
-        pvTbl+=`</tbody></table>`;
-      }
-
-      // Criticality table for this file
-      const critRows=(master.hovAllRaw||[]).filter(r=>r.fileType===g.fileType&&r.date===g.date&&(parseFloat(r.pv)||0)>=10000&&parseInt(r.age)>=10&&parseInt(r.age)<=30).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
-      let critTbl='';
-      if(critRows.length){
-        critTbl=`<h4 style="color:#7c3aed;margin:12px 0 4px">⚠ Criticality (Age D10–D30, PV ≥ ₹10,000 — ${fn(critRows.length)} AWBs)</h4>
-          <table border="1" cellpadding="7" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:12px">
-          <thead><tr style="background:#0f2b25;color:#fff"><th>LOCATION</th><th>AWB</th><th>PV</th><th>AGE</th><th>BIN</th><th>MSG</th><th>DSP BIN</th><th>DSP MSG</th><th>PRODUCT DESC</th></tr></thead><tbody>`;
-        critRows.forEach((r,i)=>{const bg=i%2===0?'#fff':'#f3faf7';critTbl+=`<tr style="background:${bg}"><td>${xe(r.loc||'–')}</td><td>${xe(r.awb||'–')}</td><td style="text-align:right">₹${fn(Math.round(parseFloat(r.pv)||0))}</td><td>D${r.age}</td><td>${xe(r.binLevel||'–')}</td><td>${xe(r.msg||'–')}</td><td>${xe(r.dspBin||'–')}</td><td>${xe(r.dspMsg||'–')}</td><td>${xe(r.pd||'–')}</td></tr>`;});
-        critTbl+=`</tbody></table>`;
-      }
-
-      body+=`<div style="page-break-inside:avoid;margin-bottom:32px">
-        <h2 style="background:#0f2b25;color:#E9DF43;padding:12px 16px;border-radius:6px;margin:0 0 12px">${TYPE_FULL[g.fileType]||g.fileType.toUpperCase()} · ${xe(g.date)}</h2>
-        <h4 style="color:#1C856F;margin:0 0 6px">HOV Tracking D2–D15 (${fn(g.total)} AWBs)</h4>
-        ${tbl}${critTbl}${pvTbl}
-      </div>`;
-    });
-
-  }else if(tabIdx===3){
-    // Action User report — all sections
-    const allRaw=master.hovAllRaw||[];
-    body+=buildActionUserHTML(allRaw,'forward','ALL',2);
-    body+=buildActionUserHTML(allRaw,'reverse_fwd','ALL',2);
-    body+=buildActionUserHTML(allRaw,'reverse_rev','ALL',2);
-  }else{
-    body=`<p style="color:#64748b">Open the ${title} tab in the dashboard and use the PDF button there for the full report.</p>`;
-  }
-
-  win.document.write(`<!DOCTYPE html><html><head><title>HOV Report — ${title}</title>
-    <style>
-      body{font-family:Inter,Arial,sans-serif;margin:24px;color:#0a2520;font-size:13px}
-      h1{color:#0f2b25;border-bottom:3px solid #E9DF43;padding-bottom:8px}
-      h2{font-size:15px}h3{font-size:13px;color:#1C856F;margin:12px 0 6px}
-      table{border-collapse:collapse;width:100%}
-      th{background:#0f2b25;color:#fff;padding:8px 12px;text-align:left}
-      td{padding:7px 12px;border:1px solid #c8dfd9}
-      tr:nth-child(even)td{background:#f3faf7}
-      @media print{@page{margin:15mm;size:A4 landscape}.pbreak{page-break-before:always}}
-    </style>
-  </head><body>
-    <h1>HOV Report — ${title}</h1>
-    <p style="color:#64748b;font-size:11px">Generated: ${date}</p>
-    ${body||'<p style="color:#94a3b8">No data — upload HOV files first.</p>'}
-    <script>window.onload=function(){window.print()}<\/script>
-  </body></html>`);
-  win.document.close();
-}
-
-/* ── ACTION USER TRENDS — render function ── */
-function renderHovActionUser(){
-  const wrap=document.getElementById('hovAUContent');if(!wrap)return;
-  const fileTypeFilter=(document.getElementById('hovAUFileType')?.value)||'ALL';
-  const minAWB=parseInt(document.getElementById('hovAUMinAWB')?.value||'2')||2;
-  const allRaw=master.hovAllRaw||[];
-  if(!allRaw.length){
-    wrap.innerHTML=`<div class="empty" style="padding:24px"><div class="et">No HOV data</div><div class="em">Upload Forward or Reverse HOV files</div></div>`;return;
-  }
-  wrap.innerHTML=[
-    (fileTypeFilter==='ALL'||fileTypeFilter==='forward')?buildActionUserSection(allRaw,'forward',minAWB):'',
-    (fileTypeFilter==='ALL'||fileTypeFilter==='reverse_fwd')?buildActionUserSection(allRaw,'reverse_fwd',minAWB):'',
-    (fileTypeFilter==='ALL'||fileTypeFilter==='reverse_rev')?buildActionUserSection(allRaw,'reverse_rev',minAWB):'',
-  ].filter(Boolean).join('');
-}
-
-/* Build one Action User section */
-function buildActionUserSection(allRaw,sectionType,minAWB){
-  const html=buildActionUserHTML(allRaw,sectionType,'ALL',minAWB);
-  return html;
-}
-
-function buildActionUserHTML(allRaw,sectionType,dc,minAWB){
-  const SECTION_LABELS={
-    forward:'📦 FORWARD — Action User Trends',
-    reverse_fwd:'🔄 REVERSE — Forward Leg Miss (bin_level × message)',
-    reverse_rev:'🔄 REVERSE — Reverse Leg Miss (DSP bin_level × DSP message)',
-  };
-  const SECTION_COLORS={forward:'#2563eb',reverse_fwd:'#dc2626',reverse_rev:'#d97706'};
-  const color=SECTION_COLORS[sectionType]||'#64748b';
-
-  // Filter source rows — age D2 to D30 (extended from D2-D15)
-  let rows=[];
-  if(sectionType==='forward'){
-    rows=allRaw.filter(r=>r.fileType==='forward'&&r.age>=2&&r.age<=30);
-  }else if(sectionType==='reverse_fwd'){
-    // FWD Leg Miss: bin_level and message are the relevant cols (not DSP)
-    rows=allRaw.filter(r=>r.fileType==='reverse'&&r.age>=2&&r.age<=30&&!isNA(r.binLevel));
-  }else if(sectionType==='reverse_rev'){
-    // REV Leg Miss: DSP bin_level and DSP message
-    rows=allRaw.filter(r=>r.fileType==='reverse'&&r.age>=2&&r.age<=30&&!isNA(r.dspBin));
-  }
-  if(dc&&dc!=='ALL')rows=rows.filter(r=>(r.loc||'').toUpperCase()===dc);
-  if(!rows.length)return`<div class="card" style="border:2px solid ${color};border-radius:8px;overflow:hidden;margin-bottom:4px"><div style="background:${color};color:#fff;padding:9px 14px;font-size:12px;font-weight:900">${SECTION_LABELS[sectionType]}</div><div style="padding:12px;color:#94a3b8;font-size:12px">No data for this section</div></div>`;
-
-  // Group by action user (or dspActionUser for reverse_rev)
-  const userKey=sectionType==='reverse_rev'?'dspActionUser':'actionUser';
-  const userMap=new Map();
-  rows.forEach(r=>{
-    const u=(r[userKey]||'').trim()||'(unknown)';
-    if(!userMap.has(u))userMap.set(u,[]);
-    userMap.get(u).push(r);
-  });
-
-  // Filter: only users with >= minAWB unique AWBs
-  const filtered=[...userMap.entries()]
-    .map(([u,rs])=>({user:u,rows:rs,awbs:new Set(rs.map(r=>r.awb)).size}))
-    .filter(e=>e.awbs>=minAWB)
-    .sort((a,b)=>b.awbs-a.awbs);
-
-  if(!filtered.length)return`<div class="card" style="border:2px solid ${color};border-radius:8px;overflow:hidden;margin-bottom:4px"><div style="background:${color};color:#fff;padding:9px 14px;font-size:12px;font-weight:900">${SECTION_LABELS[sectionType]}</div><div style="padding:12px;color:#94a3b8;font-size:12px">No action users with ${minAWB}+ AWBs found</div></div>`;
-
-  // Column definitions per section type — PRODUCT DESCRIPTION replaces PRODUCT CATEGORY
-  const isFwdLeg=sectionType==='forward'||sectionType==='reverse_fwd';
-  const hdrs=isFwdLeg
-    ?['ACTION USER','AWB NUMBER','PRODUCT VALUE','CURRENT LOCATION','AGE','BIN LEVEL','MESSAGE','PRODUCT DESCRIPTION']
-    :['DSP ACTION USER','AWB NUMBER','PRODUCT VALUE','CURRENT LOCATION','AGE','DSP BIN LEVEL','DSP MESSAGE','PRODUCT DESCRIPTION'];
-
-  let tblBody='';
-  filtered.forEach(({user,rows:rs})=>{
-    // Group header row for this user
-    tblBody+=`<tr style="background:#e8f5f0"><td colspan="${hdrs.length}" style="font-weight:900;color:#0f2b25;padding:7px 13px;border-bottom:2px solid #1C856F">
-      👤 ${xe(user)} — ${fn(new Set(rs.map(r=>r.awb)).size)} AWBs
-    </td></tr>`;
-    // Sort by location then AWB
-    rs.sort((a,b)=>(a.loc||'').localeCompare(b.loc||'')||(a.awb||'').localeCompare(b.awb||''));
-    rs.forEach((r,ri)=>{
-      const bg=ri%2===0?'#fff':'#f8fbfa';
-      const pv=parseFloat(r.pv)||0;
-      const binCol=isFwdLeg?r.binLevel:r.dspBin;
-      const msgCol=isFwdLeg?r.msg:r.dspMsg;
-      const userCol=isFwdLeg?r.actionUser:r.dspActionUser;
-      tblBody+=`<tr style="background:${bg}">
-        <td style="padding:7px 13px;font-family:var(--mono);font-size:11px">${xe(userCol||'–')}</td>
-        <td style="padding:7px 13px;font-family:var(--mono);font-size:11px">${xe(r.awb||'–')}</td>
-        <td style="padding:7px 13px;text-align:center;font-weight:700">${pv>0?`₹${fn(Math.round(pv))}`:'–'}</td>
-        <td style="padding:7px 13px">${xe(r.loc||'–')}</td>
-        <td style="padding:7px 13px;text-align:center">D${r.age||'?'}</td>
-        <td style="padding:7px 13px;text-align:center">${xe(binCol||'–')}</td>
-        <td style="padding:7px 13px">${xe(msgCol||'–')}</td>
-        <td style="padding:7px 13px;white-space:normal;word-break:break-word;min-width:140px">${xe(r.pd||'–')}</td>
-      </tr>`;
-    });
-  });
-
-  const tblHtml=`<table style="border-collapse:collapse;width:100%;font-size:12px">
-    <thead><tr>${hdrs.map(h=>`<th style="background:#0f2b25;color:#fff;padding:9px 13px;text-align:left;font-size:11px;text-transform:uppercase;white-space:nowrap;border-right:1px solid #1a5045">${h}</th>`).join('')}</tr></thead>
-    <tbody>${tblBody}</tbody>
-  </table>`;
-
-  return`<div class="card" style="border:2px solid ${color};border-radius:8px;overflow:hidden">
-    <div style="background:${color};color:#fff;padding:9px 14px;font-size:12px;font-weight:900;display:flex;justify-content:space-between">
-      <span>${SECTION_LABELS[sectionType]}</span>
-      <span style="background:rgba(255,255,255,.22);padding:2px 10px;border-radius:12px;font-size:11px">${fn(filtered.length)} users · ${fn(filtered.reduce((s,e)=>s+e.awbs,0))} AWBs</span>
-    </div>
-    <div style="overflow-x:auto" id="auTbl_${sectionType}">${tblHtml}</div>
-  </div>`;
-}
-
-/* ── Populate DC dropdown for Detailed tab ── */
-function populateHovDetDCDropdown(){
-  const sel=document.getElementById('hovDetDCselect');if(!sel)return;
-  const cur=sel.value;
-  const allLocs=[...new Set((master.hov||[]).map(r=>r.location))].sort();
-  sel.innerHTML=`<option value="ALL">All Sites</option>`+allLocs.map(l=>`<option value="${l}">${xe(l)}</option>`).join('');
-  if(allLocs.includes(cur))sel.value=cur;
-}
-
-/* ── HOV DETAILED tab render ── */
-function renderHovDetailed(){
-  populateHovDetDCDropdown();
-  const dc=(document.getElementById('hovDetDCselect')?.value)||'ALL';
-  // Render Forward and Reverse pivots with DC filter
-  renderHovFwdPivot(dc);
-  renderHovRevPivot(dc);
-  // Site detail
-  renderHovSiteDetail(dc);
-}
-
-/* ── Site-based detail section (AWB-level data for selected DC) ── */
-function renderHovSiteDetail(dc){
-  const card=document.getElementById('hovSiteDetailCard');
-  const wrap=document.getElementById('hovSiteDetailWrap');
-  const title=document.getElementById('hovSiteDetailTitle');
-  if(!card||!wrap)return;
-  if(!dc||dc==='ALL'){card.style.display='none';return;}
-  card.style.display='block';
-  if(title)title.textContent=`📍 Site Detail — ${dc}`;
-
-  // Pull all-age raw records for this DC
-  const rows=(master.hovAllRaw||[]).filter(r=>(r.loc||'').toUpperCase()===dc);
-  if(!rows.length){
-    wrap.innerHTML=`<div class="empty" style="padding:16px"><div class="et">No data for ${xe(dc)}</div></div>`;return;
-  }
-  const TYPE_L={forward:'FWD',reverse:'REV',lmodc:'LM',forwardShort:'SHORT'};
-  const tblRows=rows.slice(0,500).map(r=>([
-    TYPE_L[r.fileType]||r.fileType||'?',
-    r.loc||'–',r.awb||'–',
-    r.pv&&parseFloat(r.pv)>0?`₹${fn(Math.round(parseFloat(r.pv)||0))}`:'–',
-    r.binLevel||'–',r.msg||'–',r.dspBin||'–',r.dspMsg||'–',
-    r.pd||'–',r.age!==undefined?`D${r.age}`:'–'
-  ]));
-  wrap.innerHTML=pivTbl(
-    ['FILE','CURRENT LOCATION','AWB NUMBER','PRODUCT VALUE','BIN LEVEL','MESSAGE','DSP BIN LEVEL','DSP MESSAGE','PRODUCT DESC','AGE'],
-    tblRows,null,'340px'
-  );
-}
-
-/* ── PDF generation — full scrollable content, no cropping ── */
 function generateHovPDF(tabIdx){
   const tabNames=['HOV_Overview','HOV_Detailed','D15plus_Tracking','Action_User_Trends','Region_Overview'];
   const panelId=`hovSubPanel${tabIdx}`;
