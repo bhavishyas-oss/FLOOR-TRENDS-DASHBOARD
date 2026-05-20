@@ -9788,85 +9788,71 @@ function enterAdminMode(username){
      2. Try IDB directly (loadRawFromIDB+rebuild) → if Sheets fails
      3. Use whatever is in master already (localStorage)
    Always re-renders ALL 4 section tabs after restore.               */
-/* ── Central data-load function ─────────────────────────────────────────────
-   PRIORITY ORDER:
-   1. Direct gviz read from spreadsheet (NO AppScript needed — works everywhere)
-   2. AppScript getMaster (if URL available — faster, more complete)
-   3. IDB local cache
-   Any of these can restore the dashboard on any device.                      */
+/* ════════════════════════════════════════════════════════════════════════════
+   CENTRALIZED DATA LOAD — Google Sheets is the single source of truth.
+   localStorage is ONLY a speed cache — never the source of truth.
+
+   ALWAYS executes on every dashboard open (View Mode + Admin Mode):
+   1. Fetch MASTER SNAPSHOT from Sheets (via Sheets API v4 → gviz → AppScript)
+   2. Merge/replace local master[] with fetched data
+   3. Fetch SITE AVERAGES → restore rolling averages
+   4. Rebuild all charts/tables/pivots
+   5. Render dashboard
+
+   localStorage write happens AFTER backend fetch as a cache for next load speed.
+   localStorage read is used ONLY to show something instantly while backend loads.
+════════════════════════════════════════════════════════════════════════════ */
 async function _ensureDashboardData(context){
+  console.log(`[${context}] Backend fetch starting…`);
+
+  // Show existing local cache IMMEDIATELY (instant render while backend loads)
   const localTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
-  let url=getGsUrl();
-
-  // If no URL, try to discover it from gviz sentinel row (happens automatically below)
-  if(!url&&!localTotal){
-    toast('⏳ Loading dashboard data from backend…','ti');
-  }else if(localTotal>0){
-    // Already have local data — still sync in background
-    _renderAllTabs();
-    console.log(`[${context}] Local: ${fn(localTotal)} AWBs — background sync starting…`);
+  if(localTotal>0){
+    updateSummary();_renderAllTabs();
+    console.log(`[${context}] Cache: ${fn(localTotal)} AWBs shown instantly — fetching latest from backend…`);
+  }else{
+    toast('⏳ Loading from backend…','ti');
   }
 
-  // ── LAYER 1: Direct gviz read (primary cross-device restore) ────────────
-  // This works on EVERY device without any AppScript URL because it reads
-  // the publicly shared spreadsheet directly. No auth. No localStorage dependency.
+  // ── STEP 1: Sheets API v4 (most reliable — no auth, no AppScript URL needed) ──
+  let restored=false;
   try{
-    const gvizOk=await _fetchMasterFromGviz();
-    await _fetchAvgsFromGviz(); // restore rolling averages too
-
-    const newTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
-    if(gvizOk&&newTotal>0){
-      updateSummary();
-      _renderAllTabs();
-      _fetchAndMergeFileLog();
-      if(newTotal>0&&localTotal===0){
-        setTimeout(()=>toast(`✅ Dashboard restored — ${fn(newTotal)} AWBs loaded`,'tok'),400);
-      }else if(newTotal>localTotal){
-        setTimeout(()=>toast(`✅ Updated — ${fn(newTotal-localTotal)} new AWBs from backend`,'tok'),400);
-      }
-      // After gviz restore, also try AppScript URL discovery for write capability
-      url=getGsUrl(); // may have been updated by sentinel row
-      if(url)fetchMasterFromSheets().catch(()=>{}); // background AppScript sync
-      return;
+    const ok=await _fetchMasterFromGviz(); // reads MASTER SNAPSHOT_1, _2, etc.
+    await _fetchAvgsFromGviz();            // reads SITE AVERAGES_1, _2, etc.
+    if(ok){
+      const newTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
+      console.log(`[${context}] Sheets API: restored ${fn(newTotal)} AWBs`);
+      if(newTotal>0){restored=true;}
     }
-  }catch(e){
-    console.warn(`[${context}] gviz restore failed (non-fatal):`,e.message);
-  }
+  }catch(e){console.warn(`[${context}] Sheets API fetch error:`,e.message);}
 
-  // ── LAYER 2: AppScript getMaster (if URL known) ──────────────────────────
-  if(!url){
-    toast('⏳ Detecting backend…','ti');
-    await _discoverAndCacheGsUrl();
-    url=getGsUrl();
-  }
-  if(url){
-    try{
-      const restored=await fetchMasterFromSheets();
-      const newTotal2=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
-      if(restored&&newTotal2>0){
-        updateSummary();_renderAllTabs();_fetchAndMergeFileLog();
-        if(newTotal2>localTotal)setTimeout(()=>toast(`✅ Dashboard restored — ${fn(newTotal2)} AWBs`,'tok'),400);
-        return;
-      }
-    }catch(e){console.warn(`[${context}] AppScript restore failed:`,e.message);}
-  }
-
-  // ── LAYER 3: IDB local cache ─────────────────────────────────────────────
-  try{
-    const idbData=await loadRawFromIDB();
-    const idbRows=Object.values(idbData).reduce((s,d)=>s+Object.values(d).reduce((s2,r)=>s2+r.length,0),0);
-    if(idbRows>0){
-      Object.assign(rawData,idbData);_rebuildMasterFromRawData();
-      updateSummary();_renderAllTabs();
-      setTimeout(()=>toast(`✅ Restored from local cache — ${fn(idbRows)} rows`,'tok'),400);
-      return;
+  // ── STEP 2: AppScript getMaster (if URL available — richer data) ──
+  if(!restored||getGsUrl()){
+    const url=getGsUrl();
+    if(!url&&!restored){
+      // Try to discover URL from gviz sentinel row (may have been set by step 1)
+      await _discoverAndCacheGsUrl().catch(()=>{});
     }
-  }catch(e){console.warn('IDB fallback failed:',e.message);}
+    if(getGsUrl()){
+      try{
+        const ok2=await fetchMasterFromSheets();
+        if(ok2)restored=true;
+      }catch(e){console.warn(`[${context}] AppScript fetch error:`,e.message);}
+    }
+  }
 
-  // All restore methods exhausted
+  // ── STEP 3: Render dashboard with whatever data is available ──
   const finalTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
-  if(finalTotal>0){updateSummary();_renderAllTabs();}
-  else{toast('ℹ No saved data found. Upload files in Admin Mode to populate the dashboard.','tw');}
+  if(finalTotal>0){
+    updateSummary();_renderAllTabs();_fetchAndMergeFileLog();
+    if(finalTotal!==localTotal){
+      setTimeout(()=>toast(`✅ ${fn(finalTotal)} AWBs loaded from backend`,'tok'),300);
+    }else if(localTotal===0){
+      toast('ℹ No data found. Admin must upload files and click Save to Master.','tw');
+    }
+  }else if(!restored){
+    toast('ℹ No backend data found. Admin must upload files and click Save to Master.','tw');
+  }
 }
 
 /* ── Fetch file log from Sheets and merge into local registry ─────────────
@@ -10235,8 +10221,8 @@ function restoreAuthSession(){
 initPanels();updateSummary();renderTab(0);
 // Restore Sheets button indicator on load
 (()=>{const btn=document.getElementById('sheetsbtn');if(btn&&getGsUrl())btn.textContent='📊 Sheets ✓';})();
-const _tot=Object.values(master).reduce((a,arr)=>a+arr.reduce((s,r)=>s+r.count,0),0);
-if(_tot>0)setTimeout(()=>toast(`📊 Restored ${fn(_tot)} AWBs from saved data`,'ti'),400);
+// NOTE: The localStorage total toast is removed — it was misleading other devices
+// into thinking data was loaded when it was only cached locally.
 
 // ── AUTH BOOT: restore session or show landing page ──
 // This runs synchronously so the landing page shows instantly if no session.
