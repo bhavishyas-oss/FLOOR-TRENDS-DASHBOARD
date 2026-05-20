@@ -4074,7 +4074,9 @@ function pHovFwd(row,date,agg){
     const dspActionUser=String(gv(row,'dsp action_user','DSP action_user','dsp_action_user','DSP_action_user','DSP_Action_User')||'');
     // REGION — used by Region Overview tab
     const region=(gv(row,'region','Region','REGION','Zone','zone','ZONE')||'').toUpperCase().trim();
-    agg.__allRaw.push({awb,pv,pd,loc,pc,date,age,region,fileType:'forward',binLevel,msg,dspBin,dspMsg,actionUser,dspActionUser});
+    // CLIENT — actual client/seller name (column AFTER region in HOV files)
+    const client=gv(row,'client','Client','CLIENT','seller_name','Seller_Name','seller name','client_name','Client_Name')||'';
+    agg.__allRaw.push({awb,pv,pd,loc,pc,client,date,age,region,fileType:'forward',binLevel,msg,dspBin,dspMsg,actionUser,dspActionUser});
   }
 
   if(age<2||age>15)return; // age gate for D2-D15 tracking only
@@ -4124,7 +4126,8 @@ function pHovRev(row,date,agg){
     const actionUser=String(gv(row,'action_user','Action_user','Action_User','actionuser','ACTION_USER')||'');
     const dspActionUser=String(gv(row,'dsp action_user','DSP action_user','dsp_action_user','DSP_action_user','DSP_Action_User')||'');
     const region2=(gv(row,'region','Region','REGION','Zone','zone','ZONE')||'').toUpperCase().trim();
-    agg.__allRaw.push({awb,pv,pd,loc,pc,date,age,region:region2,fileType:'reverse',binLevel,msg,dspBin,dspMsg,actionUser,dspActionUser});
+    const client2=gv(row,'client','Client','CLIENT','seller_name','Seller_Name','seller name','client_name','Client_Name')||'';
+    agg.__allRaw.push({awb,pv,pd,loc,pc,client:client2,date,age,region:region2,fileType:'reverse',binLevel,msg,dspBin,dspMsg,actionUser,dspActionUser});
   }
 
   if(age<2||age>15)return;
@@ -4851,9 +4854,10 @@ function _pfRerender(ki){
     tblEl.innerHTML=pivTbl(hdrs,tblRows,foot,null);
   }
 
-  // ── CRITICALITY — age D10-D30, PV ≥ 10000 ────────────────────────────────
+  // ── CRITICALITY — age D10-D30, PV ≥ 10000, ALL matching AWBs ────────────
   const critEl=document.getElementById('hovPFcrit_'+ki);
   if(critEl){
+    const seenAwbs=new Set();
     const critRows=(master.hovAllRaw||[]).filter(r=>{
       if(r.fileType!==kFileType||r.date!==kDate)return false;
       if((parseFloat(r.pv)||0)<10000)return false;
@@ -4861,6 +4865,9 @@ function _pfRerender(ki){
       if(age<10||age>30)return false;
       if(pcs.length>0&&!pcs.includes(r.pc))return false;
       if(dcSel&&dcSel.length>0&&!dcSel.includes(r.loc))return false;
+      // Dedup by AWB only
+      if(r.awb&&seenAwbs.has(r.awb))return false;
+      if(r.awb)seenAwbs.add(r.awb);
       return true;
     }).sort((a,b)=>(parseFloat(b.pv)||0)-(parseFloat(a.pv)||0));
     critEl.innerHTML=critRows.length===0
@@ -5596,7 +5603,7 @@ function renderHovPerFile(pcs){
     if(!pvByFile[key].some(e=>e.awb===r.awb))pvByFile[key].push(r);
   });
 
-  // Criticality by file
+  // Criticality by file — ALL AWBs matching PV≥10000, age D10-D30 (no dedup limit)
   const critByFile={};
   (master.hovAllRaw||[]).forEach(r=>{
     const pv2=parseFloat(r.pv)||0;const age=parseInt(r.age)||0;
@@ -5605,7 +5612,8 @@ function renderHovPerFile(pcs){
     if(!_hovDCFilter((r.loc||'').toUpperCase()))return;
     const key=`${r.fileType}|${r.date}`;
     if(!critByFile[key])critByFile[key]=[];
-    critByFile[key].push(r);
+    // Dedup by AWB number only — prevent exact duplicate rows from double-processing
+    if(!critByFile[key].some(e=>e.awb&&e.awb===r.awb))critByFile[key].push(r);
   });
 
   // Collect all unique PC values across all HOV data for per-section dropdowns
@@ -6156,7 +6164,9 @@ function _buildAIAgg(fileType){
     const loc=(r.loc||'UNKNOWN').toUpperCase();
     const age=parseInt(r.age)||0;
     const pv=parseFloat(r.pv)||0;
-    const client=(r.pc||r.client||'UNKNOWN').toUpperCase().trim();
+    // CLIENT: use the actual 'client' field from the source file (column after REGION).
+    // Do NOT use r.pc (Product Category) — they are separate fields.
+    const client=(r.client||'').toUpperCase().trim()||'UNKNOWN';
     const pd=String(r.pd||'');
     const pt=_normProduct(pd);
     const au=(r.actionUser||'').toUpperCase().trim();
