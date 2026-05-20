@@ -7633,18 +7633,70 @@ function downloadChart(canvasId,filename){
 const GS_URL_KEY='logistics_gsheets_url_v2';
 const GS_SHEET_ID='17JbybSZkKtdoHZBua3QyC5tcxwKYozhnILQcoXb3rYQ';
 
+/* ── CROSS-DEVICE FIX: The Apps Script URL only existed in the admin's localStorage.
+   Solution: store the URL in the spreadsheet itself (CONFIG tab, cell B1) so any
+   device can auto-discover it by fetching the spreadsheet's public CSV.
+   The admin sets the URL once via the Sheets button; it then propagates globally. ── */
+
 /* ── PASTE YOUR WEB APP URL HERE ──────────────────────────────────────
    Replace the empty string '' with your Apps Script Web App URL.
    Example:
    const GS_HARDCODED_URL='https://script.google.com/macros/s/AKfy.../exec';
-   Once set, every file upload auto-syncs to Google Sheets permanently.
-   You can also set it at runtime via the 📊 Sheets button in the toolbar.
+   Once set, every file upload auto-syncs and all devices auto-discover this URL.
 ──────────────────────────────────────────────────────────────────── */
 const GS_HARDCODED_URL='';
 
+/* GS_DISCOVERY_URL: The dashboard can auto-discover the AppScript URL by reading
+   a CONFIG tab from the spreadsheet (public read, no auth).
+   The admin stores the AppScript URL in cell B1 of a "CONFIG" tab.
+   Any new device reads this and caches it locally. */
+const GS_DISCOVERY_URL=`https://docs.google.com/spreadsheets/d/${GS_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=CONFIG`;
+
 function getGsUrl(){
-  // localStorage URL (set via 📊 Sheets button) takes priority over hardcoded
   return localStorage.getItem(GS_URL_KEY)||GS_HARDCODED_URL||'';
+}
+
+/* ── Auto-discover AppScript URL from spreadsheet CONFIG tab ──────────────────
+   Called silently on dashboard load when no URL is in localStorage.
+   The CONFIG tab has: cell A1="APP_SCRIPT_URL", B1="<actual url>".
+   This allows admins to set the URL once and have all devices discover it.    */
+async function _discoverAndCacheGsUrl(){
+  if(getGsUrl())return true; // already have URL — skip discovery
+  try{
+    const resp=await fetch(GS_DISCOVERY_URL,{cache:'no-cache'});
+    if(!resp.ok)return false;
+    const csv=await resp.text();
+    // Parse CSV: find row where col A = "APP_SCRIPT_URL", col B = the URL
+    const lines=csv.split(/\r?\n/);
+    for(const line of lines){
+      const cols=line.split(',');
+      const key=(cols[0]||'').replace(/"/g,'').trim().toUpperCase();
+      const val=(cols[1]||'').replace(/"/g,'').trim();
+      if(key==='APP_SCRIPT_URL'&&val&&val.startsWith('http')){
+        localStorage.setItem(GS_URL_KEY,val);
+        console.log('Auto-discovered AppScript URL from spreadsheet CONFIG tab');
+        return true;
+      }
+    }
+    console.log('CONFIG tab has no APP_SCRIPT_URL row yet');
+    return false;
+  }catch(e){
+    console.warn('_discoverAndCacheGsUrl failed (non-fatal):',e.message);
+    return false;
+  }
+}
+
+/* ── Push the AppScript URL into the CONFIG tab so other devices can discover it.
+   Called whenever admin saves a new URL via configSheets().                   */
+async function _publishUrlToConfig(appScriptUrl){
+  if(!appScriptUrl)return;
+  try{
+    // We push via the AppScript POST endpoint itself — stores in CONFIG tab
+    await _sheetsFetch(appScriptUrl,{type:'config_url',url:appScriptUrl});
+    console.log('AppScript URL published to CONFIG tab for cross-device discovery');
+  }catch(e){
+    console.warn('_publishUrlToConfig failed (non-fatal):',e.message);
+  }
 }
 
 /* ── Save / clear the deployed Web App URL ── */
@@ -7673,7 +7725,9 @@ function configSheets(){
     localStorage.setItem(GS_URL_KEY,trimmed);
     const btn=document.getElementById('sheetsbtn');
     if(btn)btn.textContent='📊 Sheets ✓';
-    toast('✅ URL saved — testing connection…','tok');
+    toast('✅ URL saved — publishing for cross-device access…','tok');
+    // Publish URL to CONFIG tab so other devices auto-discover it
+    _publishUrlToConfig(trimmed).catch(()=>{});
     // Auto-test after saving
     setTimeout(()=>testSheetsConnection(trimmed),400);
   }else{
@@ -8020,6 +8074,24 @@ function doGet(e) {
     }
   }
 
+  /* ── getConfig — returns CONFIG tab values for cross-device discovery ── */
+  if (action === 'getConfig') {
+    try {
+      var ss=getSS();
+      var cfgSh=ss.getSheetByName('CONFIG');
+      if(!cfgSh||cfgSh.getLastRow()<1)
+        return buildResponse(JSON.stringify({ok:true,config:{}}));
+      var cfgData=cfgSh.getDataRange().getValues();
+      var config={};
+      cfgData.forEach(function(row){
+        var k=String(row[0]||'').trim();
+        var v=String(row[1]||'').trim();
+        if(k)config[k]=v;
+      });
+      return buildResponse(JSON.stringify({ok:true,config:config}));
+    }catch(err){return buildResponse(JSON.stringify({ok:false,error:err.message}));}
+  }
+
   /* ── getPartitionIndex (for diagnostics) ── */
   if (action === 'getIndex') {
     try {
@@ -8355,7 +8427,33 @@ function getMasterFromAllPartitions(ss) {
     return{ok:true,type:'file_log'};
   }
 
-  /* ── DELETE FILE ── */
+  /* ── CONFIG URL — store AppScript URL in CONFIG tab for cross-device discovery ── */
+  if(payload.type==='config_url'){
+    var configUrl=String(payload.url||'').trim();
+    if(!configUrl||!configUrl.startsWith('http'))
+      return{ok:false,error:'invalid url'};
+    var cfgSh=ss.getSheetByName('CONFIG')||ss.insertSheet('CONFIG');
+    // Write header + URL in row 1: A1=key, B1=value
+    if(cfgSh.getLastRow()===0){
+      cfgSh.appendRow(['APP_SCRIPT_URL',configUrl,'Last Updated',new Date().toISOString()]);
+      cfgSh.getRange(1,1,1,4).setFontWeight('bold').setBackground('#0d1f3c').setFontColor('#dce6f5');
+    }else{
+      // Update existing row
+      var cfgData=cfgSh.getDataRange().getValues();
+      var found=false;
+      for(var ci=0;ci<cfgData.length;ci++){
+        if(String(cfgData[ci][0]).toUpperCase().trim()==='APP_SCRIPT_URL'){
+          cfgSh.getRange(ci+1,2).setValue(configUrl);
+          cfgSh.getRange(ci+1,4).setValue(new Date().toISOString());
+          found=true;break;
+        }
+      }
+      if(!found)cfgSh.appendRow(['APP_SCRIPT_URL',configUrl,'Last Updated',new Date().toISOString()]);
+    }
+    SpreadsheetApp.flush();
+    Logger.log('CONFIG: stored AppScript URL for cross-device discovery');
+    return{ok:true,type:'config_url',stored:configUrl.slice(0,60)+'…'};
+  }
   if(payload.type==='delete_file'){
     var de=payload.entry||{},dd=normDate(de.date||'');
     var dsec=(de.section||'').toString().replace(/[\\/:*?\[\]]/g,' ').replace(/\s+/g,' ').trim();
@@ -9119,8 +9217,16 @@ function enterAdminMode(username){
      3. Use whatever is in master already (localStorage)
    Always re-renders ALL 4 section tabs after restore.               */
 async function _ensureDashboardData(context){
-  const url=getGsUrl();
+  let url=getGsUrl();
   const localTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+r.count,0),0);
+
+  // CROSS-DEVICE FIX: if no URL in localStorage, try to auto-discover it from the
+  // spreadsheet CONFIG tab. This runs silently on every fresh device/browser.
+  if(!url){
+    toast('⏳ Detecting backend configuration…','ti');
+    const discovered=await _discoverAndCacheGsUrl();
+    if(discovered) url=getGsUrl();
+  }
 
   if(!url){
     if(localTotal===0){
@@ -9143,10 +9249,8 @@ async function _ensureDashboardData(context){
     const newTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+r.count,0),0);
 
     if(restored&&newTotal>0){
-      // Re-render ALL tabs so every chart and table is populated
       updateSummary();
       _renderAllTabs();
-      // Also fetch file log from Sheets to populate the file manager panel
       _fetchAndMergeFileLog();
       if(newTotal>0&&localTotal===0){
         setTimeout(()=>toast(`✅ Dashboard restored — ${fn(newTotal)} AWBs loaded from backend`,'tok'),400);
@@ -9156,14 +9260,12 @@ async function _ensureDashboardData(context){
       return;
     }
 
-    // Sheets fetch failed or returned empty — try IDB as fallback
     if(newTotal===0){
       console.log(`[${context}] Sheets unavailable — trying IndexedDB…`);
       try{
         const idbData=await loadRawFromIDB();
         const idbRows=Object.values(idbData).reduce((s,d)=>s+Object.values(d).reduce((s2,r)=>s2+r.length,0),0);
         if(idbRows>0){
-          // IDB has rawData — rebuild master from it by re-running applyRows logic
           Object.assign(rawData,idbData);
           _rebuildMasterFromRawData();
           updateSummary();
@@ -9174,7 +9276,6 @@ async function _ensureDashboardData(context){
       }catch(idbErr){console.warn('IDB fallback failed:',idbErr.message);}
       toast('ℹ No saved data found. Upload files in Admin Mode.','tw');
     }else{
-      // Had local data already — just re-render
       updateSummary();
       _renderAllTabs();
     }
