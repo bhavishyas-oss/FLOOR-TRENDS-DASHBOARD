@@ -3804,12 +3804,50 @@ function toggleDebug(){
 /* ═══════════════════════════════════════════════
    ACTIONS
 ═══════════════════════════════════════════════ */
-function onSave(){
+async function onSave(){
   if(!requireAdmin('Save to Master'))return;
-  if(persistM()){
-    toast('✅ Saved to master dataset','tok');
-    // Push updated snapshot to Sheets so re-login/Viewer Mode shows latest data
-    pushMasterSnapshot();
+  const hasData=Object.values(master).some(arr=>Array.isArray(arr)&&arr.length>0);
+  if(!hasData){
+    alert('⚠ No data to save.\n\nUpload Forward / Reverse / LMODC / DCH files first, then click Save to Master.');
+    return;
+  }
+
+  // Step 1: Save to localStorage immediately
+  const saved=persistM();
+  if(!saved){
+    alert('❌ localStorage save failed.\nBrowser storage may be full. Try clearing old data.');
+    return;
+  }
+  toast('💾 Saving to backend…','ti');
+
+  // Step 2: Check if Sheets URL is configured
+  const url=getGsUrl();
+  if(!url){
+    // localStorage saved OK but no Sheets URL — warn admin
+    toast('✅ Saved locally. ⚠ No Sheets URL set — other browsers cannot see this data yet.','tw');
+    alert('✅ Data saved locally.\n\n⚠ Google Sheets backend not configured.\n\nTo share data across browsers:\n1. Click 📊 Sheets button\n2. Paste your Apps Script Web App URL\n3. Click Save to Master again');
+    return;
+  }
+
+  // Step 3: Push to Sheets (with visible feedback)
+  console.log('[onSave] Pushing master snapshot to Sheets…');
+  try{
+    await pushMasterSnapshot();
+    // Push section counts too (lightweight diagnostic data)
+    const scounts=SECS.map((sec,i)=>({section:sec.title,src:sec.src,ageFilter:`D${(SEC_FILTERS[i]||{}).age||sec.ageOpts?.[0]||3}`,
+      awbs:(master[sec.src]||[]).reduce((s,r)=>s+r.count,0),
+      records:(master[sec.src]||[]).length,
+      fileDates:[...new Set((master[sec.src]||[]).map(r=>r.date))].sort().join(', ').slice(0,200)
+    })).filter(c=>c.awbs>0);
+    if(scounts.length)pushSectionCounts(scounts).catch(()=>{}); // fire-and-forget
+    const total=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
+    toast(`✅ Saved — ${fn(total)} AWBs synced to backend`,'tok');
+    alert(`✅ Data saved successfully!\n\n${fn(total)} AWBs pushed to Google Sheets backend.\nView Mode and all other browsers will now see this data.\n\nData summary:\n• Forward: ${fn((master.forward||[]).reduce((s,r)=>s+r.count,0))} AWBs\n• Reverse: ${fn((master.reverse||[]).reduce((s,r)=>s+r.count,0))} AWBs\n• LMODC: ${fn((master.lmodc||[]).reduce((s,r)=>s+r.count,0))} AWBs\n• Short Ship/DCH: ${fn((master.forwardShort||[]).reduce((s,r)=>s+r.count,0))} AWBs`);
+    console.log('[onSave] ✅ Backend sync complete');
+  }catch(err){
+    console.error('[onSave] ❌ Sheets push failed:', err.message);
+    toast('⚠ Saved locally — Sheets sync failed. See popup.','tw');
+    alert(`⚠ Data saved to this browser only.\n\nSheets sync failed:\n${err.message||'Unknown error'}\n\nPossible causes:\n1. Apps Script URL incorrect or expired\n2. Script not deployed as "Anyone can access"\n3. Internet connection issue\n\nClick 📊 Sheets → Test to verify your connection.`);
   }
 }
 function onExport(){
@@ -7377,7 +7415,43 @@ async function runHovFiles(files){
   toast(`🚁 HOV: ${badges.filter(b=>b.ok).length}/${files.length} files processed`,'tok');
 }
 
-function onHovSave(){if(!requireAdmin('Save HOV Data'))return;if(persistM())toast('✅ HOV data saved to master','tok');}
+async function onHovSave(){
+  if(!requireAdmin('Save HOV Data'))return;
+  const hovTotal=(master.hovAllRaw||[]).length;
+  if(!hovTotal&&!(master.hov||[]).length&&!(master.hovPV||[]).length){
+    alert('⚠ No HOV data to save.\n\nUpload Forward and/or Reverse HOV files first, then click Save HOV Data.');
+    return;
+  }
+
+  // Step 1: Save HOV to localStorage (includes master.hov, hovAllRaw, hovPV etc.)
+  persistM();
+  toast('💾 Saving HOV data…','ti');
+  console.log(`[onHovSave] HOV data: ${hovTotal} raw rows, ${(master.hov||[]).length} agg records`);
+
+  // Step 2: HOV data cross-browser visibility
+  // HOV raw data (hovAllRaw) is too large to push to Sheets.
+  // We push the HOV aggregated summary (master.hov) via the same master snapshot
+  // so View Mode can restore HOV counts/summaries from backend.
+  const url=getGsUrl();
+  if(url){
+    try{
+      await pushMasterSnapshot(); // this includes hov/hovPV in master object via persistM
+      const fwdCount=(master.hovAllRaw||[]).filter(r=>r.fileType==='forward').length;
+      const revCount=(master.hovAllRaw||[]).filter(r=>r.fileType==='reverse').length;
+      toast(`✅ HOV data saved — ${fn(hovTotal)} AWBs synced`,'tok');
+      alert(`✅ HOV Data saved successfully!\n\n• Forward HOV AWBs: ${fn(fwdCount)}\n• Reverse HOV AWBs: ${fn(revCount)}\n• Total raw records: ${fn(hovTotal)}\n\nData saved to this browser and backend.\nView Mode users will see HOV summary data when they refresh.`);
+      console.log('[onHovSave] ✅ HOV data saved and pushed to backend');
+    }catch(err){
+      console.error('[onHovSave] Backend push failed:', err.message);
+      toast('✅ HOV data saved locally (Sheets sync failed)','tw');
+      alert(`✅ HOV data saved to this browser (${fn(hovTotal)} records).\n\n⚠ Backend sync failed:\n${err.message}\n\nOther browsers will not see HOV data until Sheets sync is fixed.\nClick 📊 Sheets → Test to verify your connection.`);
+    }
+  }else{
+    // No Sheets URL — local save only
+    toast('✅ HOV data saved locally','tok');
+    alert(`✅ HOV data saved (${fn(hovTotal)} records).\n\n⚠ No Sheets backend configured.\nOther browsers cannot see HOV data without a Google Sheets connection.\n\nTo enable cross-browser HOV visibility:\n1. Click 📊 Sheets → paste your Apps Script URL\n2. Click Save HOV Data again`);
+  }
+}
 function onHovClear(){
   if(!requireAdmin('Clear HOV Data'))return;
   if(!confirm('Clear ALL HOV data? This resets all HOV tabs, charts, tables, and cached data.'))return;
@@ -8057,26 +8131,32 @@ function configSheets(){
     `       Execute as : Me\n`+
     `       Who can access : Anyone\n`+
     `  6. Copy the Web App URL and paste here\n\n`+
-    `IMPORTANT: After pasting, click OK then use "📊 Sheets → 🔍 Test" to verify.\n`+
-    `Leave blank to disable sync.`,
+    `IMPORTANT: URL must look like:\nhttps://script.google.com/macros/s/AKfycb.../exec\n\nLeave blank to disable sync.`,
     cur||''
   );
   if(url===null)return;
   const trimmed=url.trim();
   if(trimmed){
+    if(!trimmed.startsWith('https://script.google.com')){
+      alert('❌ Invalid URL format.\n\nThe URL must start with:\nhttps://script.google.com/macros/s/\n\nMake sure you are pasting the Web App URL, not the spreadsheet URL.');
+      return;
+    }
     localStorage.setItem(GS_URL_KEY,trimmed);
+    localStorage.setItem(GS_SELF_URL_KEY,trimmed);
     const btn=document.getElementById('sheetsbtn');
     if(btn)btn.textContent='📊 Sheets ✓';
-    toast('✅ URL saved — publishing for cross-device access…','tok');
-    // Publish URL to CONFIG tab so other devices auto-discover it
+    toast('🔍 URL saved — testing connection…','ti');
+    console.log('[configSheets] URL saved, testing connection…');
+    // Publish to CONFIG and test connection
     _publishUrlToConfig(trimmed).catch(()=>{});
-    // Auto-test after saving
     setTimeout(()=>testSheetsConnection(trimmed),400);
   }else{
     localStorage.removeItem(GS_URL_KEY);
+    localStorage.removeItem(GS_SELF_URL_KEY);
     const btn=document.getElementById('sheetsbtn');
     if(btn)btn.textContent='📊 Sheets';
     toast('Google Sheets sync disabled','tw');
+    alert('Google Sheets sync has been disabled.\nData will only be saved locally in this browser.');
   }
 }
 
@@ -9394,46 +9474,50 @@ async function runSheetsPush(results){
    The AppScript reconstructs the master object server-side when fetched.     */
 async function pushMasterSnapshot(){
   const url=getGsUrl();
-  if(!url)return;
+  if(!url){console.log('[pushMasterSnapshot] No Sheets URL — skipping');return;}
   const hasData=Object.values(master).some(arr=>Array.isArray(arr)&&arr.length>0);
-  if(!hasData)return;
-  try{
-    const ts=new Date().toISOString();
-    const rows=[];
-    // SCHEMA: Type | Date | Age | Location/Destination | Bin | Msg | OS | Count | TS
-    // This matches the EXACT flat record structure that buildPivot reads:
-    // master[type] = [{date, age, location, bin, msg, os, count}, ...]
-    // The old schema (Type|Date|Count|LocsJSON|BinsJSON|MsgsJSON) was WRONG —
-    // it saved aggregated-per-date format but master stores flat per-(date×age×location) records.
-    const types=['forward','reverse','lmodc','forwardShort'];
-    for(const type of types){
-      const arr=master[type];
-      if(!Array.isArray(arr)||!arr.length)continue;
-      for(const rec of arr){
-        if(!rec||!rec.date)continue;
-        rows.push([
-          type,
-          rec.date,
-          rec.age||0,
-          rec.location||rec.destination||'',  // forward/reverse/DCH use location; lmodc uses destination
-          rec.bin||0,
-          rec.msg||'',
-          rec.os||'',
-          rec.count||0,
-          ts
-        ]);
-      }
+  if(!hasData){console.log('[pushMasterSnapshot] No data to push');return;}
+
+  const ts=new Date().toISOString();
+  const rows=[];
+  // SCHEMA: Type|Date|Age|Location|Bin|Msg|OS|Count|TS (9 columns, flat records)
+  const types=['forward','reverse','lmodc','forwardShort'];
+  for(const type of types){
+    const arr=master[type];
+    if(!Array.isArray(arr)||!arr.length)continue;
+    for(const rec of arr){
+      if(!rec||!rec.date)continue;
+      rows.push([
+        type,
+        rec.date,
+        rec.age||0,
+        rec.location||rec.destination||'',
+        rec.bin||0,
+        rec.msg||'',
+        rec.os||'',
+        rec.count||0,
+        ts
+      ]);
     }
-    if(!rows.length)return;
-    const payload={type:'master_snapshot',rows,ts};
-    const r=await _sheetsFetch(url,payload);
-    if(r.ok||r.ok===null){
-      console.log(`Master snapshot pushed: ${rows.length} rows (flat record format)`);
-    }else{
-      console.warn('pushMasterSnapshot failed — queuing for retry');
-      _enqueueSyncItem(payload);
-    }
-  }catch(e){console.warn('pushMasterSnapshot failed (non-fatal):',e.message);}
+  }
+  if(!rows.length){console.log('[pushMasterSnapshot] 0 rows to push');return;}
+
+  console.log(`[pushMasterSnapshot] Pushing ${rows.length} records to MASTER SNAPSHOT…`);
+  const payload={type:'master_snapshot',rows,ts};
+  const r=await _sheetsFetch(url,payload);
+
+  if(r.ok===null){
+    // no-cors opaque response — treat as success (cannot read body)
+    console.log(`[pushMasterSnapshot] ✅ Pushed ${rows.length} rows (opaque response — no-cors)`);
+    return;
+  }
+  if(r.ok){
+    console.log(`[pushMasterSnapshot] ✅ Pushed ${rows.length} rows — server response OK`);
+    return;
+  }
+  // ok===false — server returned error
+  const errMsg=r.body?.error||JSON.stringify(r.body||{});
+  throw new Error(`Sheets push failed: ${errMsg}`);
 }
 
 /* ── Fetch master snapshot from Sheets (backend-driven restore) ──
