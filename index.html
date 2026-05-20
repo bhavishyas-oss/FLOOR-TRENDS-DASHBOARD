@@ -9414,6 +9414,162 @@ async function pushMasterSnapshot(){
    Uses the Apps Script GET endpoint which returns the MASTER SNAPSHOT JSON.
    On success, populates master and re-renders the UI.
    This makes the dashboard fully backend-driven — no re-upload needed.          */
+/* ════════════════════════════════════════════════════════════════════════════
+   DIRECT SPREADSHEET READ — works on ANY device without AppScript URL
+   ─────────────────────────────────────────────────────────────────────────
+   Google's gviz/tq endpoint returns data for spreadsheets shared as
+   "Anyone with link can view" — NO authentication, NO AppScript URL needed.
+   This is the cross-device restore mechanism.
+
+   Read order tried:
+     MASTER SNAPSHOT_1  (partitioned — newer uploads)
+     MASTER SNAPSHOT    (legacy — older uploads)
+     SITE AVERAGES_1    (rolling averages)
+     SITE AVERAGES      (legacy averages)
+════════════════════════════════════════════════════════════════════════════ */
+
+const GS_GVIZ_BASE=`https://docs.google.com/spreadsheets/d/${GS_SHEET_ID}/gviz/tq`;
+
+/* Fetch one sheet's data as array-of-arrays via gviz CSV (fastest, no parsing issues) */
+async function _gvizCSV(sheetName){
+  const url=`${GS_GVIZ_BASE}?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+  try{
+    const resp=await fetch(url,{cache:'no-cache',mode:'cors'});
+    if(!resp.ok)return null;
+    const text=await resp.text();
+    if(!text||text.length<5)return null;
+    // Simple CSV parser (handles quoted fields)
+    const rows=[];
+    let line='',inQ=false;
+    const cells=[];
+    for(let i=0;i<text.length;i++){
+      const ch=text[i];
+      if(ch==='"'){inQ=!inQ;}
+      else if(ch===','&&!inQ){cells.push(line.replace(/^"|"$/g,'').replace(/""/g,'"'));line='';}
+      else if((ch==='\n'||ch==='\r')&&!inQ){
+        cells.push(line.replace(/^"|"$/g,'').replace(/""/g,'"'));line='';
+        if(cells.some(c=>c!==''))rows.push([...cells]);
+        cells.length=0;
+        if(ch==='\r'&&text[i+1]==='\n')i++;
+      }else{line+=ch;}
+    }
+    if(cells.some(c=>c!==''))rows.push(cells.map(c=>c.replace(/^"|"$/g,'').replace(/""/g,'"')));
+    return rows.length>1?rows:null; // first row is header
+  }catch(e){return null;}
+}
+
+/* Parse MASTER SNAPSHOT CSV rows into master[] */
+function _parseMasterCSV(rows){
+  // rows[0] = header: Type, Date, Count, Locations, Bins, Messages, LastUpdated
+  const master2={forward:[],reverse:[],lmodc:[],forwardShort:[]};
+  let n=0;
+  const selfUrl={v:''};
+  for(let i=1;i<rows.length;i++){
+    const r=rows[i];
+    const type=String(r[0]||'').trim();
+    if(type==='__url__'){
+      // Sentinel row — contains AppScript URL in col C
+      const u=String(r[2]||'').trim();
+      if(u.startsWith('https://script.google.com'))selfUrl.v=u;
+      continue;
+    }
+    const date=String(r[1]||'').trim().slice(0,10);
+    const count=parseInt(r[2])||0;
+    if(!type||!date||!master2.hasOwnProperty(type))continue;
+    let locs={},bins={},msgs={};
+    try{locs=JSON.parse(r[3]||'{}');}catch{}
+    try{bins=JSON.parse(r[4]||'{}');}catch{}
+    try{msgs=JSON.parse(r[5]||'{}');}catch{}
+    const ex=master2[type].find(x=>x.date===date);
+    if(ex){if(count>(ex.count||0)){ex.count=count;ex.locs=locs;ex.bins=bins;ex.msgs=msgs;}}
+    else{master2[type].push({date,count,locs,bins,msgs});}
+    n++;
+  }
+  return{master:master2,n,selfUrl:selfUrl.v};
+}
+
+/* Parse SITE AVERAGES CSV rows into _rollingAvg format */
+function _parseAvgCSV(rows){
+  // header: Sync Date, Section, Site/Location, Latest File Date, Latest Count, Hist Avg, Latest Avg, Total, nDates, Trend, Updated At
+  let updated=0;
+  for(let i=1;i<rows.length;i++){
+    const r=rows[i];
+    const section=String(r[1]||'').trim();
+    const site=String(r[2]||'').trim();
+    const histAvg=parseFloat(r[5])||0;
+    const latestAvg=parseFloat(r[6])||0;
+    const updatedAt=String(r[10]||'').trim();
+    if(!section||!site)continue;
+    if(!_rollingAvg[section])_rollingAvg[section]={};
+    // Only update if newer or no existing entry
+    const cur=_rollingAvg[section][site];
+    if(!cur||(updatedAt>=(cur.updatedAt||''))){
+      _rollingAvg[section][site]={histAvg,latestAvg,updatedAt};
+      updated++;
+    }
+  }
+  return updated;
+}
+
+/* ── Main cross-device restore: reads spreadsheet directly via gviz ──────────
+   Works on ANY device, ANY browser, ANY Google account.
+   No AppScript URL required. Spreadsheet must be shared "Anyone with link".   */
+async function _fetchMasterFromGviz(){
+  // Try partitioned sheet first, then legacy
+  const sheetNames=['MASTER SNAPSHOT_1','MASTER SNAPSHOT'];
+  let allRows=[];
+  for(const sn of sheetNames){
+    const rows=await _gvizCSV(sn);
+    if(rows){allRows=allRows.concat(rows.slice(1));} // skip header row of each partition
+  }
+  if(!allRows.length){console.log('gviz: no MASTER SNAPSHOT data found');return false;}
+
+  // Parse master data
+  const parsed=_parseMasterCSV([['Type','Date','Count','Locations','Bins','Messages','LastUpdated'],...allRows]);
+  if(parsed.n===0){console.log('gviz: snapshot empty');return false;}
+
+  console.log(`gviz: parsed ${parsed.n} master records from spreadsheet`);
+
+  // Cache discovered AppScript URL if present in sentinel row
+  if(parsed.selfUrl)_cacheAppScriptUrl(parsed.selfUrl);
+
+  // Merge into master (higher-count wins per date)
+  const types=['forward','reverse','lmodc','forwardShort'];
+  let changed=false;
+  const localTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
+  types.forEach(type=>{
+    const fetchedArr=parsed.master[type]||[];
+    if(!fetchedArr.length)return;
+    if(localTotal===0){master[type]=[...fetchedArr];changed=true;return;}
+    const localMap=new Map((master[type]||[]).map(r=>[r.date,r]));
+    fetchedArr.forEach(r=>{
+      const local=localMap.get(r.date);
+      if(!local){(master[type]=master[type]||[]).push(r);changed=true;}
+      else if((r.count||0)>(local.count||0)){const idx=master[type].findIndex(lr=>lr.date===r.date);if(idx>=0){master[type][idx]=r;changed=true;}}
+    });
+  });
+
+  if(changed){
+    try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){}
+  }
+  return true;
+}
+
+/* ── Restore rolling averages from SITE AVERAGES sheet via gviz ── */
+async function _fetchAvgsFromGviz(){
+  const sheetNames=['SITE AVERAGES_1','SITE AVERAGES'];
+  let total=0;
+  for(const sn of sheetNames){
+    const rows=await _gvizCSV(sn);
+    if(rows)total+=_parseAvgCSV(rows);
+  }
+  if(total>0){
+    try{localStorage.setItem(RA_KEY,JSON.stringify(_rollingAvg));}catch(e){}
+    console.log(`gviz: restored ${total} rolling average entries`);
+  }
+  return total;
+}
+
 async function fetchMasterFromSheets(){
   const url=getGsUrl();
   if(!url)return false;
@@ -9582,74 +9738,85 @@ function enterAdminMode(username){
      2. Try IDB directly (loadRawFromIDB+rebuild) → if Sheets fails
      3. Use whatever is in master already (localStorage)
    Always re-renders ALL 4 section tabs after restore.               */
+/* ── Central data-load function ─────────────────────────────────────────────
+   PRIORITY ORDER:
+   1. Direct gviz read from spreadsheet (NO AppScript needed — works everywhere)
+   2. AppScript getMaster (if URL available — faster, more complete)
+   3. IDB local cache
+   Any of these can restore the dashboard on any device.                      */
 async function _ensureDashboardData(context){
+  const localTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
   let url=getGsUrl();
-  const localTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+r.count,0),0);
 
-  // CROSS-DEVICE FIX: if no URL in localStorage, try to auto-discover it from the
-  // spreadsheet CONFIG tab. This runs silently on every fresh device/browser.
-  if(!url){
-    toast('⏳ Detecting backend configuration…','ti');
-    const discovered=await _discoverAndCacheGsUrl();
-    if(discovered) url=getGsUrl();
-  }
-
-  if(!url){
-    if(localTotal===0){
-      toast('No data. Configure Google Sheets or upload files (Admin Mode).','tw');
-    }else{
-      _renderAllTabs();
-    }
-    return;
-  }
-
-  if(localTotal===0){
+  // If no URL, try to discover it from gviz sentinel row (happens automatically below)
+  if(!url&&!localTotal){
     toast('⏳ Loading dashboard data from backend…','ti');
-  }else{
-    console.log(`[${context}] Local: ${fn(localTotal)} AWBs — syncing with Sheets…`);
+  }else if(localTotal>0){
+    // Already have local data — still sync in background
+    _renderAllTabs();
+    console.log(`[${context}] Local: ${fn(localTotal)} AWBs — background sync starting…`);
   }
 
+  // ── LAYER 1: Direct gviz read (primary cross-device restore) ────────────
+  // This works on EVERY device without any AppScript URL because it reads
+  // the publicly shared spreadsheet directly. No auth. No localStorage dependency.
   try{
-    const restored=await fetchMasterFromSheets();
+    const gvizOk=await _fetchMasterFromGviz();
+    await _fetchAvgsFromGviz(); // restore rolling averages too
 
-    const newTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+r.count,0),0);
-
-    if(restored&&newTotal>0){
+    const newTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
+    if(gvizOk&&newTotal>0){
       updateSummary();
       _renderAllTabs();
       _fetchAndMergeFileLog();
       if(newTotal>0&&localTotal===0){
-        setTimeout(()=>toast(`✅ Dashboard restored — ${fn(newTotal)} AWBs loaded from backend`,'tok'),400);
+        setTimeout(()=>toast(`✅ Dashboard restored — ${fn(newTotal)} AWBs loaded`,'tok'),400);
       }else if(newTotal>localTotal){
         setTimeout(()=>toast(`✅ Updated — ${fn(newTotal-localTotal)} new AWBs from backend`,'tok'),400);
       }
+      // After gviz restore, also try AppScript URL discovery for write capability
+      url=getGsUrl(); // may have been updated by sentinel row
+      if(url)fetchMasterFromSheets().catch(()=>{}); // background AppScript sync
       return;
     }
-
-    if(newTotal===0){
-      console.log(`[${context}] Sheets unavailable — trying IndexedDB…`);
-      try{
-        const idbData=await loadRawFromIDB();
-        const idbRows=Object.values(idbData).reduce((s,d)=>s+Object.values(d).reduce((s2,r)=>s2+r.length,0),0);
-        if(idbRows>0){
-          Object.assign(rawData,idbData);
-          _rebuildMasterFromRawData();
-          updateSummary();
-          _renderAllTabs();
-          setTimeout(()=>toast(`✅ Dashboard restored from local cache — ${fn(idbRows)} rows`,'tok'),400);
-          return;
-        }
-      }catch(idbErr){console.warn('IDB fallback failed:',idbErr.message);}
-      toast('ℹ No saved data found. Upload files in Admin Mode.','tw');
-    }else{
-      updateSummary();
-      _renderAllTabs();
-    }
-
   }catch(e){
-    console.warn(`[${context}] _ensureDashboardData error:`,e.message);
-    if(localTotal>0)_renderAllTabs();
+    console.warn(`[${context}] gviz restore failed (non-fatal):`,e.message);
   }
+
+  // ── LAYER 2: AppScript getMaster (if URL known) ──────────────────────────
+  if(!url){
+    toast('⏳ Detecting backend…','ti');
+    await _discoverAndCacheGsUrl();
+    url=getGsUrl();
+  }
+  if(url){
+    try{
+      const restored=await fetchMasterFromSheets();
+      const newTotal2=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
+      if(restored&&newTotal2>0){
+        updateSummary();_renderAllTabs();_fetchAndMergeFileLog();
+        if(newTotal2>localTotal)setTimeout(()=>toast(`✅ Dashboard restored — ${fn(newTotal2)} AWBs`,'tok'),400);
+        return;
+      }
+    }catch(e){console.warn(`[${context}] AppScript restore failed:`,e.message);}
+  }
+
+  // ── LAYER 3: IDB local cache ─────────────────────────────────────────────
+  try{
+    const idbData=await loadRawFromIDB();
+    const idbRows=Object.values(idbData).reduce((s,d)=>s+Object.values(d).reduce((s2,r)=>s2+r.length,0),0);
+    if(idbRows>0){
+      Object.assign(rawData,idbData);_rebuildMasterFromRawData();
+      updateSummary();_renderAllTabs();
+      setTimeout(()=>toast(`✅ Restored from local cache — ${fn(idbRows)} rows`,'tok'),400);
+      return;
+    }
+  }catch(e){console.warn('IDB fallback failed:',e.message);}
+
+  // All restore methods exhausted
+  const finalTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
+  if(finalTotal>0){updateSummary();_renderAllTabs();}
+  else{toast('ℹ No saved data found. Upload files in Admin Mode to populate the dashboard.','tw');}
 }
 
 /* ── Fetch file log from Sheets and merge into local registry ─────────────
