@@ -223,22 +223,19 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
    el.innerHTML = 300KB string → el.innerHTML = 50KB string: 6× faster parse.  */
 .ptc{padding:3px 7px;text-align:center;font-size:11px;font-weight:700;white-space:nowrap;border:1px solid #c8dfd9;box-sizing:border-box}
 .ptcl{padding:3px 7px;text-align:left;font-size:11px;font-weight:700;white-space:nowrap;border:1px solid #c8dfd9;max-width:150px;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box}
-.ptc-r{background:#ef4444;color:#fff;text-align:center}
-.ptc-g{background:#dff0ea;color:#0a4a35;text-align:center}
-.ptc-z{color:#94a3b8;text-align:center}
+.ptc-r{background:#ef4444;color:#fff}
+.ptc-g{background:#dff0ea;color:#0a4a35}
+.ptc-z{color:#94a3b8}
 .ptc-lat{border-left:3px solid #E9DF43!important;border-right:3px solid #E9DF43!important}
-.ptc-tot{background:#0a4a35;color:#E9DF43;font-size:12px;text-align:center;font-weight:700;border:1px solid #c8dfd9;padding:3px 7px}
-.ptc-ha{background:#dbeafe;color:#1e3a6e;font-size:11px;font-weight:700;text-align:center;border:1px solid #c8dfd9;padding:3px 7px}
-.ptc-la{background:#e0f7fa;color:#0a4a35;font-size:11px;font-weight:700;text-align:center;border:1px solid #c8dfd9;padding:3px 7px}
-.ptc-loc{font-weight:700;color:#0a2520;text-align:left}
+.ptc-tot{background:#0a4a35;color:#E9DF43;font-size:12px;text-align:center;font-weight:700;border:1px solid #c8dfd9}
+.ptc-ha{background:#dbeafe;color:#1e3a6e;font-size:11px;font-weight:700;text-align:center;border:1px solid #c8dfd9}
+.ptc-la{background:#e0f7fa;color:#0a4a35;font-size:11px;font-weight:700;text-align:center;border:1px solid #c8dfd9}
+.ptc-loc{font-weight:700;color:#0a2520}
 .ptc-hd{background:#0f2b25;color:#fff;padding:3px 7px;text-align:center;font-size:11px;font-weight:700;white-space:nowrap;border:1px solid #c8dfd9;min-width:52px}
 .ptc-hdl{background:#0f2b25;color:#E9DF43;border-bottom:3px solid #E9DF43;padding:3px 7px;text-align:center;font-size:11px;font-weight:700;white-space:nowrap;border:1px solid #c8dfd9}
 .ptc-ft{background:#0a2520;color:#fff;font-weight:900;padding:3px 7px;text-align:center;font-size:11px;border:1px solid #c8dfd9}
-.ptc-ftr{background:#fca5a5;color:#0a2520;text-align:center}
-.ptc-ftg{background:#6ee7b7;color:#0a2520;text-align:center}
-/* Force all ptc-class TDs/THs to center number alignment */
-td.ptc, td.ptc-tot, td.ptc-ha, td.ptc-la, td.ptc-ft, td.ptc-ftr, td.ptc-ftg { text-align:center!important; vertical-align:middle; }
-td.ptcl, td.ptc-loc { text-align:left!important; vertical-align:middle; }
+.ptc-ftr{background:#fca5a5;color:#0a2520}
+.ptc-ftg{background:#6ee7b7;color:#0a2520}
 /* footer */
 .tbl tfoot td{
   background:var(--navy)!important;color:#ffffff!important;
@@ -2530,15 +2527,116 @@ async function runFiles(files){
       //   43 cols × 5000 rows = 215,000 cells per file upload.
       //   28 files × 215,000 = 6,020,000 cells for ONE section alone → hits 10M fast.
       // Fix: store only ~15 essential columns (70% cell reduction):
-      // 2. Raw source-file storage removed — backend now stores only count/average data.
-      //    This eliminates storage-full errors, OOM crashes, and upload freezes.
-      //    The Google Sheets backend acts as lightweight count/average store only.
+      // 2. Snapshot ALL source columns for Sheets.
+      // EXACT AGE STORAGE FIX:
+      // Old code: found the FIRST section matching src, stored ALL ages into one tab, broke.
+      // Bug: a Forward file with rows of age 2,3,6 → ALL rows written to "FORWARD R DC" tab
+      //      → D3 CSV and D6 CSV both returned age-2 data from that single tab.
+      //
+      // Fix: iterate EVERY section matching this file type.
+      //      For each section's age option, filter rawDateRows to EXACT age match.
+      //      Write to a sheet tab named per section + age: "FORWARD_R_DC_D3_1", etc.
+      //      Each tab contains ONLY the rows where the age column == section's age.
+      //
+      // Row cap: 400 rows per (section × age) push — safe for OOM.
+      const SHEETS_ROW_CAP=400;
+      const sheetsPayloadsBySec=[];
+      if(getGsUrl()){
+        const rawDateRows=(rawData[r.type]&&rawData[r.type][r.date])||[];
+        if(rawDateRows.length>0){
+          // Build column set once from all rows
+          const colSet=new Set(['Date']);
+          rawDateRows.forEach(row=>Object.keys(row).forEach(k=>{colSet.add(k);}));
+          const allCols=[...colSet];
 
-      // 3. Purge rawData — no snapshot needed, no Sheets push for source rows
+          // Determine which column holds the age value for this file type
+          // (same column lookup used by each parser)
+          const sampleRow=rawDateRows[0]||{};
+          let ageColName='';
+          if(r.type==='lmodc'){
+            ageColName=['ageing','Ageing','age','Age'].find(k=>k in sampleRow)||'';
+          }else if(r.type==='reverse'){
+            ageColName=['ageing','Ageing'].find(k=>k in sampleRow)||'';
+          }else{
+            // forward / forwardShort: ageing_from_bag_recc or Ageing_from_Bag_Rec etc.
+            ageColName=['ageing_from_bag_recc','Ageing_from_bag_recc','Ageing_from_Bag_Rec',
+              'ageing_from_bag_rec','Ageing_from_Bag_Recc','ageing','Ageing']
+              .find(k=>k in sampleRow)||'';
+          }
+
+          // Loop every section and every age option — one push per (section × age)
+          for(let si=0;si<SECS.length;si++){
+            const sec=SECS[si];
+            if(sec.src!==r.type)continue;
+            const ageOpts=sec.ageOpts||[sec.ageOpts?.[0]||3];
+
+            for(const requiredAge of (Array.isArray(ageOpts)?ageOpts:[ageOpts])){
+              // Filter to EXACT age match
+              const ageFiltered=rawDateRows.filter(row=>{
+                if(!ageColName)return true; // no age col found — include all (edge case)
+                const rawAge=row[ageColName];
+                let parsedAge=0;
+                if(r.type==='lmodc') parsedAge=parseLMODCAge(rawAge);
+                else parsedAge=Math.round(parseFloat(rawAge)||0);
+                return parsedAge===requiredAge;
+              });
+              if(!ageFiltered.length)continue; // no rows for this age — skip tab
+
+              // Sheet tab name: "FORWARD R DC D3" (section title + age, max 28 chars)
+              // This gives each (section, age) its own partition series
+              const baseTitle=sec.title.replace(/[^\w\s]/g,' ').replace(/\s+/g,' ').trim();
+              const sheetName=`${baseTitle} D${requiredAge}`.slice(0,28);
+
+              const cappedRows=ageFiltered.length>SHEETS_ROW_CAP
+                ?ageFiltered.slice(0,SHEETS_ROW_CAP):ageFiltered;
+              const rowArrs=cappedRows
+                .map(row=>allCols.map(c=>{
+                  if(c==='Date')return r.date;
+                  const v=row[c];
+                  return(v!==undefined&&v!==null&&v!=='')?String(v):'';
+                }))
+                .filter(arr=>arr.slice(1).some(v=>v!==''));
+
+              if(rowArrs.length){
+                console.log(`Sheets: "${sheetName}" D${requiredAge} → ${rowArrs.length} rows (age-exact)`);
+                sheetsPayloadsBySec.push({sheetName,headers:allCols,rowArrs,date:r.date});
+              }
+            }
+          }
+        }else{
+          console.warn(`Sheets: rawData[${r.type}][${r.date}] empty`);
+        }
+      }
+
+      // 3. Snapshot raw rows for CSV export BEFORE purge.
+      // _rawSnap keeps the full-column source rows (all original file headers)
+      // so _buildSectionCSV() can produce complete CSVs instead of count summaries.
+      _captureRawSnap(r.type, r.date);
+
+      // 4. Purge rawData immediately after snapshot — no more race condition
       purgeRawDataForDate(r.type, r.date);
 
-      // 4. (Source-row Sheets push removed — counts/averages stored via persistM/SECTION COUNTS)
-      setP(pct, `✅ ${(r.name||'file').slice(0,30)} processed`);
+      // 4. Push captured payloads to Sheets in background — operates on frozen arrays,
+      //    completely independent of rawData lifecycle. No timing issues possible.
+      if(getGsUrl()&&sheetsPayloadsBySec.length){
+        const capturedName=r.name||'file';
+        setP(pct, `✅ ${capturedName.slice(0,30)} processed — syncing to Sheets…`);
+        (async()=>{
+          for(const p of sheetsPayloadsBySec){
+            await pushSectionDate(p.sheetName,p.headers,p.rowArrs,p.date);
+            // OOM FIX: free rowArrs immediately after each section is pushed.
+            // Without this, rowArrs stays alive until the entire async IIFE returns,
+            // which can be 30-90 seconds for large files — crossing into the next
+            // file's allocation window.
+            p.rowArrs=null;
+            await new Promise(res=>setTimeout(res,60));
+          }
+          sheetsPayloadsBySec.length=0; // clear array so GC can reclaim p.headers etc.
+          console.log(`Sheets: ${capturedName} pushed`);
+        })().catch(e=>console.warn(`Sheets push failed for ${capturedName}:`,e.message));
+      }else{
+        setP(pct, `✅ ${(r.name||'file').slice(0,30)} processed`);
+      }
     }
 
     // Yield AFTER each file — gives GC time to reclaim purged rawData arrays,
@@ -3159,65 +3257,180 @@ function secFilterBar(s,i){
    Opens a print-ready browser window → user can Save as PDF.       */
 function generateSectionPDF(idx){
   const sec=SECS[idx];
-  const f=SEC_FILTERS[idx]||{age:sec.ageOpts?.[0]||3,bins:[],msgs:[]};
   const piv=buildPivot(sec,idx);
-  if(!piv.locs.length){toast('No data for this section — upload the matching file first','tw');return;}
+  const f=SEC_FILTERS[idx]||{age:sec.ageOpts?.[0]||3,bins:[],msgs:[]};
 
-  // PDF FIX: capture the live rendered section panel instead of rebuilding data.
-  // Old approach rebuilt the table from scratch with different sort/calculation logic
-  // → mismatch between dashboard and PDF. New approach takes a screenshot of the
-  // actual rendered DOM section element — guaranteed to match exactly what user sees.
-  const panelId=`secPanel${idx}`;
-  const panel=document.getElementById(panelId);
-  if(!panel){toast('Section panel not found','te');return;}
-  if(typeof html2canvas==='undefined'){toast('⚠ html2canvas not loaded','tw');return;}
+  if(!piv.locs.length){
+    toast('No data for this section — upload the matching file first','tw');
+    return;
+  }
 
-  toast('⏳ Generating PDF from dashboard view…','ti');
+  // Capture current trend chart canvas as data URL
+  const tCanvas=document.getElementById(`tchrt${idx}`);
+  const tImgSrc=tCanvas?tCanvas.toDataURL('image/png',0.92):'';
+  const bCanvas=document.getElementById(`ch${idx}`);
+  const bImgSrc=bCanvas?bCanvas.toDataURL('image/png',0.92):'';
 
-  // Expand overflow before capture
-  const saved=[];
-  const expandEl=el=>{saved.push({el,ov:el.style.overflow,mh:el.style.maxHeight,ox:el.style.overflowX});
-    el.style.overflow='visible';el.style.maxHeight='none';el.style.overflowX='visible';};
-  expandEl(panel);
-  panel.querySelectorAll('[style*="overflow"],[style*="max-height"]').forEach(expandEl);
+  // Build full pivot table HTML for PDF — with AVG/DAY column + trend arrows
+  const nDatesPdf=piv.dates.length;
+  const sortedLocsPdf=[...piv.locs].sort((a,b)=>(piv.rowTotals[b]||0)-(piv.rowTotals[a]||0));
+  const latestDatePdf=piv.dates[nDatesPdf-1];
+  const grand=sortedLocsPdf.reduce((s,l)=>s+(piv.rowTotals[l]||0),0);
 
-  const W=Math.max(panel.scrollWidth,1800);
-  const H=panel.scrollHeight;
+  // Build Critical Sites data for PDF
+  const critSitesPdf=sortedLocsPdf.map(loc=>{
+    const rt=piv.rowTotals[loc]||0;
+    const avg=nDatesPdf>0?Math.round(rt/nDatesPdf):0;
+    const latest=(piv.grid[loc]&&piv.grid[loc][latestDatePdf])||0;
+    let redCells=0;
+    piv.dates.forEach((d,di)=>{const v=piv.grid[loc][d]||0;const prev=di>0?piv.grid[loc][piv.dates[di-1]]||0:null;if(prev!==null&&v>prev)redCells++;});
+    const trend=latest>avg?'RISING':latest<avg&&latest>0?'FALLING':'STABLE';
+    const score=Math.round(rt*(1+redCells*0.15)*(trend==='RISING'?1.2:trend==='FALLING'?0.9:1));
+    return{loc,rt,avg,latest,redCells,trend,score};
+  }).sort((a,b)=>b.score-a.score).slice(0,5);
 
-  html2canvas(panel,{
-    scale:1.5,backgroundColor:'#f0f7f5',useCORS:true,allowTaint:true,
-    width:W,height:H,windowWidth:W+100,windowHeight:H+100,logging:false,
-    onclone(doc){
-      doc.querySelectorAll('*').forEach(el=>{
-        el.style.overflow='visible';el.style.maxHeight='none';
-        el.style.overflowX='visible';el.style.overflowY='visible';
-      });
-    }
-  }).then(canvas=>{
-    saved.forEach(({el,ov,mh,ox})=>{el.style.overflow=ov;el.style.maxHeight=mh;el.style.overflowX=ox;});
-    const imgData=canvas.toDataURL('image/jpeg',0.9);
-    const fname=`${sec.title.replace(/[^\w]/g,'_')}_D${f.age}_${new Date().toISOString().slice(0,10)}.pdf`;
-    const win=window.open('','_blank','width=1200,height=900');
-    if(!win){toast('⚠ Allow pop-ups for PDF','tw');return;}
-    win.document.write(`<!DOCTYPE html><html><head><title>${fname}</title><style>
-      *{margin:0;padding:0;box-sizing:border-box}body{background:#fff}
-      img{width:100%;height:auto;display:block}
-      @media print{html,body{width:100%;margin:0;padding:0}
-        @page{margin:5mm;size:A3 landscape}
-        img{width:100%;height:auto}}
-    </style></head><body>
-      <img src="${imgData}" alt="${fname}">
-      <script>window.onload=function(){setTimeout(function(){window.print();},700);window.onafterprint=function(){window.close();};};<\/script>
-    </body></html>`);
-    win.document.close();
-    toast(`📄 PDF — ${sec.title} D${f.age}`,'tok');
-  }).catch(e=>{
-    saved.forEach(({el,ov,mh,ox})=>{el.style.overflow=ov;el.style.maxHeight=mh;el.style.overflowX=ox;});
-    console.warn('PDF error:',e);
-    toast('PDF failed — try PNG instead','te');
+  let tableHTML=`<table style="width:100%;border-collapse:collapse;font-size:9px;margin-bottom:12px">
+    <thead><tr style="background:#0f2b25;color:#fff">
+      <th style="padding:5px 7px;text-align:left;border-right:1px solid #1a5045">LOCATION</th>
+      ${piv.dates.map((d,di)=>{const isL=di===nDatesPdf-1;return`<th style="padding:5px 7px;text-align:center;border-right:1px solid #1a5045;color:${isL?'#E9DF43':'#fff'}">${fmtD(d)}${isL?' ★':''}</th>`}).join('')}
+      <th style="padding:5px 7px;text-align:center;color:#E9DF43">TOTAL</th>
+      <th style="padding:5px 7px;text-align:center;color:#E9DF43">AVG/DAY</th>
+    </tr></thead><tbody>`;
+
+  sortedLocsPdf.forEach((loc,ri)=>{
+    const bg=ri%2===0?'#fff':'#f3faf7';
+    const rt=piv.rowTotals[loc]||0;
+    const avg=nDatesPdf>0?Math.round(rt/nDatesPdf):0;
+    const latestCount=(piv.grid[loc]&&piv.grid[loc][latestDatePdf])||0;
+    const arrow=latestCount>avg?'▲':latestCount<avg&&latestCount>0?'▼':'';
+    const arrowColor=latestCount>avg?'#ef4444':'#059669';
+    tableHTML+=`<tr>
+      <td style="padding:4px 7px;background:${bg};font-weight:700;border-bottom:1px solid #c8dfd9;border-right:2px solid #a8d4c9">${xe(loc)}</td>`;
+    piv.dates.forEach((d,di)=>{
+      const val=piv.grid[loc][d]||0;
+      const prev=di>0?piv.dates[di-1]:null;
+      const pval=prev!==null?(piv.grid[loc][prev]||0):null;
+      const isLatest=di===nDatesPdf-1;
+      let cellStyle=`padding:4px 7px;text-align:center;border-bottom:1px solid #c8dfd9;border-right:1px solid #daeee9;font-weight:700;${isLatest?'border-left:2px solid #E9DF43;border-right:2px solid #E9DF43;':''}`;
+      if(val===0)cellStyle+='color:#94a3b8;';
+      else if(pval!==null&&val>pval)cellStyle+='background:#ef4444;color:#fff;';
+      else if(pval!==null&&val<pval)cellStyle+='background:#dff0ea;color:#0a4a35;';
+      else cellStyle+=`background:${bg};`;
+      const cellArrow=isLatest&&arrow?`<span style="color:${arrowColor};font-size:10px"> ${arrow}</span>`:'';
+      tableHTML+=`<td style="${cellStyle}">${val===0?'–':fn(val)}${cellArrow}</td>`;
+    });
+    tableHTML+=`<td style="padding:4px 7px;text-align:center;font-weight:900;background:#eaf6f2;border-bottom:1px solid #c8dfd9">${fn(rt)}</td>
+      <td style="padding:4px 7px;text-align:center;background:#e8f5f1;border-bottom:1px solid #c8dfd9;color:#0a4a35">${fn(avg)}</td></tr>`;
   });
-}
+  tableHTML+=`<tr style="background:#0f2b25;color:#fff">
+    <td style="padding:5px 7px;font-weight:900;text-align:left">TOTAL</td>
+    ${piv.dates.map(d=>`<td style="padding:5px 7px;text-align:center;font-weight:900">${fn(piv.colTotals[d]||0)}</td>`).join('')}
+    <td style="padding:5px 7px;text-align:center;font-weight:900;color:#E9DF43">${fn(grand)}</td>
+    <td style="padding:5px 7px;text-align:center"></td>
+  </tr></tbody></table>`;
 
+  // Critical Sites HTML for PDF
+  let critSitesPdfHtml='';
+  if(critSitesPdf.length){
+    critSitesPdfHtml=`<h2 style="color:#7f1d1d;border-left-color:#dc2626">🚨 Critical Sites — Top 5 by Severity</h2>
+    <table style="width:100%;border-collapse:collapse;font-size:9px;margin-bottom:12px">
+      <thead><tr style="background:#7f1d1d;color:#fff">
+        <th style="padding:5px 7px">RANK</th><th style="padding:5px 7px;text-align:left">SITE NAME</th>
+        <th style="padding:5px 7px;text-align:center">LATEST COUNT</th>
+        <th style="padding:5px 7px;text-align:center">HIST. AVG/DAY</th>
+        <th style="padding:5px 7px;text-align:center">TOTAL AWBs</th>
+        <th style="padding:5px 7px;text-align:center">RED DAYS</th>
+        <th style="padding:5px 7px;text-align:center">SCORE</th>
+        <th style="padding:5px 7px;text-align:center">TREND</th>
+      </tr></thead><tbody>
+      ${critSitesPdf.map((s,i)=>{
+        const rowBg=i===0?'#fee2e2':i===1?'#fef3c7':i===2?'#fffbeb':'#fff';
+        const scoreBg=i<2?'background:#dc2626;color:#fff':'background:#f59e0b;color:#fff';
+        const arrow=s.trend==='RISING'?'▲':s.trend==='FALLING'?'▼':'';
+        const arrowColor=s.trend==='RISING'?'#ef4444':'#059669';
+        return`<tr style="background:${rowBg}">
+          <td style="padding:4px 7px;text-align:center;font-weight:900;color:#7f1d1d">#${i+1}</td>
+          <td style="padding:4px 7px;font-weight:800;color:#7f1d1d">${xe(s.loc)}</td>
+          <td style="padding:4px 7px;text-align:center;color:#dc2626;font-weight:900">${fn(s.latest)} <span style="color:${arrowColor}">${arrow}</span></td>
+          <td style="padding:4px 7px;text-align:center;color:#059669;font-weight:700">${fn(s.avg)}</td>
+          <td style="padding:4px 7px;text-align:center;font-weight:700">${fn(s.rt)}</td>
+          <td style="padding:4px 7px;text-align:center">${s.redCells}</td>
+          <td style="padding:4px 7px;text-align:center;${i<3?scoreBg:''};border-radius:3px;font-weight:800">${fn(s.score)}</td>
+          <td style="padding:4px 7px;text-align:center">${s.trend==='RISING'?'🔴 Rising':s.trend==='FALLING'?'🟢 Falling':'🟡 Stable'}</td>
+        </tr>`;
+      }).join('')}
+      </tbody></table>`;
+  } // end if(critSitesPdf.length)
+
+  // Build filter summary
+  const filterSummary=`Age: D${f.age}${f.bins&&f.bins.length?' · Bin: '+f.bins.join(','):''}${f.msgs&&f.msgs.length?' · Msg: '+f.msgs.join(','):''}`;
+  const generatedAt=new Date().toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+
+  const win=window.open('','_blank','width=1200,height=900,scrollbars=yes');
+  if(!win){toast('Allow pop-ups for PDF export','tw');return;}
+
+  win.document.write(`<!DOCTYPE html><html><head>
+    <title>${sec.title} — Collated Report</title>
+    <style>
+      *{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:Inter,Arial,sans-serif;font-size:11px;color:#0a2520;background:#fff;padding:20px}
+      h1{font-size:18px;font-weight:900;color:#0f2b25;margin-bottom:4px}
+      h2{font-size:13px;font-weight:800;color:#1C856F;margin:16px 0 8px;text-transform:uppercase;letter-spacing:.5px;border-left:4px solid #1C856F;padding-left:8px}
+      .meta{font-size:10px;color:#64748b;margin-bottom:16px}
+      .badge{display:inline-block;background:#1C856F;color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;margin-right:6px}
+      img{max-width:100%;height:auto;border:1px solid #c8dfd9;border-radius:4px;margin-bottom:12px}
+      .legend{display:flex;gap:16px;font-size:10px;margin-top:6px;margin-bottom:16px}
+      .lc{display:flex;align-items:center;gap:6px}
+      .lb{width:12px;height:12px;border-radius:2px;display:inline-block}
+      .lu{background:#ef4444}
+      .ld{background:#dff0ea;border:1px solid #a8d4c9}
+      @media print{@page{margin:12mm;size:A3 landscape}.no-print{display:none}body{padding:8px}}
+    </style>
+  </head><body>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;border-bottom:3px solid #1C856F;padding-bottom:12px">
+      <div>
+        <h1>📊 ${xe(sec.title)}</h1>
+        <div class="meta">
+          <span class="badge">${xe(sec.badge)}</span>
+          <span class="badge" style="background:#0a2520">${xe(filterSummary)}</span>
+          &nbsp;Generated: ${generatedAt}
+        </div>
+      </div>
+      <div style="text-align:right;font-size:10px;color:#64748b">
+        <div style="font-size:22px;font-weight:900;color:#1C856F">${fn(grand)}</div>
+        <div>Total AWBs</div>
+      </div>
+    </div>
+    <div class="no-print" style="margin-bottom:12px">
+      <button onclick="window.print()" style="background:#1C856F;color:#fff;border:none;padding:8px 18px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">🖨 Print / Save as PDF</button>
+      <button onclick="window.close()" style="background:#f1f5f9;color:#0a2520;border:1px solid #c8dfd9;padding:8px 14px;border-radius:6px;font-size:12px;cursor:pointer;margin-left:8px">✕ Close</button>
+    </div>
+
+    ${tImgSrc?`<h2>📊 ${xe(sec.title)} — Trend Chart</h2><img src="${tImgSrc}" alt="Trend chart">`:``}
+
+    <h2>📋 Full Pivot Table — ${xe(sec.title)}</h2>
+    ${tableHTML}
+    <div class="legend">
+      <div class="lc"><div class="lb lu"></div>▲ Red = risen vs prior date</div>
+      <div class="lc"><div class="lb ld"></div>▼ Green = improved vs prior date</div>
+      <div class="lc" style="font-size:10px">★ LATEST col: ▲▼ = latest count vs historical avg</div>
+    </div>
+
+    ${bImgSrc?`<h2>📈 Location Breakdown Chart</h2><img src="${bImgSrc}" alt="Breakdown chart">`:``}
+
+    ${critSitesPdfHtml}
+
+    <div style="margin-top:16px;padding:10px;background:#f0f9f7;border-radius:6px;font-size:10px;color:#64748b;border:1px solid #c8dfd9">
+      Floor Trends Dashboard — Collated Report &nbsp;|&nbsp; ${xe(sec.title)} &nbsp;|&nbsp; ${filterSummary} &nbsp;|&nbsp; ${fn(piv.locs.length)} locations &nbsp;|&nbsp; ${piv.dates.length} dates
+    </div>
+    <script>
+      // Auto-print on load (remove if you prefer manual)
+      // window.onload=function(){window.print();}
+    <\/script>
+  </body></html>`);
+  win.document.close();
+  toast(`📄 PDF report opened — use Print → Save as PDF`,'tok');
+}
 
 function initPanels(){
   document.getElementById('panels').innerHTML=SECS.map((s,i)=>`
@@ -7744,37 +7957,22 @@ function doGet(e) {
     }
   }
 
-  /* ── getMaster ── */
+  /* ── getMaster — reads ALL MASTER SNAPSHOT partitions ── */
   if (action === 'getMaster') {
     try {
-      var ss   = getSS();
-      var snap = ss.getSheetByName('MASTER SNAPSHOT');
-      if (!snap || snap.getLastRow() < 2)
-        return buildResponse(JSON.stringify({ok:false,reason:'no_snapshot'}));
-      var data   = snap.getRange(2,1,snap.getLastRow()-1,7).getValues();
-      var master = {forward:[],reverse:[],lmodc:[],forwardShort:[],
-                    hov:[],hovPV:[],hovAllRaw:[],hovFwdRaw:[],hovRevRaw:[]};
-      var n=0;
-      data.forEach(function(r){
-        var type=String(r[0]||'').trim(),date=normDate(r[1]),count=Number(r[2])||0;
-        if(!type||!date||!master.hasOwnProperty(type))return;
-        var ex=master[type].filter(function(x){return x.date===date;})[0];
-        if(ex){if(count>(ex.count||0)){ex.count=count;ex.locs=safeJSON(r[3]);ex.bins=safeJSON(r[4]);ex.msgs=safeJSON(r[5]);}}
-        else{master[type].push({date:date,count:count,locs:safeJSON(r[3]),bins:safeJSON(r[4]),msgs:safeJSON(r[5])});}
-        n++;
-      });
-      if(n===0)return buildResponse(JSON.stringify({ok:false,reason:'empty_snapshot'}));
-      return buildResponse(JSON.stringify({ok:true,master:JSON.stringify(master)}));
+      var ss  = getSS();
+      var res = getMasterFromAllPartitions(ss);
+      if(res.n===0) return buildResponse(JSON.stringify({ok:false,reason:'no_snapshot'}));
+      return buildResponse(JSON.stringify({ok:true,master:JSON.stringify(res.master)}));
     }catch(err){return buildResponse(JSON.stringify({ok:false,error:err.message}));}
   }
 
-  /* ── getFileLog ── */
+  /* ── getFileLog — reads ALL FILE LOG partitions ── */
   if (action === 'getFileLog') {
     try {
-      var ss=getSS(),sh=ss.getSheetByName('FILE LOG');
-      if(!sh||sh.getLastRow()<2)return buildResponse(JSON.stringify({ok:true,files:[]}));
-      var files=sh.getRange(2,1,sh.getLastRow()-1,6).getValues()
-        .filter(function(r){return r[0];})
+      var ss=getSS();
+      var allRows=getAllLightweightRows(ss,'FILE LOG');
+      var files=allRows.filter(function(r){return r[0];})
         .map(function(r){return{id:String(r[0]),name:String(r[1]),type:String(r[2]),
           date:String(r[3]),uploadedAt:String(r[4]),awbs:Number(r[5])||0};});
       return buildResponse(JSON.stringify({ok:true,files:files}));
@@ -7885,69 +8083,275 @@ function getOrCreateSheet(ss,name,headers){
 function processPayload(payload) {
   var ss=getSS();
 
-  /* ── SITE AVERAGES ── */
+/* ==============================================================
+   LIGHTWEIGHT SHEET HELPERS — auto-partitioned for all summary sheets
+   These three helpers give SITE AVERAGES, MASTER SNAPSHOT, SECTION COUNTS,
+   and FILE LOG the same auto-rollover behaviour as the section data sheets.
+
+   ROW LIMITS (all lightweight — 7-11 cols × few hundred rows per day):
+     SITE AVERAGES:   1,000 rows/partition → 7 cols × 1000 = 7,000 cells
+     MASTER SNAPSHOT: 2,000 rows/partition → 7 cols × 2000 = 14,000 cells
+     SECTION COUNTS:  2,000 rows/partition → 7 cols × 2000 = 14,000 cells
+     FILE LOG:        5,000 rows/partition → 6 cols × 5000 = 30,000 cells
+   Combined per year ≈ 500k cells — negligible vs 10M limit.
+============================================================== */
+
+var LSHEET_LIMITS = {
+  'SITE AVERAGES':   1000,
+  'MASTER SNAPSHOT': 2000,
+  'SECTION COUNTS':  2000,
+  'FILE LOG':        5000
+};
+
+/* Get or create the active write sheet for a lightweight (non-section) tab.
+   Works exactly like getActivePartition() but for fixed-name sheets like
+   SITE AVERAGES, FILE LOG etc.
+   Returns the sheet object ready for appending.                            */
+function getLightweightSheet(ss, baseName, headers) {
+  var limit = LSHEET_LIMITS[baseName] || 2000;
+  var idx   = loadIndex(ss);
+  var parts = idx[baseName] || [];
+
+  if (parts.length === 0) {
+    // First ever write — create partition 1
+    var tab1 = baseName + '_1';
+    var sh1  = ss.getSheetByName(tab1) || ss.insertSheet(tab1);
+    _initSheet(sh1, headers);
+    try { SpreadsheetApp.flush(); } catch(e) {}
+    updateIndex(ss, baseName, 1, tab1, sh1.getLastRow());
+    return sh1;
+  }
+
+  var last = parts[parts.length - 1];
+  var sh   = ss.getSheetByName(last.tab);
+  if (!sh) {
+    sh = ss.insertSheet(last.tab);
+    _initSheet(sh, headers);
+    try { SpreadsheetApp.flush(); } catch(e) {}
+  }
+
+  // Roll over if full
+  if (sh.getLastRow() >= limit) {
+    var nextNum = last.num + 1;
+    var nextTab = baseName + '_' + nextNum;
+    var shNext  = ss.getSheetByName(nextTab) || ss.insertSheet(nextTab);
+    _initSheet(shNext, headers);
+    try { SpreadsheetApp.flush(); } catch(e) {}
+    updateIndex(ss, baseName, nextNum, nextTab, 1);
+    Logger.log('Rolled over "' + baseName + '" → ' + nextTab);
+    return shNext;
+  }
+
+  return sh;
+}
+
+/* Read ALL rows from ALL partitions of a lightweight sheet base name.
+   Returns flat array of row arrays (no header row).                       */
+function getAllLightweightRows(ss, baseName) {
+  var idx   = loadIndex(ss);
+  var parts = idx[baseName] || [];
+  // Also check legacy un-suffixed sheet (migration)
+  var legSh = ss.getSheetByName(baseName);
+  if (legSh && !parts.some(function(p){ return p.tab === baseName; })) {
+    if (legSh.getLastRow() > 1)
+      parts = [{num:0, tab:baseName}].concat(parts);
+  }
+  var allRows = [];
+  parts.forEach(function(p) {
+    var sh = ss.getSheetByName(p.tab);
+    if (!sh || sh.getLastRow() < 2) return;
+    var lc = sh.getLastColumn();
+    if (lc < 1) return;
+    var vals = sh.getRange(2, 1, sh.getLastRow()-1, lc).getValues();
+    allRows = allRows.concat(vals);
+  });
+  return allRows;
+}
+
+/* Append rows to a lightweight partitioned sheet (handles rollover). */
+function appendToLightweightSheet(ss, baseName, headers, rows) {
+  if (!rows || !rows.length) return 0;
+  var sh = getLightweightSheet(ss, baseName, headers);
+  var nc = rows[0].length || headers.length || 1;
+  if (nc > sh.getMaxColumns())
+    sh.insertColumnsAfter(sh.getMaxColumns(), nc - sh.getMaxColumns());
+
+  var limit = LSHEET_LIMITS[baseName] || 2000;
+  var written = 0;
+  var remaining = rows;
+
+  while (remaining.length > 0) {
+    var space = limit - sh.getLastRow();
+    if (space <= 0) {
+      sh = getLightweightSheet(ss, baseName, headers); // triggers rollover
+      space = limit - sh.getLastRow();
+    }
+    var batch = remaining.slice(0, space);
+    remaining = remaining.slice(space);
+
+    var padded = batch.map(function(r) {
+      var row = r.slice();
+      while (row.length < nc) row.push('');
+      return row.map(function(v) { return v == null ? '' : String(v); });
+    });
+
+    try {
+      sh.getRange(sh.getLastRow()+1, 1, padded.length, nc).setValues(padded);
+      written += padded.length;
+      // Update partition index with new row count
+      var idx2 = loadIndex(ss)[baseName] || [];
+      if (idx2.length > 0) {
+        var lastP = idx2[idx2.length-1];
+        updateIndex(ss, baseName, lastP.num, lastP.tab, sh.getLastRow());
+      }
+    } catch(e) {
+      Logger.log('appendToLightweightSheet setValues error for "' + baseName + '": ' + e.message);
+    }
+  }
+
+  try { SpreadsheetApp.flush(); } catch(e) {}
+  return written;
+}
+
+/* ── getMaster: reads ALL MASTER SNAPSHOT partitions ── */
+function getMasterFromAllPartitions(ss) {
+  var rows = getAllLightweightRows(ss, 'MASTER SNAPSHOT');
+  var master = {forward:[],reverse:[],lmodc:[],forwardShort:[]};
+  var n = 0;
+  rows.forEach(function(r) {
+    var type=String(r[0]||'').trim(), date=normDate(r[1]), count=Number(r[2])||0;
+    if (!type || !date || !master.hasOwnProperty(type)) return;
+    var ex = master[type].filter(function(x){return x.date===date;})[0];
+    if (ex) {
+      if (count > (ex.count||0)) {
+        ex.count=count; ex.locs=safeJSON(r[3]); ex.bins=safeJSON(r[4]); ex.msgs=safeJSON(r[5]);
+      }
+    } else {
+      master[type].push({date:date,count:count,locs:safeJSON(r[3]),bins:safeJSON(r[4]),msgs:safeJSON(r[5])});
+    }
+    n++;
+  });
+  return {master:master, n:n};
+}
+
+  /* ── SITE AVERAGES — auto-partitioned ── */
   if(payload.type==='site_averages'){
-    var avSh=getOrCreateSheet(ss,'SITE AVERAGES',
-      ['Sync Date','Section','Site / Location','Latest File Date',
+    var SAVG_HDRS=['Sync Date','Section','Site / Location','Latest File Date',
        'Latest Count','Historical Average','Latest Average',
-       'Total (All Days)','Days Tracked','Trend','Updated At']);
+       'Total (All Days)','Days Tracked','Trend','Updated At'];
     var sd=String(payload.syncDate||new Date().toISOString().slice(0,10)).slice(0,10);
     var sec=String(payload.section||'');
     var rowsSA=payload.rows||[];
-    if(avSh.getLastRow()>1){
+    if(!rowsSA.length) return{ok:true,type:'site_averages',appended:0};
+
+    // Dedup: delete existing rows for this sync date + section across ALL partitions
+    var idx3=loadIndex(ss)['SITE AVERAGES']||[];
+    var legAvg=ss.getSheetByName('SITE AVERAGES');
+    var sheetsToDedup=idx3.map(function(p){return ss.getSheetByName(p.tab);}).filter(Boolean);
+    if(legAvg&&sheetsToDedup.indexOf(legAvg)===-1)sheetsToDedup.push(legAvg);
+    sheetsToDedup.forEach(function(avSh){
+      if(!avSh||avSh.getLastRow()<=1)return;
       var ex=avSh.getRange(2,1,avSh.getLastRow()-1,2).getValues(),td=[];
-      for(var i=ex.length-1;i>=0;i--){if(normDate(ex[i][0])===sd&&String(ex[i][1]||'')===sec)td.push(i+2);}
+      for(var i=ex.length-1;i>=0;i--){
+        if(normDate(ex[i][0])===sd&&String(ex[i][1]||'')===sec)td.push(i+2);
+      }
       td.sort(function(a,b){return b-a;}).forEach(function(r){avSh.deleteRow(r);});
-    }
-    if(rowsSA.length>0){
-      var st=avSh.getLastRow()+1,nc=rowsSA[0].length||11;
-      if(nc>avSh.getMaxColumns())avSh.insertColumnsAfter(avSh.getMaxColumns(),nc-avSh.getMaxColumns());
-      avSh.getRange(st,1,rowsSA.length,nc).setValues(rowsSA.map(function(r){return r.map(function(v){return v==null?'':String(v);});}));
-      SpreadsheetApp.flush();
-    }
-    return{ok:true,type:'site_averages',appended:rowsSA.length};
+    });
+    try{SpreadsheetApp.flush();}catch(e){}
+
+    var written=appendToLightweightSheet(ss,'SITE AVERAGES',SAVG_HDRS,rowsSA.map(function(r){
+      return r.map(function(v){return v==null?'':String(v);});
+    }));
+    return{ok:true,type:'site_averages',appended:written};
   }
 
-  /* ── MASTER SNAPSHOT ── */
+  /* ── MASTER SNAPSHOT — auto-partitioned ── */
   if(payload.type==='master_snapshot'){
-    var sn=getOrCreateSheet(ss,'MASTER SNAPSHOT',['Type','Date','Count','Locations','Bins','Messages','LastUpdated']);
-    if(sn.getLastRow()>1)sn.deleteRows(2,sn.getLastRow()-1);
+    var MSNAP_HDRS=['Type','Date','Count','Locations','Bins','Messages','LastUpdated'];
     var rows=payload.rows||[];
-    if(rows.length>0){
-      var nc2=rows[0].length||7;
-      if(nc2>sn.getMaxColumns())sn.insertColumnsAfter(sn.getMaxColumns(),nc2-sn.getMaxColumns());
-      sn.getRange(2,1,rows.length,nc2).setValues(rows.map(function(r){return r.map(function(v){return v==null?'':String(v);});}));
-      SpreadsheetApp.flush();
-    }
-    return{ok:true,type:'master_snapshot',rows:rows.length};
+    if(!rows.length) return{ok:true,type:'master_snapshot',rows:0};
+
+    // Full replace strategy: delete all existing rows for these (type,date) combos
+    // then append fresh. Keeps data accurate without unlimited growth.
+    var typeDate=rows.map(function(r){return String(r[0])+'|'+normDate(r[1]);});
+    var allSnapSheets=[];
+    var idx4=loadIndex(ss)['MASTER SNAPSHOT']||[];
+    idx4.forEach(function(p){var s=ss.getSheetByName(p.tab);if(s)allSnapSheets.push(s);});
+    var legSnap=ss.getSheetByName('MASTER SNAPSHOT');
+    if(legSnap&&allSnapSheets.indexOf(legSnap)===-1)allSnapSheets.push(legSnap);
+
+    allSnapSheets.forEach(function(snSh){
+      if(!snSh||snSh.getLastRow()<=1)return;
+      var ex=snSh.getRange(2,1,snSh.getLastRow()-1,2).getValues(),td=[];
+      for(var i=ex.length-1;i>=0;i--){
+        var k=String(ex[i][0])+'|'+normDate(ex[i][1]);
+        if(typeDate.indexOf(k)!==-1)td.push(i+2);
+      }
+      td.sort(function(a,b){return b-a;}).forEach(function(r){snSh.deleteRow(r);});
+    });
+    try{SpreadsheetApp.flush();}catch(e){}
+
+    var written2=appendToLightweightSheet(ss,'MASTER SNAPSHOT',MSNAP_HDRS,rows.map(function(r){
+      return r.map(function(v){return v==null?'':String(v);});
+    }));
+    return{ok:true,type:'master_snapshot',rows:written2};
   }
 
-  /* ── SECTION COUNTS ── */
+  /* ── SECTION COUNTS — auto-partitioned ── */
   if(payload.type==='section_counts'){
-    var csh=getOrCreateSheet(ss,'SECTION COUNTS',['Sync Date','Section','Source','Age Filter','AWB Count','Record Count','File Dates']);
+    var SC_HDRS=['Sync Date','Section','Source','Age Filter','AWB Count','Record Count','File Dates'];
     var sd2=String(payload.syncDate||new Date().toISOString().slice(0,10)).slice(0,10);
     var counts=payload.counts||[];
-    var sn2=counts.map(function(c){return String(c.section||'');});
-    if(csh.getLastRow()>1){
+    if(!counts.length) return{ok:true,type:'section_counts',appended:0};
+
+    var snames=counts.map(function(c){return String(c.section||'');});
+    var allScSheets=[];
+    var idx5=loadIndex(ss)['SECTION COUNTS']||[];
+    idx5.forEach(function(p){var s=ss.getSheetByName(p.tab);if(s)allScSheets.push(s);});
+    var legSC=ss.getSheetByName('SECTION COUNTS');
+    if(legSC&&allScSheets.indexOf(legSC)===-1)allScSheets.push(legSC);
+
+    allScSheets.forEach(function(csh){
+      if(!csh||csh.getLastRow()<=1)return;
       var ex2=csh.getRange(2,1,csh.getLastRow()-1,2).getValues(),td2=[];
-      for(var i2=ex2.length-1;i2>=0;i2--){if(normDate(ex2[i2][0])===sd2&&sn2.indexOf(String(ex2[i2][1]||''))!==-1)td2.push(i2+2);}
+      for(var i2=ex2.length-1;i2>=0;i2--){
+        if(normDate(ex2[i2][0])===sd2&&snames.indexOf(String(ex2[i2][1]||''))!==-1)td2.push(i2+2);
+      }
       td2.sort(function(a,b){return b-a;}).forEach(function(r){csh.deleteRow(r);});
-    }
-    var cr=counts.map(function(c){return[sd2,String(c.section||''),String(c.src||''),String(c.ageFilter||''),Number(c.awbs||0),Number(c.records||0),String(c.fileDates||'')];});
-    if(cr.length>0){csh.getRange(csh.getLastRow()+1,1,cr.length,7).setValues(cr);SpreadsheetApp.flush();}
-    return{ok:true,type:'section_counts',appended:cr.length};
+    });
+    try{SpreadsheetApp.flush();}catch(e){}
+
+    var cr=counts.map(function(c){
+      return[sd2,String(c.section||''),String(c.src||''),String(c.ageFilter||''),
+             Number(c.awbs||0),Number(c.records||0),String(c.fileDates||'')];
+    });
+    var written3=appendToLightweightSheet(ss,'SECTION COUNTS',SC_HDRS,cr);
+    return{ok:true,type:'section_counts',appended:written3};
   }
 
-  /* ── FILE LOG ── */
+  /* ── FILE LOG — auto-partitioned ── */
   if(payload.type==='file_log'){
-    var fl=getOrCreateSheet(ss,'FILE LOG',['ID','File Name','File Type','Data Date','Uploaded At','AWBs']);
+    var FL_HDRS=['ID','File Name','File Type','Data Date','Uploaded At','AWBs'];
     var entry=payload.entry||{};
-    if(fl.getLastRow()>1){
+
+    // Dedup by ID across all partitions
+    var allFlSheets=[];
+    var idx6=loadIndex(ss)['FILE LOG']||[];
+    idx6.forEach(function(p){var s=ss.getSheetByName(p.tab);if(s)allFlSheets.push(s);});
+    var legFL=ss.getSheetByName('FILE LOG');
+    if(legFL&&allFlSheets.indexOf(legFL)===-1)allFlSheets.push(legFL);
+
+    var isDup=false;
+    allFlSheets.forEach(function(fl){
+      if(isDup||!fl||fl.getLastRow()<2)return;
       var ids=fl.getRange(2,1,fl.getLastRow()-1,1).getValues().map(function(r){return String(r[0]);});
-      if(ids.indexOf(String(entry.id||''))!==-1)return{ok:true,type:'file_log',action:'duplicate_skipped'};
-    }
-    fl.appendRow([entry.id||'',entry.name||'',entry.fileType||entry.type||'',entry.date||'',entry.uploadedAt||new Date().toISOString(),Number(entry.awbs)||0]);
-    SpreadsheetApp.flush();
+      if(ids.indexOf(String(entry.id||''))!==-1)isDup=true;
+    });
+    if(isDup)return{ok:true,type:'file_log',action:'duplicate_skipped'};
+
+    var flRow=[[entry.id||'',entry.name||'',entry.fileType||entry.type||'',
+                entry.date||'',entry.uploadedAt||new Date().toISOString(),Number(entry.awbs)||0]];
+    appendToLightweightSheet(ss,'FILE LOG',FL_HDRS,flRow);
     return{ok:true,type:'file_log'};
   }
 
@@ -7967,11 +8371,16 @@ function processPayload(payload) {
       for(var i=dv.length-1;i>=0;i--){if(normDate(dv[i][0])===dd)td.push(i+2);}
       td.sort(function(a,b){return b-a;}).forEach(function(r){dsh.deleteRow(r);delCount++;});
     });
-    var dl=ss.getSheetByName('FILE LOG');
-    if(dl&&dl.getLastRow()>1&&de.id){
+    // Delete from FILE LOG partitions
+    var allFlP=loadIndex(ss)['FILE LOG']||[];
+    var dlSheets=allFlP.map(function(p){return ss.getSheetByName(p.tab);}).filter(Boolean);
+    var legDL=ss.getSheetByName('FILE LOG');
+    if(legDL&&dlSheets.indexOf(legDL)===-1)dlSheets.push(legDL);
+    dlSheets.forEach(function(dl){
+      if(!dl||dl.getLastRow()<2||!de.id)return;
       var li=dl.getRange(2,1,dl.getLastRow()-1,1).getValues();
       for(var j=li.length-1;j>=0;j--){if(String(li[j][0])===String(de.id)){dl.deleteRow(j+2);break;}}
-    }
+    });
     SpreadsheetApp.flush();
     return{ok:true,type:'delete_file',deletedRows:delCount};
   }
