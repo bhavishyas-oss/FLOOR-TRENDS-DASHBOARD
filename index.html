@@ -9647,21 +9647,36 @@ async function _fetchMasterFromGviz(){
   if(parsed.n===0)return false;
   if(parsed.selfUrl)_cacheAppScriptUrl(parsed.selfUrl);
 
+  // MERGE FIX: Use (date+age+location+bin+msg) as unique key, NOT just date.
+  // Multiple records share the same date (one per location×age×bin×msg combination).
+  // Using date alone as map key collapsed all locations into 1 record → blank charts.
   const types=['forward','reverse','lmodc','forwardShort'];
-  let changed=false;
   const localTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
+  const _recKey=r=>`${r.date}|${r.age||0}|${r.location||r.destination||''}|${r.bin||0}|${r.msg||''}`;
+
   types.forEach(type=>{
     const fetchedArr=parsed.master[type]||[];
     if(!fetchedArr.length)return;
-    if(localTotal===0){master[type]=[...fetchedArr];changed=true;return;}
-    const localMap=new Map((master[type]||[]).map(r=>[r.date,r]));
-    fetchedArr.forEach(r=>{
-      const local=localMap.get(r.date);
-      if(!local){(master[type]=master[type]||[]).push(r);changed=true;}
-      else if((r.count||0)>(local.count||0)){const idx=master[type].findIndex(lr=>lr.date===r.date);if(idx>=0){master[type][idx]=r;changed=true;}}
-    });
+    if(localTotal===0){
+      master[type]=[...fetchedArr];
+    }else{
+      // Build lookup map with proper composite key
+      const localMap=new Map((master[type]||[]).map(r=>[_recKey(r),r]));
+      fetchedArr.forEach(r=>{
+        const k=_recKey(r);
+        if(!localMap.has(k)){
+          master[type].push(r);
+        }else{
+          const local=localMap.get(k);
+          if((r.count||0)>(local.count||0)){
+            const idx=master[type].findIndex(lr=>_recKey(lr)===k);
+            if(idx>=0)master[type][idx]=r;
+          }
+        }
+      });
+    }
   });
-  if(changed)try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){}
+  try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){}
   return true;
 }
 
@@ -9723,27 +9738,29 @@ function _applyFetchedMaster(fetched,n){
   const localTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
   if(sheetsTotal===0)return false;
 
+  // MERGE FIX: Use composite key to preserve all (location × age × bin × msg) records per date
+  const _rk=r=>`${r.date}|${r.age||0}|${r.location||r.destination||''}|${r.bin||0}|${r.msg||''}`;
   const types=['forward','reverse','lmodc','forwardShort'];
-  let didChange=false;
   if(localTotal===0){
-    types.forEach(type=>{const a=fetched[type]||[];if(a.length){master[type]=[...a];didChange=true;}});
+    types.forEach(type=>{const a=fetched[type]||[];if(a.length)master[type]=[...a];});
     console.log(`fetchMasterFromSheets: FULL RESTORE — ${sheetsTotal} AWBs`);
   }else{
     types.forEach(type=>{
       const fetchedArr=fetched[type]||[];
       if(!fetchedArr.length)return;
-      const localMap=new Map((master[type]||[]).map(r=>[r.date,r]));
+      const localMap=new Map((master[type]||[]).map(r=>[_rk(r),r]));
       fetchedArr.forEach(r=>{
-        const local=localMap.get(r.date);
-        if(!local){(master[type]=master[type]||[]).push(r);didChange=true;}
-        else if((r.count||0)>(local.count||0)){const idx=master[type].findIndex(lr=>lr.date===r.date);if(idx>=0){master[type][idx]=r;didChange=true;}}
+        const k=_rk(r);
+        if(!localMap.has(k)){master[type].push(r);}
+        else if((r.count||0)>(localMap.get(k).count||0)){
+          const idx=master[type].findIndex(lr=>_rk(lr)===k);
+          if(idx>=0)master[type][idx]=r;
+        }
       });
     });
-    if(didChange)console.log(`fetchMasterFromSheets: MERGED (local:${localTotal}, sheets:${sheetsTotal})`);
+    console.log(`fetchMasterFromSheets: MERGED (local:${localTotal}, sheets:${sheetsTotal})`);
   }
-  if(didChange||localTotal===0){
-    try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){}
-  }
+  try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){}
   return true;
 }
 
