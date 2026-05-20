@@ -7633,67 +7633,96 @@ function downloadChart(canvasId,filename){
 const GS_URL_KEY='logistics_gsheets_url_v2';
 const GS_SHEET_ID='17JbybSZkKtdoHZBua3QyC5tcxwKYozhnILQcoXb3rYQ';
 
-/* ── CROSS-DEVICE FIX: The Apps Script URL only existed in the admin's localStorage.
-   Solution: store the URL in the spreadsheet itself (CONFIG tab, cell B1) so any
-   device can auto-discover it by fetching the spreadsheet's public CSV.
-   The admin sets the URL once via the Sheets button; it then propagates globally. ── */
+/* ── CROSS-DEVICE VISIBILITY STRATEGY ──────────────────────────────────────────
+   Problem: The AppScript URL only existed in the admin's localStorage.
+   Other devices had no URL → getGsUrl() returned '' → "No data" immediately.
 
-/* ── PASTE YOUR WEB APP URL HERE ──────────────────────────────────────
-   Replace the empty string '' with your Apps Script Web App URL.
-   Example:
-   const GS_HARDCODED_URL='https://script.google.com/macros/s/AKfy.../exec';
-   Once set, every file upload auto-syncs and all devices auto-discover this URL.
-──────────────────────────────────────────────────────────────────── */
+   Solution (3 layers):
+   Layer 1 — GS_HARDCODED_URL: admin can paste URL here at build time (permanent)
+   Layer 2 — localStorage cache: set by admin via 📊 Sheets button (device-specific)
+   Layer 3 — Bootstrap from spreadsheet: the MASTER SNAPSHOT_1 sheet is readable
+              via the spreadsheet's gviz endpoint when shared with "Anyone with link".
+              The AppScript returns its own URL in getMaster/test responses — devices
+              cache this automatically, making URL discovery self-propagating.
+──────────────────────────────────────────────────────────────────────────── */
+
+/* ── PASTE YOUR WEB APP URL HERE (optional — speeds up all devices) ──────────
+   const GS_HARDCODED_URL='https://script.google.com/macros/s/XXXXXXX/exec';
+────────────────────────────────────────────────────────────────────────────── */
 const GS_HARDCODED_URL='';
 
-/* GS_DISCOVERY_URL: The dashboard can auto-discover the AppScript URL by reading
-   a CONFIG tab from the spreadsheet (public read, no auth).
-   The admin stores the AppScript URL in cell B1 of a "CONFIG" tab.
-   Any new device reads this and caches it locally. */
-const GS_DISCOVERY_URL=`https://docs.google.com/spreadsheets/d/${GS_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=CONFIG`;
+/* Bootstrap URL: read MASTER SNAPSHOT_1 via the spreadsheet's public endpoint.
+   Works when the spreadsheet is shared as "Anyone with link can view".
+   We read any published CSV tab — the AppScript URL will be inside the
+   getMaster response once we bootstrap with ANY valid URL.                     */
+const GS_BOOTSTRAP_URLS=[
+  // gviz endpoint works when spreadsheet is shared (Anyone with link)
+  `https://docs.google.com/spreadsheets/d/${GS_SHEET_ID}/gviz/tq?tqx=out:json&sheet=MASTER+SNAPSHOT_1`,
+  `https://docs.google.com/spreadsheets/d/${GS_SHEET_ID}/gviz/tq?tqx=out:json&sheet=MASTER+SNAPSHOT`,
+];
+// Key for caching the self-reported URL returned by AppScript responses
+const GS_SELF_URL_KEY='logistics_gsheets_self_url_v1';
 
 function getGsUrl(){
-  return localStorage.getItem(GS_URL_KEY)||GS_HARDCODED_URL||'';
+  return localStorage.getItem(GS_URL_KEY)
+    || localStorage.getItem(GS_SELF_URL_KEY)  // auto-cached from getMaster response
+    || GS_HARDCODED_URL
+    || '';
 }
 
-/* ── Auto-discover AppScript URL from spreadsheet CONFIG tab ──────────────────
-   Called silently on dashboard load when no URL is in localStorage.
-   The CONFIG tab has: cell A1="APP_SCRIPT_URL", B1="<actual url>".
-   This allows admins to set the URL once and have all devices discover it.    */
-async function _discoverAndCacheGsUrl(){
-  if(getGsUrl())return true; // already have URL — skip discovery
-  try{
-    const resp=await fetch(GS_DISCOVERY_URL,{cache:'no-cache'});
-    if(!resp.ok)return false;
-    const csv=await resp.text();
-    // Parse CSV: find row where col A = "APP_SCRIPT_URL", col B = the URL
-    const lines=csv.split(/\r?\n/);
-    for(const line of lines){
-      const cols=line.split(',');
-      const key=(cols[0]||'').replace(/"/g,'').trim().toUpperCase();
-      const val=(cols[1]||'').replace(/"/g,'').trim();
-      if(key==='APP_SCRIPT_URL'&&val&&val.startsWith('http')){
-        localStorage.setItem(GS_URL_KEY,val);
-        console.log('Auto-discovered AppScript URL from spreadsheet CONFIG tab');
-        return true;
-      }
+/* Cache the AppScript URL returned inside getMaster/test responses.
+   Called whenever the dashboard receives an AppScript response.             */
+function _cacheAppScriptUrl(url){
+  if(url&&url.startsWith('http')&&url.includes('script.google.com')){
+    const cur=localStorage.getItem(GS_SELF_URL_KEY);
+    if(cur!==url){
+      localStorage.setItem(GS_SELF_URL_KEY,url);
+      // If no admin URL set yet, also set as the primary URL
+      if(!localStorage.getItem(GS_URL_KEY))
+        localStorage.setItem(GS_URL_KEY,url);
+      console.log('AppScript URL auto-cached from server response');
     }
-    console.log('CONFIG tab has no APP_SCRIPT_URL row yet');
-    return false;
-  }catch(e){
-    console.warn('_discoverAndCacheGsUrl failed (non-fatal):',e.message);
-    return false;
   }
 }
 
-/* ── Push the AppScript URL into the CONFIG tab so other devices can discover it.
-   Called whenever admin saves a new URL via configSheets().                   */
+/* ── Bootstrap: attempt to discover URL from spreadsheet's public gviz endpoint.
+   The gviz JSON contains the cell data — we scan for any value containing
+   'script.google.com' which would be a stored AppScript URL.                 */
+async function _discoverAndCacheGsUrl(){
+  if(getGsUrl())return true;
+  for(const bUrl of GS_BOOTSTRAP_URLS){
+    try{
+      const resp=await fetch(bUrl,{cache:'no-cache'});
+      if(!resp.ok)continue;
+      const text=await resp.text();
+      // gviz wraps JSON in /*O_o*/ ... ; — strip it
+      const clean=text.replace(/^.*\(/,'').replace(/\);?\s*$/,'');
+      const data=JSON.parse(clean);
+      // Scan all cells for a script.google.com URL
+      const rows=data?.table?.rows||[];
+      for(const row of rows){
+        for(const cell of (row.c||[])){
+          const v=String(cell?.v||cell?.f||'');
+          if(v.startsWith('https://script.google.com')){
+            localStorage.setItem(GS_SELF_URL_KEY,v);
+            if(!localStorage.getItem(GS_URL_KEY))
+              localStorage.setItem(GS_URL_KEY,v);
+            console.log('AppScript URL discovered from spreadsheet gviz data');
+            return true;
+          }
+        }
+      }
+    }catch(e){continue;}
+  }
+  console.log('Bootstrap discovery: no AppScript URL found in spreadsheet yet');
+  return false;
+}
+
 async function _publishUrlToConfig(appScriptUrl){
   if(!appScriptUrl)return;
   try{
-    // We push via the AppScript POST endpoint itself — stores in CONFIG tab
     await _sheetsFetch(appScriptUrl,{type:'config_url',url:appScriptUrl});
-    console.log('AppScript URL published to CONFIG tab for cross-device discovery');
+    console.log('AppScript URL published to CONFIG tab');
   }catch(e){
     console.warn('_publishUrlToConfig failed (non-fatal):',e.message);
   }
@@ -8001,10 +8030,12 @@ function doGet(e) {
       var idx  = loadIndex(ss);
       var partSummary = JSON.stringify(Object.keys(idx).reduce(function(acc,k){
         acc[k]=(idx[k]||[]).length+' partition(s)';return acc;},{},0));
+      var selfUrl = ScriptApp.getService().getUrl();
       return buildResponse(JSON.stringify({
         ok:true, spreadsheetName:name, spreadsheetId:id,
         existingTabs:tabs, partitions:partSummary,
-        message:'v7.0 Auto-partition system active'
+        appScriptUrl:selfUrl,
+        message:'v7.1 Auto-partition + cross-device sync active'
       }));
     } catch(err) {
       return buildResponse(JSON.stringify({ok:false,error:err.message}));
@@ -8016,8 +8047,10 @@ function doGet(e) {
     try {
       var ss  = getSS();
       var res = getMasterFromAllPartitions(ss);
-      if(res.n===0) return buildResponse(JSON.stringify({ok:false,reason:'no_snapshot'}));
-      return buildResponse(JSON.stringify({ok:true,master:JSON.stringify(res.master)}));
+      var selfUrl = res.selfUrl || '';
+      try{selfUrl=ScriptApp.getService().getUrl();}catch(e){}
+      if(res.n===0) return buildResponse(JSON.stringify({ok:false,reason:'no_snapshot',appScriptUrl:selfUrl}));
+      return buildResponse(JSON.stringify({ok:true,master:JSON.stringify(res.master),appScriptUrl:selfUrl}));
     }catch(err){return buildResponse(JSON.stringify({ok:false,error:err.message}));}
   }
 
@@ -8290,8 +8323,16 @@ function getMasterFromAllPartitions(ss) {
   var rows = getAllLightweightRows(ss, 'MASTER SNAPSHOT');
   var master = {forward:[],reverse:[],lmodc:[],forwardShort:[]};
   var n = 0;
+  var selfUrl = '';
   rows.forEach(function(r) {
-    var type=String(r[0]||'').trim(), date=normDate(r[1]), count=Number(r[2])||0;
+    var type=String(r[0]||'').trim();
+    // Extract sentinel URL row (type='__url__') — don't add to master data
+    if(type==='__url__'){
+      if(r[2]&&String(r[2]).startsWith('https://script.google.com'))
+        selfUrl=String(r[2]).trim();
+      return;
+    }
+    var date=normDate(r[1]), count=Number(r[2])||0;
     if (!type || !date || !master.hasOwnProperty(type)) return;
     var ex = master[type].filter(function(x){return x.date===date;})[0];
     if (ex) {
@@ -8303,7 +8344,7 @@ function getMasterFromAllPartitions(ss) {
     }
     n++;
   });
-  return {master:master, n:n};
+  return {master:master, n:n, selfUrl:selfUrl};
 }
 
   /* ── SITE AVERAGES — auto-partitioned ── */
@@ -8344,7 +8385,6 @@ function getMasterFromAllPartitions(ss) {
     if(!rows.length) return{ok:true,type:'master_snapshot',rows:0};
 
     // Full replace strategy: delete all existing rows for these (type,date) combos
-    // then append fresh. Keeps data accurate without unlimited growth.
     var typeDate=rows.map(function(r){return String(r[0])+'|'+normDate(r[1]);});
     var allSnapSheets=[];
     var idx4=loadIndex(ss)['MASTER SNAPSHOT']||[];
@@ -8357,15 +8397,23 @@ function getMasterFromAllPartitions(ss) {
       var ex=snSh.getRange(2,1,snSh.getLastRow()-1,2).getValues(),td=[];
       for(var i=ex.length-1;i>=0;i--){
         var k=String(ex[i][0])+'|'+normDate(ex[i][1]);
-        if(typeDate.indexOf(k)!==-1)td.push(i+2);
+        // Also delete the sentinel URL row (type='__url__') to replace it
+        if(typeDate.indexOf(k)!==-1||String(ex[i][0])==='__url__')td.push(i+2);
       }
       td.sort(function(a,b){return b-a;}).forEach(function(r){snSh.deleteRow(r);});
     });
     try{SpreadsheetApp.flush();}catch(e){}
 
-    var written2=appendToLightweightSheet(ss,'MASTER SNAPSHOT',MSNAP_HDRS,rows.map(function(r){
-      return r.map(function(v){return v==null?'':String(v);});
-    }));
+    // Prepend a sentinel row containing the AppScript URL — discovery mechanism
+    // for cross-device access. Any device reading this sheet finds the URL.
+    var selfUrl='';
+    try{selfUrl=ScriptApp.getService().getUrl();}catch(e){}
+    var rowsWithUrl=rows.map(function(r){return r.map(function(v){return v==null?'':String(v);});});
+    if(selfUrl){
+      rowsWithUrl=[['__url__','',selfUrl,'','','',new Date().toISOString()]].concat(rowsWithUrl);
+    }
+
+    var written2=appendToLightweightSheet(ss,'MASTER SNAPSHOT',MSNAP_HDRS,rowsWithUrl);
     return{ok:true,type:'master_snapshot',rows:written2};
   }
 
@@ -9064,6 +9112,11 @@ async function fetchMasterFromSheets(){
     });
     if(!resp.ok){console.warn('fetchMasterFromSheets: HTTP',resp.status);return false;}
     const json=await resp.json();
+
+    // CROSS-DEVICE FIX: AppScript now returns its own URL in every response.
+    // Cache it so other devices that discover this master can also push data.
+    if(json.appScriptUrl) _cacheAppScriptUrl(json.appScriptUrl);
+
     if(!json.ok||!json.master){console.log('fetchMasterFromSheets: no snapshot available');return false;}
 
     let fetched;
