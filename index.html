@@ -650,6 +650,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
     <button id="hovSubTab2" class="tab" onclick="switchHovSubTab(2)" style="font-size:12px;font-weight:800;padding:11px 18px;margin-bottom:-2px">⏳ D15+ TRACKING</button>
     <button id="hovSubTab3" class="tab" onclick="switchHovSubTab(3)" style="font-size:12px;font-weight:800;padding:11px 18px;margin-bottom:-2px">👤 ACTION USER TRENDS</button>
     <button id="hovSubTab4" class="tab" onclick="switchHovSubTab(4)" style="font-size:12px;font-weight:800;padding:11px 18px;margin-bottom:-2px">🗺 REGION OVERVIEW</button>
+    <button id="hovSubTab5" class="tab" onclick="switchHovSubTab(5)" style="font-size:12px;font-weight:800;padding:11px 18px;margin-bottom:-2px">🤖 AI INSIGHTS</button>
   </div>
 
   <!-- ════════════════════════════════════
@@ -910,8 +911,20 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
     </div>
 
   </div>
+
+  <!-- ════ TAB 5: AI INSIGHTS ════ -->
+  <div id="hovSubPanel5" style="display:none;padding:14px;flex-direction:column;gap:16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:4px 0">
+      <span style="font-size:11px;color:var(--tx3);font-style:italic">🤖 Auto-generated operational insights from uploaded HOV data</span>
+      <div style="display:flex;gap:8px">
+        <button class="btn bg" onclick="generateHovPDF(5)" style="font-size:10px;padding:3px 8px;color:var(--brand);border-color:var(--bdr2)">📄 PDF Report</button>
+        <button class="btn bg" onclick="downloadHovSectionImage('hovAIContent','HOV_AI_Insights.png')" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(233,223,67,.4)">🖼 PNG</button>
+        <button class="btn bg" onclick="renderHovAIInsights()" style="font-size:10px;padding:3px 8px;color:var(--brand);border-color:var(--bdr2)">🔄 Refresh</button>
+      </div>
+    </div>
+    <div id="hovAIContent" style="display:flex;flex-direction:column;gap:20px"></div>
+  </div>
 </div>
-<div id="toast"></div>
 
 <script>
 'use strict';
@@ -6061,7 +6074,7 @@ function renderHovPerFileSingle(ki){
 /* ── Download HOV chart as PNG ── */
 /* ── 4-tab switcher ── */
 function switchHovSubTab(idx){
-  [0,1,2,3,4].forEach(i=>{
+  [0,1,2,3,4,5].forEach(i=>{
     const btn=document.getElementById(`hovSubTab${i}`);
     const panel=document.getElementById(`hovSubPanel${i}`);
     if(btn)btn.classList.toggle('active',i===idx);
@@ -6072,6 +6085,296 @@ function switchHovSubTab(idx){
   if(idx===2)renderHovD15Tab();
   if(idx===3)renderHovActionUser();
   if(idx===4)renderHovRegionOverview();
+  if(idx===5)renderHovAIInsights();
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   AI INSIGHTS TAB (Tab 5)
+   Analyses master.hovAllRaw to generate operational intelligence:
+   1. Client-wise pendency trends
+   2. Product-type normalised trends
+   3. Theft-risk flagging (BIN + age + product type)
+   4. Action-user patterns
+   5. Client × product-type patterns
+   6. MPSR ageing trends
+   Runs on aggregated data only — no raw row iteration beyond one initial pass.
+════════════════════════════════════════════════════════════════════════════ */
+
+/* Product normaliser — maps raw descriptions to canonical product groups */
+const _PT_MAP=[
+  [/mobile|phone|smartphone|iphone|samsung.*m|oneplus|realme|poco|vivo|oppo|motorola|tecno/i,'Mobile Phones'],
+  [/earbud|earphone|airpod|tws|wireless.*ear|bluetooth.*ear/i,'Earbuds / TWS'],
+  [/headphone|headset|neckband|over.ear/i,'Headphones'],
+  [/laptop|macbook|notebook|chromebook/i,'Laptops'],
+  [/tablet|ipad/i,'Tablets'],
+  [/watch|smartwatch|fitbit|garmin|wearable/i,'Smartwatches'],
+  [/mattress|mattres/i,'Mattresses'],
+  [/television|tv\b|smart\s*tv|qled|oled/i,'Televisions'],
+  [/refrigerator|fridge|cooler/i,'Refrigerators'],
+  [/washing.*machine|washer/i,'Washing Machines'],
+  [/air.*condition|ac\b|split.*ac/i,'Air Conditioners'],
+  [/speaker|soundbar|subwoofer|bluetooth.*speak/i,'Speakers'],
+  [/camera|dslr|mirrorless/i,'Cameras'],
+  [/charger|adapter|power.*bank|powerbank/i,'Chargers / Power Banks'],
+  [/shoe|footwear|sneaker|sandal/i,'Footwear'],
+  [/cloth|t.shirt|shirt|trouser|kurta|saree|jeans|apparel|dress/i,'Apparel'],
+  [/bag|backpack|luggage|handbag|wallet|purse/i,'Bags / Luggage'],
+  [/toy|game|puzzle|doll/i,'Toys / Games'],
+  [/book|novel|diary|stationery/i,'Books / Stationery'],
+  [/mpsr/i,'MPSR Items'],
+  [/cosmetic|beauty|skincare|makeup|serum|cream|shampoo/i,'Beauty / Personal Care'],
+  [/supplement|protein|vitamin|health/i,'Health Supplements'],
+  [/kitchen|cookware|vessel|pan|cooker/i,'Kitchen Appliances'],
+  [/jewel|ring|necklace|bracelet|earring|pendant/i,'Jewellery'],
+];
+
+function _normProduct(pd){
+  if(!pd)return'Other';
+  for(const[re,label]of _PT_MAP)if(re.test(pd))return label;
+  return'Other';
+}
+
+/* TRUE for small high-value products easy to conceal */
+const _THEFT_RISK_TYPES=new Set(['Mobile Phones','Earbuds / TWS','Headphones','Smartwatches',
+  'Laptops','Tablets','Cameras','Chargers / Power Banks','Jewellery','Beauty / Personal Care']);
+
+function _isTheftRiskProduct(pt){return _THEFT_RISK_TYPES.has(pt);}
+
+/* ── Build aggregates from hovAllRaw for a specific fileType ─────────────── */
+function _buildAIAgg(fileType){
+  const rows=(master.hovAllRaw||[]).filter(r=>r.fileType===fileType);
+  if(!rows.length)return null;
+
+  // Maps
+  const clientMap={};   // client → {awbs,pv,sites,ages,products}
+  const productMap={};  // productType → {awbs,pv,sites,clients,ages,actionUsers}
+  const actionMap={};   // actionUser → {awbs,pv,productTypes,sites,clients}
+  const binRiskRows=[];  // rows with theft-risk indicators
+  const mpsrRows=[];     // MPSR rows
+
+  rows.forEach(r=>{
+    const loc=(r.loc||'UNKNOWN').toUpperCase();
+    const age=parseInt(r.age)||0;
+    const pv=parseFloat(r.pv)||0;
+    const client=(r.pc||r.client||'UNKNOWN').toUpperCase().trim();
+    const pd=String(r.pd||'');
+    const pt=_normProduct(pd);
+    const au=(r.actionUser||'').toUpperCase().trim();
+    const msg=String(r.msg||r.binLevel||'').toUpperCase();
+    const bin=String(r.binLevel||'').toUpperCase();
+
+    // Client map
+    if(!clientMap[client])clientMap[client]={awbs:0,pv:0,sites:new Set(),ages:[],products:new Set()};
+    const c=clientMap[client];
+    c.awbs++;c.pv+=pv;c.sites.add(loc);c.ages.push(age);c.products.add(pt);
+
+    // Product type map
+    if(!productMap[pt])productMap[pt]={awbs:0,pv:0,sites:new Set(),clients:new Set(),ages:[],actionUsers:new Set()};
+    const p=productMap[pt];
+    p.awbs++;p.pv+=pv;p.sites.add(loc);p.clients.add(client);p.ages.push(age);
+    if(au)p.actionUsers.add(au);
+
+    // Action user map
+    if(au){
+      if(!actionMap[au])actionMap[au]={awbs:0,pv:0,productTypes:new Set(),sites:new Set(),clients:new Set()};
+      const a=actionMap[au];
+      a.awbs++;a.pv+=pv;a.productTypes.add(pt);a.sites.add(loc);a.clients.add(client);
+    }
+
+    // BIN theft risk
+    const isSuccessBin=/BIN[12].*SUCCESS|SUCCESS.*BIN[12]/i.test(msg)||/BIN[12].*CFGR|CFGR.*BIN[12]/i.test(msg)||/success/i.test(msg)||/cfgr/i.test(msg);
+    if(isSuccessBin&&age>6&&_isTheftRiskProduct(pt)){
+      binRiskRows.push({loc,age,pv,client,pt,pd,au,msg});
+    }
+
+    // MPSR
+    if(/mpsr/i.test(msg)||/mpsr/i.test(pd)){
+      mpsrRows.push({loc,age,pv,client,pt,pd,au});
+    }
+  });
+
+  return{clientMap,productMap,actionMap,binRiskRows,mpsrRows,total:rows.length};
+}
+
+/* ── Format currency ── */
+const _fmt=v=>v>=100000?`₹${(v/100000).toFixed(1)}L`:v>=1000?`₹${(v/1000).toFixed(1)}K`:`₹${Math.round(v)}`;
+const _avgAge=arr=>arr.length?Math.round(arr.reduce((s,a)=>s+a,0)/arr.length):0;
+
+/* ── Build ONE section's insights HTML ── */
+function _buildInsightSection(fileType,typeLabel,color){
+  const agg=_buildAIAgg(fileType);
+  if(!agg||!agg.total){
+    return`<div style="padding:16px;color:#94a3b8;font-size:12px;font-style:italic">
+      No ${typeLabel} data found. Upload HOV files to generate insights.</div>`;
+  }
+
+  const {clientMap,productMap,actionMap,binRiskRows,mpsrRows}=agg;
+  const sections=[];
+
+  /* ── SECTION HEADER ── */
+  const secHdr=(title,icon)=>`
+    <div style="background:${color}22;border-left:4px solid ${color};padding:10px 16px;margin:12px 0 6px;border-radius:0 6px 6px 0">
+      <span style="font-size:12px;font-weight:900;color:${color};text-transform:uppercase;letter-spacing:.5px">${icon} ${title}</span>
+    </div>`;
+
+  const bullet=(text,tag)=>`
+    <div style="display:flex;gap:10px;padding:7px 14px;border-bottom:1px solid #f1f5f9">
+      <span style="min-width:20px;font-size:14px;margin-top:1px">${tag||'◆'}</span>
+      <span style="font-size:12px;color:#1e293b;line-height:1.6">${text}</span>
+    </div>`;
+
+  const noData=`<div style="padding:6px 14px;font-size:11px;color:#94a3b8;font-style:italic">No significant patterns detected in current data.</div>`;
+
+  /* ── 1. CLIENT TRENDS ── */
+  sections.push(secHdr('CLIENT-WISE PENDENCY TRENDS','👥'));
+  const topClients=Object.entries(clientMap)
+    .filter(([c])=>c&&c!=='UNKNOWN')
+    .map(([client,d])=>({client,awbs:d.awbs,pv:d.pv,sites:d.sites.size,avgAge:_avgAge(d.ages),products:[...d.products].filter(p=>p!=='Other')}))
+    .filter(d=>d.sites>=3||d.awbs>=10)
+    .sort((a,b)=>b.sites-a.sites||b.awbs-a.awbs)
+    .slice(0,6);
+  if(topClients.length){
+    topClients.forEach(({client,awbs,pv,sites,avgAge,products})=>{
+      const prodList=products.slice(0,3).join(', ')||'Mixed products';
+      const reason=sites>=8?'indicating widespread multi-DC operational blockage':
+        sites>=5?'indicating regional transit dependency or product handling issue':
+        'indicating localised operational bottleneck';
+      const pvNote=pv>100000?` with total product value ${_fmt(pv)}`:'';
+      sections.push(bullet(`<strong>${xe(client)}</strong> has <strong>${awbs} HOV AWBs</strong> pending across <strong>${sites} sites</strong>${pvNote}, avg ageing D${avgAge}. Products: ${xe(prodList)}. — ${reason}.`,'👤'));
+    });
+  }else{sections.push(noData);}
+
+  /* ── 2. PRODUCT TYPE TRENDS ── */
+  sections.push(secHdr('PRODUCT DESCRIPTION / TYPE TRENDS','📦'));
+  const topProducts=Object.entries(productMap)
+    .filter(([pt])=>pt!=='Other')
+    .map(([pt,d])=>({pt,awbs:d.awbs,pv:d.pv,sites:d.sites.size,clients:d.clients.size,avgAge:_avgAge(d.ages)}))
+    .filter(d=>d.sites>=2||d.awbs>=5)
+    .sort((a,b)=>b.awbs-a.awbs)
+    .slice(0,8);
+  if(topProducts.length){
+    topProducts.forEach(({pt,awbs,pv,sites,clients,avgAge})=>{
+      const pvStr=pv>0?` — total value ${_fmt(pv)}`:'';
+      sections.push(bullet(`<strong>${xe(pt)}</strong>: ${awbs} AWBs across ${sites} sites, ${clients} client(s), avg ageing D${avgAge}${pvStr}.`,'📦'));
+    });
+  }else{sections.push(noData);}
+
+  /* ── 3. THEFT-RISK ANALYSIS ── */
+  sections.push(secHdr('POTENTIAL THEFT-RISK PATTERNS (OPERATIONAL)','⚠️'));
+  if(binRiskRows.length){
+    // Group by product type
+    const riskByPT={};
+    binRiskRows.forEach(r=>{
+      if(!riskByPT[r.pt])riskByPT[r.pt]={awbs:0,pv:0,sites:new Set(),maxAge:0};
+      riskByPT[r.pt].awbs++;riskByPT[r.pt].pv+=r.pv;riskByPT[r.pt].sites.add(r.loc);
+      if(r.age>riskByPT[r.pt].maxAge)riskByPT[r.pt].maxAge=r.age;
+    });
+    Object.entries(riskByPT).sort((a,b)=>b[1].awbs-a[1].awbs).slice(0,5).forEach(([pt,d])=>{
+      const pvStr=d.pv>0?`, value ${_fmt(d.pv)}`:'';
+      sections.push(bullet(`<strong>${xe(pt)}</strong> — ${d.awbs} AWBs with BIN-SUCCESS/CFGR status ageing above D6 (max D${d.maxAge}) across ${d.sites.size} sites${pvStr}. Elevated operational exposure risk — verify physical inventory.`,'🔴'));
+    });
+    sections.push(bullet(`<em>Note: These are operational risk observations based on ageing + BIN status patterns. Physical verification at DC level is recommended.</em>`,'ℹ️'));
+  }else{
+    sections.push(`<div style="padding:6px 14px;font-size:11px;color:#059669;font-style:italic">✅ No high-risk BIN + ageing patterns detected in current data.</div>`);
+  }
+
+  /* ── 4. ACTION USER TRENDS ── */
+  sections.push(secHdr('ACTION USER + PRODUCT + VALUE TRENDS','👷'));
+  const topAU=Object.entries(actionMap)
+    .filter(([au])=>au&&au!=='UNKNOWN'&&au.length>2)
+    .map(([au,d])=>({au,awbs:d.awbs,pv:d.pv,sites:d.sites.size,types:[...d.productTypes].filter(t=>t!=='Other').slice(0,3)}))
+    .filter(d=>d.awbs>=5||d.sites>=3)
+    .sort((a,b)=>b.pv-a.pv||b.awbs-a.awbs)
+    .slice(0,5);
+  if(topAU.length){
+    topAU.forEach(({au,awbs,pv,sites,types})=>{
+      const typeStr=types.join(', ')||'various products';
+      const pvStr=pv>0?`, value ${_fmt(pv)}`:'';
+      sections.push(bullet(`<strong>${xe(au)}</strong> handled ${awbs} HOV AWBs across ${sites} site(s)${pvStr}. Products: ${xe(typeStr)}. — Monitor for repeated pendency under same action user.`,'👷'));
+    });
+  }else{sections.push(noData);}
+
+  /* ── 5. CLIENT × PRODUCT × VALUE ── */
+  sections.push(secHdr('CLIENT + PRODUCT TYPE + VALUE ANALYSIS','💰'));
+  const clientProd=[];
+  Object.entries(clientMap).filter(([c])=>c&&c!=='UNKNOWN').forEach(([client,d])=>{
+    const topPt=[...d.products].filter(p=>p!=='Other')[0]||'Mixed';
+    if(d.pv>5000&&d.sites.size>=2){
+      clientProd.push({client,pv:d.pv,awbs:d.awbs,sites:d.sites.size,pt:topPt,avgAge:_avgAge(d.ages)});
+    }
+  });
+  clientProd.sort((a,b)=>b.pv-a.pv).slice(0,5).forEach(({client,pv,awbs,sites,pt,avgAge})=>{
+    const reason=pt==='Mattresses'?'possible bulky-product transit bottleneck':
+      _isTheftRiskProduct(pt)?'high-value product exposure across multiple DCs — verify inventory':
+      'possible repeated return failure or quality issue';
+    sections.push(bullet(`<strong>${xe(client)}</strong> — ${awbs} AWBs of <strong>${xe(pt)}</strong> across ${sites} sites, value ${_fmt(pv)}, avg age D${avgAge}. — ${reason}.`,'💰'));
+  });
+  if(!clientProd.length)sections.push(noData);
+
+  /* ── 6. MPSR TRENDS ── */
+  sections.push(secHdr('MPSR AGEING TRENDS','📋'));
+  if(mpsrRows.length){
+    const mpsrBySite={};
+    mpsrRows.forEach(r=>{
+      if(!mpsrBySite[r.loc])mpsrBySite[r.loc]={awbs:0,pv:0,ages:[],products:new Set()};
+      mpsrBySite[r.loc].awbs++;mpsrBySite[r.loc].pv+=r.pv;mpsrBySite[r.loc].ages.push(r.age);mpsrBySite[r.loc].products.add(r.pt);
+    });
+    const mpsrHigh=mpsrRows.filter(r=>r.age>7);
+    if(mpsrHigh.length){
+      const mpsrSites=new Set(mpsrHigh.map(r=>r.loc));
+      const mpsrPV=mpsrHigh.reduce((s,r)=>s+r.pv,0);
+      sections.push(bullet(`<strong>${mpsrHigh.length} MPSR AWBs</strong> ageing above D7 across <strong>${mpsrSites.size} sites</strong>${mpsrPV>0?`, value ${_fmt(mpsrPV)}`:''}. Concentrated in: ${[...mpsrSites].slice(0,5).join(', ')}. — Escalate for MPSR resolution to reduce ageing.`,'📋'));
+    }
+    const mpsrPTs=new Set(mpsrRows.map(r=>r.pt));
+    if(mpsrPTs.size)sections.push(bullet(`MPSR products include: ${[...mpsrPTs].filter(p=>p!=='Other').slice(0,5).join(', ') || 'various categories'}.`,'📋'));
+  }else{
+    sections.push(`<div style="padding:6px 14px;font-size:11px;color:#059669;font-style:italic">✅ No MPSR items detected in current data.</div>`);
+  }
+
+  return sections.join('');
+}
+
+/* ── Main render function (called by switchHovSubTab(5)) ── */
+function renderHovAIInsights(){
+  const el=document.getElementById('hovAIContent');
+  if(!el)return;
+  const raw=master.hovAllRaw||[];
+  if(!raw.length){
+    el.innerHTML=`<div class="empty" style="padding:40px"><div class="ei">🤖</div>
+      <div class="et">No HOV data for AI analysis</div>
+      <div class="em">Upload Forward or Reverse HOV files, then click Save HOV Data.</div></div>`;
+    return;
+  }
+
+  el.innerHTML='<div style="padding:20px;text-align:center;color:var(--tx3);font-size:12px">⏳ Analysing HOV data…</div>';
+
+  // Run async so UI doesn't freeze
+  setTimeout(()=>{
+    const fwdHtml=_buildInsightSection('forward','Forward R@DC','#1e40af');
+    const revHtml=_buildInsightSection('reverse','Reverse R@DC','#065f46');
+    const ts=new Date().toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+
+    el.innerHTML=`
+      <!-- FORWARD SECTION -->
+      <div class="card" style="border-left:5px solid #1e40af;padding:0;overflow:hidden">
+        <div style="background:#1e40af;padding:12px 18px;display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:13px;font-weight:900;color:#fff;text-transform:uppercase;letter-spacing:.7px">📦 FORWARD R@DC — AI OPERATIONAL INSIGHTS</span>
+          <span style="font-size:10px;color:rgba(255,255,255,.7)">${ts}</span>
+        </div>
+        <div style="padding:8px 0">${fwdHtml}</div>
+      </div>
+      <!-- REVERSE SECTION -->
+      <div class="card" style="border-left:5px solid #065f46;padding:0;overflow:hidden">
+        <div style="background:#065f46;padding:12px 18px;display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:13px;font-weight:900;color:#fff;text-transform:uppercase;letter-spacing:.7px">🔄 REVERSE R@DC — AI OPERATIONAL INSIGHTS</span>
+          <span style="font-size:10px;color:rgba(255,255,255,.7)">${ts}</span>
+        </div>
+        <div style="padding:8px 0">${revHtml}</div>
+      </div>
+      <div style="font-size:10px;color:#94a3b8;text-align:center;padding:8px">
+        🤖 AI Insights — auto-generated from ${fn(raw.length)} HOV records · ${ts}
+      </div>`;
+  },60);
 }
 
 /* ════════════════════════════════════════════════════════════════════════
