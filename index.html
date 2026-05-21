@@ -8532,8 +8532,11 @@ function getMasterFromAllPartitions(ss) {
   rows.forEach(function(r) {
     var type=String(r[0]||'').trim();
     if(type==='__url__'){
-      var u=String(r[3]||r[2]||'').trim();
-      if(u.indexOf('script.google.com')!==-1)selfUrl=u;
+      // URL may be at r[2], r[3], or r[4] depending on schema version
+      for(var ci=2;ci<=5;ci++){
+        var u=String(r[ci]||'').trim();
+        if(u.indexOf('script.google.com')!==-1){selfUrl=u;break;}
+      }
       return;
     }
     if(!type||!master.hasOwnProperty(type))return;
@@ -8547,10 +8550,27 @@ function getMasterFromAllPartitions(ss) {
       if(lk.length){lk.forEach(function(loc){master[type].push({date:date,age:3,location:loc,destination:loc,bin:0,msg:'',os:'',count:parseInt(locs[loc])||0});n++;});}
       else if(cnt>0){master[type].push({date:date,age:3,location:'UNKNOWN',destination:'UNKNOWN',bin:0,msg:'',os:'',count:cnt});n++;}
     }else{
-      var age=parseInt(r[2])||0,location=col3||'UNKNOWN',bin=parseInt(r[4])||0,
-          msg=String(r[5]||'').trim(),os=String(r[6]||'').trim(),count=parseInt(r[7])||0;
+      // FLAT schema: Type|Date|Age|Location|Bin|Msg|[OS|]Count[|TS]
+      // Auto-detect count position (handles 7-col, 8-col, 9-col variants)
+      var age=parseInt(r[2])||0;
+      var location=col3||'UNKNOWN';
+      var bin=parseInt(r[4])||0;
+      var msg=String(r[5]||'').trim();
+      var r6v=String(r[6]||'').trim(),r7v=String(r[7]||'').trim();
+      var r6n=parseInt(r6v),r7n=parseInt(r7v);
+      var r6isTS=r6v.length>8&&r6v.indexOf('T')!==-1;
+      var r7isTS=r7v.length>8&&r7v.indexOf('T')!==-1;
+      var count=0;
+      if(!r7isTS&&r7n>0){count=r7n;}
+      else if(!r6isTS&&r6n>0){count=r6n;}
+      else{
+        for(var ci2=6;ci2<Math.min(r.length,12);ci2++){
+          var sv=String(r[ci2]||'').trim();var vv=parseInt(sv);
+          if(vv>0&&vv<50000000&&sv.indexOf('T')===-1){count=vv;break;}
+        }
+      }
       if(!count)return;
-      master[type].push({date:date,age:age,location:location,destination:location,bin:bin,msg:msg,os:os,count:count});
+      master[type].push({date:date,age:age,location:location,destination:location,bin:bin,msg:msg,os:r6isTS?'':r6v,count:count});
       n++;
     }
   });
@@ -9347,52 +9367,52 @@ const GS_GVIZ_BASE=`https://docs.google.com/spreadsheets/d/${GS_SHEET_ID}/gviz/t
    Returns array-of-arrays (row[0] = headers), or null if all fail.            */
 async function _gvizCSV(sheetName){
   const encoded=encodeURIComponent(sheetName);
+  // CRITICAL FIX: Do NOT use credentials:'omit'.
+  // "Anyone with link can view" sheets require Google auth cookies.
+  // Default fetch sends cookies if browser is logged into Google with access.
 
-  // Strategy A: Sheets API v4 — works for "Anyone with link can view" spreadsheets
-  // No API key needed for public sheets. Returns JSON with rows array.
-  try{
-    const apiUrl=`https://sheets.googleapis.com/v4/spreadsheets/${GS_SHEET_ID}/values/${encoded}`;
-    const r=await fetch(apiUrl,{cache:'no-cache'});
-    if(r.ok){
-      const j=await r.json();
-      if(j.values&&j.values.length>1)return j.values; // j.values[0] = headers
-    }
-  }catch(e){console.log(`Sheets API v4 failed for "${sheetName}":`,e.message);}
-
-  // Strategy B: gviz CSV — works for publicly shared sheets
+  // Strategy A: gviz CSV (fastest, uses browser auth cookies automatically)
   try{
     const url=`${GS_GVIZ_BASE}?tqx=out:csv&sheet=${encoded}`;
-    const r=await fetch(url,{cache:'no-cache',credentials:'omit'});
+    const r=await fetch(url,{cache:'no-cache'});
     if(r.ok){
       const text=await r.text();
       if(text&&text.length>10&&!text.includes('<!DOCTYPE')&&!text.includes('<html')){
-        return _parseCSVText(text);
+        const rows=_parseCSVText(text);
+        if(rows&&rows.length>1){console.log('gviz CSV ✓ "'+sheetName+'": '+(rows.length-1)+' rows');return rows;}
       }
     }
-  }catch(e){console.log(`gviz CSV failed for "${sheetName}":`,e.message);}
+  }catch(e){console.log('gviz CSV failed "'+sheetName+'":',e.message);}
 
-  // Strategy C: gviz JSON with JSONP-style strip
+  // Strategy B: gviz JSON
   try{
     const url=`${GS_GVIZ_BASE}?tqx=out:json&sheet=${encoded}`;
-    const r=await fetch(url,{cache:'no-cache',credentials:'omit'});
+    const r=await fetch(url,{cache:'no-cache'});
     if(r.ok){
       const text=await r.text();
-      // gviz wraps JSON in /*O_o*/google.visualization.Query.setResponse(...)
-      const match=text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\)/);
-      const clean=match?match[1]:text.replace(/^[^(]+\(/,'').replace(/\);?\s*$/,'');
-      const data=JSON.parse(clean);
-      const rows2=data?.table?.rows||[];
-      const cols=(data?.table?.cols||[]).map(c=>c.label||c.id||'');
-      if(cols.length&&rows2.length){
-        const out=[cols];
-        rows2.forEach(row=>{
-          out.push((row.c||[]).map(cell=>cell?String(cell.v??cell.f??''):''));
-        });
-        return out;
+      if(!text.includes('<!DOCTYPE')&&!text.includes('<html')){
+        const match=text.match(/setResponse\(([\s\S]*)\)/);
+        const clean=match?match[1]:text.replace(/^[^(]+\(/,'').replace(/\);?\s*$/,'');
+        const data=JSON.parse(clean);
+        const rows2=data&&data.table&&data.table.rows||[];
+        const cols=(data&&data.table&&data.table.cols||[]).map(c=>c.label||c.id||'');
+        if(cols.length&&rows2.length){
+          const out=[cols];
+          rows2.forEach(function(row){out.push((row.c||[]).map(function(cell){return cell?String(cell.v!=null?cell.v:cell.f!=null?cell.f:''):''}));});
+          if(out.length>1){console.log('gviz JSON ✓ "'+sheetName+'": '+(out.length-1)+' rows');return out;}
+        }
       }
     }
-  }catch(e){console.log(`gviz JSON failed for "${sheetName}":`,e.message);}
+  }catch(e){console.log('gviz JSON failed "'+sheetName+'":',e.message);}
 
+  // Strategy C: Sheets API v4 (may need API key, try anyway)
+  try{
+    const apiUrl='https://sheets.googleapis.com/v4/spreadsheets/'+GS_SHEET_ID+'/values/'+encoded;
+    const r=await fetch(apiUrl,{cache:'no-cache'});
+    if(r.ok){const j=await r.json();if(j.values&&j.values.length>1){console.log('Sheets API v4 ✓ "'+sheetName+'"');return j.values;}}
+  }catch(e){}
+
+  console.warn('_gvizCSV: all strategies failed for "'+sheetName+'" - ensure sheet is shared "Anyone with link can view" and browser is logged into Google');
   return null;
 }
 
@@ -9417,66 +9437,46 @@ function _parseCSVText(text){
   return rows.length>1?rows:null;
 }
 
-/* Parse MASTER SNAPSHOT CSV rows into master[] flat record format
-   NEW schema (9 cols): Type | Date | Age | Location | Bin | Msg | OS | Count | TS
-   OLD schema (7 cols): Type | Date | Count | LocsJSON | BinsJSON | MsgsJSON | LastUpdated
-   Detects schema by checking if col[2] is a number (old=count, new=age-integer)
-   and col[3] is JSON-parseable (old=locsJSON, new=location-string).           */
 function _parseMasterCSV(rows){
+  // AUTO-DETECTS count column position (7-col, 8-col, or 9-col schema).
+  // CRITICAL BUG FIX: The Sheets stores 7-col data (Type|Date|Age|Loc|Bin|Msg|Count).
+  // count is at r[6], NOT r[7] as the 9-col schema assumed. r[7] is the timestamp.
+  // Auto-detection: if r[7] parses as a positive integer (not ISO timestamp) -> r[7] is count.
+  //                 Otherwise r[6] is count.
   const master2={forward:[],reverse:[],lmodc:[],forwardShort:[]};
-  let n=0;
-  const selfUrl={v:''};
+  let n=0;const selfUrl={v:''};
   for(let i=1;i<rows.length;i++){
     const r=rows[i];
     const type=String(r[0]||'').trim();
     if(type==='__url__'){
-      const u=String(r[2]||'').trim();
-      if(u.startsWith('https://script.google.com'))selfUrl.v=u;
+      for(let ci=2;ci<=5;ci++){const u=String(r[ci]||'').trim();if(u.startsWith('https://script.google.com')){selfUrl.v=u;break;}}
       continue;
     }
     if(!type||!master2.hasOwnProperty(type))continue;
-    const date=String(r[1]||'').trim().slice(0,10);
-    if(!date)continue;
-
-    // Detect schema: new schema col[3] is a plain location string (not JSON {})
-    // Old schema col[3] is stringified JSON like '{"BANGALORE DC":167,...}'
+    const date=String(r[1]||'').trim().slice(0,10);if(!date)continue;
     const col3=String(r[3]||'').trim();
-    const isOldSchema=col3.startsWith('{');
-
-    if(isOldSchema){
-      // OLD schema: Type|Date|Count|LocsJSON|BinsJSON|MsgsJSON|TS
-      // Expand locs object back into flat records
-      const count=parseInt(r[2])||0;
-      let locs={};
-      try{locs=JSON.parse(col3);}catch{}
-      const locEntries=Object.entries(locs);
-      if(locEntries.length){
-        locEntries.forEach(([loc,cnt])=>{
-          master2[type].push({date,age:3,location:loc,destination:loc,bin:0,msg:'',os:'',count:parseInt(cnt)||0});
-          n++;
-        });
-      }else if(count>0){
-        // No locs breakdown — add as aggregate row
-        master2[type].push({date,age:3,location:'UNKNOWN',destination:'UNKNOWN',bin:0,msg:'',os:'',count});
-        n++;
-      }
+    if(col3.startsWith('{')){
+      const count=parseInt(r[2])||0;let locs={};try{locs=JSON.parse(col3);}catch{}
+      const le=Object.entries(locs);
+      if(le.length){le.forEach(([loc,cnt])=>{master2[type].push({date,age:3,location:loc,destination:loc,bin:0,msg:'',os:'',count:parseInt(cnt)||0});n++;});}
+      else if(count>0){master2[type].push({date,age:3,location:'UNKNOWN',destination:'UNKNOWN',bin:0,msg:'',os:'',count});n++;}
     }else{
-      // NEW schema: Type|Date|Age|Location|Bin|Msg|OS|Count|TS
-      const age=parseInt(r[2])||0;
-      const location=col3||'UNKNOWN';
-      const bin=parseInt(r[4])||0;
-      const msg=String(r[5]||'').trim();
-      const os=String(r[6]||'').trim();
-      const count=parseInt(r[7])||0;
-      if(count===0)continue;
-      const rec={date,age,location,destination:location,bin,msg,os,count};
-      master2[type].push(rec);
+      const age=parseInt(r[2],10)||0;const location=col3||'UNKNOWN';
+      const bin=parseInt(r[4],10)||0;const msg=String(r[5]||'').trim();
+      const r6v=String(r[6]||'').trim();const r7v=String(r[7]||'').trim();
+      const r6n=parseInt(r6v,10);const r7n=parseInt(r7v,10);
+      const r7isTS=r7v.length>8&&(r7v.includes('T')||r7v.includes('-',5));
+      let count=0;
+      if(!isNaN(r7n)&&r7n>0&&!r7isTS){count=r7n;}
+      else if(!isNaN(r6n)&&r6n>0&&!r6v.includes('T')){count=r6n;}
+      else{for(let ci=6;ci<Math.min(r.length,12);ci++){const sv=String(r[ci]||'').trim();const v=parseInt(sv,10);if(v>0&&v<50000000&&!sv.includes('T')&&!sv.includes('-',1)){count=v;break;}}}
+      if(count<=0)continue;
+      master2[type].push({date,age,location,destination:location,bin,msg,os:r6v.includes('T')?'':r6v,count});
       n++;
     }
   }
   return{master:master2,n,selfUrl:selfUrl.v};
 }
-
 /* Parse SITE AVERAGES CSV rows into _rollingAvg format */
 function _parseAvgCSV(rows){
   // header: Sync Date, Section, Site/Location, Latest File Date, Latest Count, Hist Avg, Latest Avg, Total, nDates, Trend, Updated At
