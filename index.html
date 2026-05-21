@@ -7832,28 +7832,57 @@ const GS_SHEET_ID='17JbybSZkKtdoHZBua3QyC5tcxwKYozhnILQcoXb3rYQ';
               cache this automatically, making URL discovery self-propagating.
 ──────────────────────────────────────────────────────────────────────────── */
 
-/* ── PASTE YOUR WEB APP URL HERE (optional — speeds up all devices) ──────────
-   const GS_HARDCODED_URL='https://script.google.com/macros/s/XXXXXXX/exec';
-────────────────────────────────────────────────────────────────────────────── */
-const GS_HARDCODED_URL='';
+/* ═══════════════════════════════════════════════════════════════════════════
+   CROSS-DEVICE VISIBILITY — PERMANENTLY FIXED
+   ═══════════════════════════════════════════════════════════════════════════
+   ROOT CAUSE: GS_HARDCODED_URL was empty → getGsUrl() returned '' on any
+   browser that hadn't manually pasted the URL → backend fetch skipped entirely.
 
-/* Bootstrap URL: read MASTER SNAPSHOT_1 via the spreadsheet's public endpoint.
-   Works when the spreadsheet is shared as "Anyone with link can view".
-   We read any published CSV tab — the AppScript URL will be inside the
-   getMaster response once we bootstrap with ANY valid URL.                     */
+   FIX: Hardcode the actual deployed AppScript Web App URL here.
+   This makes the URL available to EVERY browser, EVERY user, EVERY session.
+   No configuration, no localStorage setup, no manual URL pasting required.
+
+   HOW TO UPDATE THIS URL:
+   1. Open script.google.com → your project
+   2. Deploy → Manage deployments → copy Web App URL
+   3. Paste it below (replace the value of GS_HARDCODED_URL)
+   4. Re-upload this HTML file to Vercel / your host
+
+   DEPLOYMENT SETTINGS REQUIRED:
+   • Execute as: Me (script owner)
+   • Who has access: Anyone  ← MUST be "Anyone", NOT "Anyone with Google Account"
+
+   SPREADSHEET SHARING REQUIRED:
+   • Share spreadsheet → Anyone with the link → Viewer
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ▼▼▼  PASTE YOUR APPS SCRIPT WEB APP URL HERE  ▼▼▼ */
+const GS_HARDCODED_URL='https://script.google.com/macros/s/AKfycbwh1zSsjjstZqCeDdD8a-Z7I3n5HJSPg9j3yBZZEQbRZxkxVJeJ0ELHBLfrH5DqFqt/exec';
+/* ▲▲▲  PASTE YOUR APPS SCRIPT WEB APP URL HERE  ▲▲▲ */
+
 const GS_BOOTSTRAP_URLS=[
-  // gviz endpoint works when spreadsheet is shared (Anyone with link)
   `https://docs.google.com/spreadsheets/d/${GS_SHEET_ID}/gviz/tq?tqx=out:json&sheet=MASTER+SNAPSHOT_1`,
   `https://docs.google.com/spreadsheets/d/${GS_SHEET_ID}/gviz/tq?tqx=out:json&sheet=MASTER+SNAPSHOT`,
 ];
-// Key for caching the self-reported URL returned by AppScript responses
 const GS_SELF_URL_KEY='logistics_gsheets_self_url_v1';
 
 function getGsUrl(){
-  return localStorage.getItem(GS_URL_KEY)
-    || localStorage.getItem(GS_SELF_URL_KEY)  // auto-cached from getMaster response
-    || GS_HARDCODED_URL
-    || '';
+  // Priority order: localStorage (admin override) → hardcoded → self-cached from response
+  const stored=localStorage.getItem(GS_URL_KEY)||localStorage.getItem(GS_SELF_URL_KEY)||'';
+  return stored||GS_HARDCODED_URL||'';
+}
+
+/* ── Auto-seed localStorage from hardcoded URL at boot ──────────────────────
+   Called once on load. Ensures every browser auto-populates its localStorage
+   with the hardcoded URL so AppScript calls work on the very first load.
+   Fix 4: Seed localStorage if not already set.                              */
+function _seedGsUrlFromHardcoded(){
+  if(!GS_HARDCODED_URL)return;
+  if(!localStorage.getItem(GS_URL_KEY)){
+    localStorage.setItem(GS_URL_KEY,GS_HARDCODED_URL);
+    localStorage.setItem(GS_SELF_URL_KEY,GS_HARDCODED_URL);
+    console.log('[boot] AppScript URL seeded from hardcoded constant');
+  }
 }
 
 /* Cache the AppScript URL returned inside getMaster/test responses.
@@ -9764,10 +9793,19 @@ async function _ensureDashboardData(context){
     await _fetchAvgsFromGviz();            // reads SITE AVERAGES_1, _2, etc.
     if(ok){
       const newTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
-      console.log(`[${context}] Sheets API: restored ${fn(newTotal)} AWBs`);
-      if(newTotal>0){restored=true;}
+      console.log(`[${context}] gviz: restored ${fn(newTotal)} AWBs`);
+      if(newTotal>0){
+        restored=true;
+        // FIX 4: After successful gviz fetch, seed localStorage with hardcoded URL
+        // so AppScript calls (Step 2) also work on this and future sessions.
+        if(GS_HARDCODED_URL&&!localStorage.getItem(GS_URL_KEY)){
+          localStorage.setItem(GS_URL_KEY,GS_HARDCODED_URL);
+          localStorage.setItem(GS_SELF_URL_KEY,GS_HARDCODED_URL);
+          console.log(`[${context}] localStorage seeded from GS_HARDCODED_URL`);
+        }
+      }
     }
-  }catch(e){console.warn(`[${context}] Sheets API fetch error:`,e.message);}
+  }catch(e){console.warn(`[${context}] gviz fetch error:`,e.message);}
 
   // ── STEP 2: AppScript getMaster (if URL available — richer data) ──
   if(!restored||getGsUrl()){
@@ -10162,6 +10200,9 @@ function restoreAuthSession(){
 }
 
 initPanels();updateSummary();renderTab(0);
+// FIX: Auto-seed localStorage from hardcoded URL on every boot
+// This makes every browser/tab work without manual URL configuration
+_seedGsUrlFromHardcoded();
 // Restore Sheets button indicator on load
 (()=>{const btn=document.getElementById('sheetsbtn');if(btn&&getGsUrl())btn.textContent='📊 Sheets ✓';})();
 // NOTE: The localStorage total toast is removed — it was misleading other devices
