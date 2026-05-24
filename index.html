@@ -9554,52 +9554,47 @@ function _parseAvgCSV(rows){
    Works on ANY device, ANY browser, ANY Google account.
    No AppScript URL required. Spreadsheet must be shared "Anyone with link".   */
 /* ── Primary cross-device restore: direct AppScript getMaster GET call ────────
-   Replaces the gviz/Sheets API approach. The AppScript is deployed as "Anyone"
-   so it requires NO Google login — works in incognito, any browser, any device.
-   This is the authoritative source of truth for all master data.              */
+   Works on ANY browser, no Google login needed, no CORS preflight
+   (no custom headers = simple request), deployed as "Anyone" access.          */
 async function _fetchMasterFromGviz(){
   const url=GS_HARDCODED_URL||getGsUrl();
-  if(!url){console.warn('_fetchMasterFromGviz: no AppScript URL available');return false;}
+  if(!url){console.warn('[fetchMaster] No AppScript URL');return false;}
   try{
     const resp=await fetch(url+'?action=getMaster',{method:'GET',cache:'no-cache'});
-    if(!resp.ok){console.warn('getMaster HTTP',resp.status);return false;}
+    if(!resp.ok){console.warn('[fetchMaster] HTTP',resp.status);return false;}
     const json=await resp.json();
-    if(json.appScriptUrl)_cacheAppScriptUrl(json.appScriptUrl);
-    if(!json.ok||!json.master){console.log('getMaster: no snapshot on server');return false;}
+    if(!json.ok||!json.master){console.warn('[fetchMaster] No master in response');return false;}
     const fetched=typeof json.master==='string'?JSON.parse(json.master):json.master;
     const types=['forward','reverse','lmodc','forwardShort'];
+    // ALWAYS full-replace from Sheets — Sheets is the single source of truth
     types.forEach(type=>{
-      if(Array.isArray(fetched[type])&&fetched[type].length){
-        master[type]=fetched[type]; // full replace — AppScript is authoritative
-      }
+      if(Array.isArray(fetched[type])){master[type]=fetched[type];}
     });
     try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){}
-    const total=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
-    console.log('getMaster: restored from AppScript —',fn(total),'AWBs');
-    return true;
+    const total=types.reduce((s,t)=>(master[t]||[]).reduce((s2,r)=>s2+(r.count||0),0)+s,0);
+    console.log('[fetchMaster] ✅ Restored',total,'AWBs from AppScript');
+    return total>0;
   }catch(e){
-    console.warn('_fetchMasterFromGviz via AppScript failed:',e.message);
+    console.warn('[fetchMaster] Failed:',e.message);
     return false;
   }
 }
 
-/* ── Restore averages via AppScript (non-critical, best-effort) ── */
+/* ── Restore averages — best-effort, non-critical ── */
 async function _fetchAvgsFromGviz(){
   const url=GS_HARDCODED_URL||getGsUrl();
   if(!url)return 0;
   try{
-    // Try getSiteAverages if implemented; otherwise fall back to gviz CSV for SITE AVERAGES
     const resp=await fetch(url+'?action=getSiteAverages',{method:'GET',cache:'no-cache'});
     if(resp.ok){
       const json=await resp.json();
       if(json.ok&&Array.isArray(json.rows)&&json.rows.length){
         const updated=_parseAvgCSV([json.headers||[],...json.rows]);
-        if(updated>0){try{localStorage.setItem(RA_KEY,JSON.stringify(_rollingAvg));}catch(e){}}
+        if(updated>0)try{localStorage.setItem(RA_KEY,JSON.stringify(_rollingAvg));}catch(e){}
         return updated;
       }
     }
   }catch(e){console.log('getSiteAverages not available (non-critical):',e.message);}
-  // averages are non-critical — return 0 silently if not available
   return 0;
 }
 
@@ -9609,7 +9604,7 @@ async function fetchMasterFromSheets(){
   try{
     // Try getMaster first (returns parsed master object)
     const resp=await fetch(url+'?action=getMaster',{
-      method:'GET',headers:{'Accept':'application/json'},cache:'no-cache'
+      method:'GET',cache:'no-cache'
     });
     if(!resp.ok){
       // Try getMasterRaw (returns raw rows — more reliable if master object is large)
@@ -9643,31 +9638,17 @@ async function fetchMasterFromSheets(){
 /* Apply fetched master data into master[] — shared logic for getMaster + getMasterRaw */
 function _applyFetchedMaster(fetched,n){
   const sheetsTotal=Object.values(fetched).reduce((s,arr)=>s+(arr||[]).reduce((s2,r)=>s2+(r.count||0),0),0);
-  const localTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
   if(sheetsTotal===0)return false;
 
-  // MERGE FIX: Use composite key to preserve all (location × age × bin × msg) records per date
-  const _rk=r=>`${r.date}|${r.age||0}|${r.location||r.destination||''}|${r.bin||0}|${r.msg||''}`;
+  // FIX: Always full-replace from Sheets — never merge with stale localStorage.
+  // Merging caused old local data to win over newer Sheets data on non-admin browsers.
+  // Sheets is always the authoritative source of truth.
   const types=['forward','reverse','lmodc','forwardShort'];
-  if(localTotal===0){
-    types.forEach(type=>{const a=fetched[type]||[];if(a.length)master[type]=[...a];});
-    console.log(`fetchMasterFromSheets: FULL RESTORE — ${sheetsTotal} AWBs`);
-  }else{
-    types.forEach(type=>{
-      const fetchedArr=fetched[type]||[];
-      if(!fetchedArr.length)return;
-      const localMap=new Map((master[type]||[]).map(r=>[_rk(r),r]));
-      fetchedArr.forEach(r=>{
-        const k=_rk(r);
-        if(!localMap.has(k)){master[type].push(r);}
-        else if((r.count||0)>(localMap.get(k).count||0)){
-          const idx=master[type].findIndex(lr=>_rk(lr)===k);
-          if(idx>=0)master[type][idx]=r;
-        }
-      });
-    });
-    console.log(`fetchMasterFromSheets: MERGED (local:${localTotal}, sheets:${sheetsTotal})`);
-  }
+  types.forEach(type=>{
+    const a=fetched[type]||[];
+    if(a.length>0)master[type]=[...a]; // Sheets wins, always
+  });
+  console.log(`fetchMasterFromSheets: FULL REPLACE — ${sheetsTotal} AWBs from Sheets`);
   try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){}
   return true;
 }
@@ -9771,58 +9752,25 @@ function enterAdminMode(username){
    localStorage read is used ONLY to show something instantly while backend loads.
 ════════════════════════════════════════════════════════════════════════════ */
 async function _ensureDashboardData(context){
-  console.log(`[${context}] Backend fetch starting…`);
-
-  // Show existing local cache IMMEDIATELY (instant render while backend loads)
+  console.log(`[${context}] Fetching from backend…`);
   const localTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
-  if(localTotal>0){
-    updateSummary();_renderAllTabs();
-    console.log(`[${context}] Cache: ${fn(localTotal)} AWBs shown instantly — fetching latest from backend…`);
-  }else{
-    toast('⏳ Loading from backend…','ti');
-  }
+  if(localTotal>0){updateSummary();_renderAllTabs();}
+  else{toast('⏳ Loading from backend…','ti');}
 
-  // ── STEP 1: Sheets API v4 (most reliable — no auth, no AppScript URL needed) ──
+  // Single fetch path: AppScript getMaster — works on all browsers, no Google login needed
+  // No CORS preflight (no custom headers), deployed as "Anyone" access.
   let restored=false;
   try{
-    const ok=await _fetchMasterFromGviz(); // reads MASTER SNAPSHOT_1, _2, etc.
-    await _fetchAvgsFromGviz();            // reads SITE AVERAGES_1, _2, etc.
-    if(ok){
-      const newTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
-      console.log(`[${context}] gviz: restored ${fn(newTotal)} AWBs`);
-      if(newTotal>0){
-        restored=true;
-        // FIX 4: After successful gviz fetch, seed localStorage with hardcoded URL
-        // so AppScript calls (Step 2) also work on this and future sessions.
-        if(GS_HARDCODED_URL&&!localStorage.getItem(GS_URL_KEY)){
-          localStorage.setItem(GS_URL_KEY,GS_HARDCODED_URL);
-          localStorage.setItem(GS_SELF_URL_KEY,GS_HARDCODED_URL);
-          console.log(`[${context}] localStorage seeded from GS_HARDCODED_URL`);
-        }
-      }
-    }
-  }catch(e){console.warn(`[${context}] gviz fetch error:`,e.message);}
+    restored=await _fetchMasterFromGviz(); // now calls AppScript getMaster directly
+  }catch(e){console.warn(`[${context}] Fetch error:`,e.message);}
 
-  // ── STEP 2: AppScript getMaster — ALWAYS attempt, not just as fallback ──────
-  // The AppScript deployed as "Anyone" is the authoritative source and requires
-  // no Google login. Call unconditionally on every dashboard open.
-  if(true){
-    try{
-      const ok2=await fetchMasterFromSheets();
-      if(ok2)restored=true;
-    }catch(e){console.warn(`[${context}] AppScript fetch error:`,e.message);}
-  }
-
-  // ── STEP 3: Render dashboard with whatever data is available ──
   const finalTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
   if(finalTotal>0){
     updateSummary();_renderAllTabs();_fetchAndMergeFileLog();
     if(finalTotal!==localTotal){
-      setTimeout(()=>toast(`✅ ${fn(finalTotal)} AWBs loaded from backend`,'tok'),300);
-    }else if(localTotal===0){
-      toast('ℹ No data found. Admin must upload files and click Save to Master.','tw');
+      setTimeout(()=>toast(`✅ ${fn(finalTotal)} AWBs loaded`,'tok'),300);
     }
-  }else if(!restored){
+  }else{
     toast('ℹ No backend data found. Admin must upload files and click Save to Master.','tw');
   }
 }
@@ -9834,7 +9782,7 @@ async function _fetchAndMergeFileLog(){
   const url=getGsUrl();
   if(!url)return;
   try{
-    const resp=await fetch(url+'?action=getFileLog',{method:'GET',headers:{'Accept':'application/json'},cache:'no-cache'});
+    const resp=await fetch(url+'?action=getFileLog',{method:'GET',cache:'no-cache'});
     if(!resp.ok)return;
     const json=await resp.json();
     if(!json.ok||!Array.isArray(json.files))return;
