@@ -9553,48 +9553,144 @@ function _parseAvgCSV(rows){
 /* ── Main cross-device restore: reads spreadsheet directly via gviz ──────────
    Works on ANY device, ANY browser, ANY Google account.
    No AppScript URL required. Spreadsheet must be shared "Anyone with link".   */
-/* ── Primary cross-device restore: direct AppScript getMaster GET call ────────
-   Works on ANY browser, no Google login needed, no CORS preflight
-   (no custom headers = simple request), deployed as "Anyone" access.          */
+/* ════════════════════════════════════════════════════════════════════════════
+   CENTRALIZED DATA RESTORE — DUAL PATH
+   ─────────────────────────────────────────────────────────────────────────
+   PATH 1 (Primary): AppScript getMaster GET — deployed as "Anyone", no auth,
+           no CORS preflight (no custom headers). Returns full master JSON.
+           Works for: all browsers when AppScript is deployed correctly.
+
+   PATH 2 (Fallback): Direct gviz CSV from spreadsheet — works when sheet is
+           shared "Anyone with link → Viewer". No AppScript needed at all.
+           Works for: all browsers, incognito, any Google account, even when
+           AppScript has auth issues.
+
+   Both paths set master[] identically. whichever succeeds first is used.
+════════════════════════════════════════════════════════════════════════════ */
+
+/* ── PATH 1: AppScript getMaster ── */
 async function _fetchMasterFromGviz(){
+  // Try AppScript first (fast, authoritative, no-auth when deployed as "Anyone")
   const url=GS_HARDCODED_URL||getGsUrl();
-  if(!url){console.warn('[fetchMaster] No AppScript URL');return false;}
-  try{
-    const resp=await fetch(url+'?action=getMaster',{method:'GET',cache:'no-cache'});
-    if(!resp.ok){console.warn('[fetchMaster] HTTP',resp.status);return false;}
-    const json=await resp.json();
-    if(!json.ok||!json.master){console.warn('[fetchMaster] No master in response');return false;}
-    const fetched=typeof json.master==='string'?JSON.parse(json.master):json.master;
-    const types=['forward','reverse','lmodc','forwardShort'];
-    // ALWAYS full-replace from Sheets — Sheets is the single source of truth
-    types.forEach(type=>{
-      if(Array.isArray(fetched[type])){master[type]=fetched[type];}
-    });
-    try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){}
-    const total=types.reduce((s,t)=>(master[t]||[]).reduce((s2,r)=>s2+(r.count||0),0)+s,0);
-    console.log('[fetchMaster] ✅ Restored',total,'AWBs from AppScript');
-    return total>0;
-  }catch(e){
-    console.warn('[fetchMaster] Failed:',e.message);
-    return false;
+  if(url){
+    try{
+      // NO custom headers — avoids CORS preflight entirely
+      const resp=await fetch(url+'?action=getMaster',{method:'GET',cache:'no-cache'});
+      if(resp.ok){
+        const json=await resp.json();
+        if(json.ok&&json.master){
+          const fetched=typeof json.master==='string'?JSON.parse(json.master):json.master;
+          const types=['forward','reverse','lmodc','forwardShort'];
+          let total=0;
+          types.forEach(type=>{
+            if(Array.isArray(fetched[type])&&fetched[type].length){
+              master[type]=fetched[type]; // Sheets is authoritative — full replace
+              total+=fetched[type].reduce((s,r)=>s+(r.count||0),0);
+            }
+          });
+          if(total>0){
+            try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){}
+            console.log('[fetchMaster] ✅ PATH 1 (AppScript): restored',total,'AWBs');
+            return true;
+          }
+        }
+        console.warn('[fetchMaster] PATH 1: AppScript returned ok=false or empty master');
+      }else{
+        console.warn('[fetchMaster] PATH 1: HTTP',resp.status,'— trying PATH 2');
+      }
+    }catch(e){console.warn('[fetchMaster] PATH 1 failed:',e.message,'— trying PATH 2');}
+  }else{
+    console.warn('[fetchMaster] No AppScript URL — going straight to PATH 2');
   }
+
+  // PATH 2: Direct gviz CSV read — bypasses AppScript entirely
+  return _fetchMasterFromGvizCSV();
 }
 
-/* ── Restore averages — best-effort, non-critical ── */
+/* ── PATH 2: Direct gviz CSV read from spreadsheet ──────────────────────────
+   Reads MASTER SNAPSHOT sheets directly via Google's gviz endpoint.
+   Works for ANY browser when the spreadsheet is shared "Anyone with link → Viewer".
+   Does NOT require AppScript. Does NOT require Google login.                  */
+async function _fetchMasterFromGvizCSV(){
+  const sheetNames=['MASTER SNAPSHOT_1','MASTER SNAPSHOT_2','MASTER SNAPSHOT_3','MASTER SNAPSHOT'];
+  const allDataRows=[];
+  let sheetsFound=0;
+
+  for(const sn of sheetNames){
+    try{
+      // Use gviz CSV endpoint — no credentials, no auth headers
+      const csvUrl=`${GS_GVIZ_BASE}?tqx=out:csv&sheet=${encodeURIComponent(sn)}`;
+      const r=await fetch(csvUrl,{cache:'no-cache'});
+      if(!r.ok)continue;
+      const text=await r.text();
+      // Reject HTML (login page) or empty responses
+      if(!text||text.length<10||text.trimStart().startsWith('<'))continue;
+      const rows=_parseCSVText(text);
+      if(rows&&rows.length>1){
+        allDataRows.push(...rows.slice(1)); // skip header row
+        sheetsFound++;
+        console.log(`[fetchMaster] PATH 2: read ${rows.length-1} rows from "${sn}"`);
+      }
+    }catch(e){continue;}
+  }
+
+  if(!allDataRows.length){
+    console.warn('[fetchMaster] PATH 2: no data found in any MASTER SNAPSHOT sheet');
+    console.warn('[fetchMaster] Ensure spreadsheet is shared "Anyone with link → Viewer"');
+    return false;
+  }
+
+  // Parse the CSV rows into master[] using the schema-auto-detect parser
+  const parsed=_parseMasterCSV([['Type','Date','Age','Location','Bin','Msg','OS','Count','TS'],...allDataRows]);
+  if(parsed.n===0){console.warn('[fetchMaster] PATH 2: rows found but none parsed (schema issue)');return false;}
+  if(parsed.selfUrl)_cacheAppScriptUrl(parsed.selfUrl);
+
+  // Full replace — spreadsheet is authoritative
+  const types=['forward','reverse','lmodc','forwardShort'];
+  let total=0;
+  types.forEach(type=>{
+    const arr=parsed.master[type]||[];
+    if(arr.length){master[type]=arr;total+=arr.reduce((s,r)=>s+(r.count||0),0);}
+  });
+
+  if(total===0){console.warn('[fetchMaster] PATH 2: parsed but all counts are 0');return false;}
+  try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){}
+  console.log(`[fetchMaster] ✅ PATH 2 (gviz CSV): restored ${total} AWBs from ${sheetsFound} sheet(s)`);
+  return true;
+}
+
+/* ── PATH 2 Averages: restore rolling averages from SITE AVERAGES via gviz ── */
 async function _fetchAvgsFromGviz(){
   const url=GS_HARDCODED_URL||getGsUrl();
-  if(!url)return 0;
-  try{
-    const resp=await fetch(url+'?action=getSiteAverages',{method:'GET',cache:'no-cache'});
-    if(resp.ok){
-      const json=await resp.json();
-      if(json.ok&&Array.isArray(json.rows)&&json.rows.length){
-        const updated=_parseAvgCSV([json.headers||[],...json.rows]);
-        if(updated>0)try{localStorage.setItem(RA_KEY,JSON.stringify(_rollingAvg));}catch(e){}
-        return updated;
+  // Try AppScript first
+  if(url){
+    try{
+      const resp=await fetch(url+'?action=getSiteAverages',{method:'GET',cache:'no-cache'});
+      if(resp.ok){
+        const json=await resp.json();
+        if(json.ok&&Array.isArray(json.rows)&&json.rows.length){
+          const updated=_parseAvgCSV([json.headers||[],...json.rows]);
+          if(updated>0){try{localStorage.setItem(RA_KEY,JSON.stringify(_rollingAvg));}catch(e){}return updated;}
+        }
       }
-    }
-  }catch(e){console.log('getSiteAverages not available (non-critical):',e.message);}
+    }catch(e){}
+  }
+  // Fallback: gviz CSV for SITE AVERAGES
+  for(const sn of['SITE AVERAGES_1','SITE AVERAGES']){
+    try{
+      const r=await fetch(`${GS_GVIZ_BASE}?tqx=out:csv&sheet=${encodeURIComponent(sn)}`,{cache:'no-cache'});
+      if(r.ok){
+        const text=await r.text();
+        if(text&&text.length>10&&!text.trimStart().startsWith('<')){
+          const rows=_parseCSVText(text);
+          if(rows&&rows.length>1){
+            const updated=_parseAvgCSV(rows);
+            if(updated>0){try{localStorage.setItem(RA_KEY,JSON.stringify(_rollingAvg));}catch(e){}return updated;}
+          }
+        }
+      }
+    }catch(e){continue;}
+  }
   return 0;
 }
 
@@ -9752,16 +9848,19 @@ function enterAdminMode(username){
    localStorage read is used ONLY to show something instantly while backend loads.
 ════════════════════════════════════════════════════════════════════════════ */
 async function _ensureDashboardData(context){
-  console.log(`[${context}] Fetching from backend…`);
+  console.log(`[${context}] Starting data restore (dual-path fetch)…`);
   const localTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
   if(localTotal>0){updateSummary();_renderAllTabs();}
   else{toast('⏳ Loading from backend…','ti');}
 
-  // Single fetch path: AppScript getMaster — works on all browsers, no Google login needed
-  // No CORS preflight (no custom headers), deployed as "Anyone" access.
+  // DUAL-PATH RESTORE:
+  // PATH 1: AppScript getMaster (primary — fast, authoritative)
+  // PATH 2: gviz CSV from spreadsheet (fallback — works without AppScript)
+  // _fetchMasterFromGviz() tries PATH 1 first, then PATH 2 automatically.
   let restored=false;
   try{
-    restored=await _fetchMasterFromGviz(); // now calls AppScript getMaster directly
+    restored=await _fetchMasterFromGviz();
+    if(restored)_fetchAvgsFromGviz().catch(()=>{}); // best-effort averages restore
   }catch(e){console.warn(`[${context}] Fetch error:`,e.message);}
 
   const finalTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
@@ -9772,6 +9871,10 @@ async function _ensureDashboardData(context){
     }
   }else{
     toast('ℹ No backend data found. Admin must upload files and click Save to Master.','tw');
+    console.warn(`[${context}] Both restore paths failed. Check:`,
+      '\n1. AppScript deployed as "Anyone" (not "Anyone with Google Account")',
+      '\n2. Spreadsheet shared "Anyone with link → Viewer"',
+      '\n3. AppScript URL correct:',GS_HARDCODED_URL||getGsUrl()||'(NONE SET)');
   }
 }
 
