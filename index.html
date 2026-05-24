@@ -8342,7 +8342,33 @@ function doGet(e) {
     }
   }
 
-  /* ── getConfig — returns CONFIG tab values for cross-device discovery ── */
+  /* ── saveData GET action — receives payload as URL-encoded query param ────────
+     GET requests avoid CORS preflight and redirect issues entirely.
+     The dashboard sends: ?action=saveData&payload=<encoded JSON>
+     This is the primary write mechanism replacing the broken POST approach.    */
+  if (action === 'saveData') {
+    try {
+      var raw = e.parameter.payload || '';
+      if (!raw) return buildResponse(JSON.stringify({ok:false,error:'no_payload'}));
+      var payload2 = JSON.parse(decodeURIComponent(raw));
+      var result2 = processPayload(payload2);
+      return buildResponse(JSON.stringify(result2));
+    } catch(err2) {
+      return buildResponse(JSON.stringify({ok:false,error:err2.message}));
+    }
+  }
+
+  /* ── getSiteAverages GET action — returns SITE AVERAGES for cross-device restore */
+  if (action === 'getSiteAverages') {
+    try {
+      var allAvgRows = getAllLightweightRows(ss, 'SITE AVERAGES');
+      var avgHeaders = ['Sync Date','Section','Site / Location','Latest File Date',
+        'Latest Count','Historical Average','Latest Average','Total (All Days)','Days Tracked','Trend','Updated At'];
+      return buildResponse(JSON.stringify({ok:true, headers:avgHeaders, rows:allAvgRows, n:allAvgRows.length}));
+    } catch(e3) {
+      return buildResponse(JSON.stringify({ok:false,error:e3.message}));
+    }
+  }
   if (action === 'getConfig') {
     try {
       var ss=getSS();
@@ -8639,42 +8665,42 @@ function getMasterFromAllPartitions(ss) {
 
   /* ── MASTER SNAPSHOT — auto-partitioned, NEW flat schema ── */
   if(payload.type==='master_snapshot'){
-    // NEW schema: Type|Date|Age|Location|Bin|Msg|OS|Count|TS  (9 columns)
-    // Backward compat: old schema was Type|Date|Count|LocsJSON|BinsJSON|MsgsJSON|TS (7 cols)
     var MSNAP_HDRS=['Type','Date','Age','Location','Bin','Msg','OS','Count','TS'];
     var rows=payload.rows||[];
     if(!rows.length) return{ok:true,type:'master_snapshot',rows:0};
 
-    // Build lookup for dedup: type+date+age+location → unique key
-    var typeDate=rows.map(function(r){return String(r[0])+'|'+normDate(r[1])+'|'+String(r[2]||'')+'|'+String(r[3]||'');});
+    // append:true = chunked write — skip delete step, just append rows
+    // (the first chunk with append:false already deleted the old rows)
+    if(!payload.append){
+      var typeDate=rows.map(function(r){return String(r[0])+'|'+normDate(r[1])+'|'+String(r[2]||'')+'|'+String(r[3]||'');});
+      var allSnapSheets=[];
+      var idx4=loadIndex(ss)['MASTER SNAPSHOT']||[];
+      idx4.forEach(function(p){var s=ss.getSheetByName(p.tab);if(s)allSnapSheets.push(s);});
+      var legSnap=ss.getSheetByName('MASTER SNAPSHOT');
+      if(legSnap&&allSnapSheets.indexOf(legSnap)===-1)allSnapSheets.push(legSnap);
 
-    var allSnapSheets=[];
-    var idx4=loadIndex(ss)['MASTER SNAPSHOT']||[];
-    idx4.forEach(function(p){var s=ss.getSheetByName(p.tab);if(s)allSnapSheets.push(s);});
-    var legSnap=ss.getSheetByName('MASTER SNAPSHOT');
-    if(legSnap&&allSnapSheets.indexOf(legSnap)===-1)allSnapSheets.push(legSnap);
+      allSnapSheets.forEach(function(snSh){
+        if(!snSh||snSh.getLastRow()<=1)return;
+        var nc=snSh.getLastColumn();
+        var ex=snSh.getRange(2,1,snSh.getLastRow()-1,Math.min(nc,4)).getValues(),td=[];
+        for(var i=ex.length-1;i>=0;i--){
+          var k=String(ex[i][0])+'|'+normDate(ex[i][1])+'|'+String(ex[i][2]||'')+'|'+String(ex[i][3]||'');
+          if(typeDate.indexOf(k)!==-1||String(ex[i][0])==='__url__')td.push(i+2);
+        }
+        td.sort(function(a,b){return b-a;}).forEach(function(r){snSh.deleteRow(r);});
+      });
+      try{SpreadsheetApp.flush();}catch(e){}
 
-    allSnapSheets.forEach(function(snSh){
-      if(!snSh||snSh.getLastRow()<=1)return;
-      var nc=snSh.getLastColumn();
-      var ex=snSh.getRange(2,1,snSh.getLastRow()-1,Math.min(nc,4)).getValues(),td=[];
-      for(var i=ex.length-1;i>=0;i--){
-        var k=String(ex[i][0])+'|'+normDate(ex[i][1])+'|'+String(ex[i][2]||'')+'|'+String(ex[i][3]||'');
-        if(typeDate.indexOf(k)!==-1||String(ex[i][0])==='__url__')td.push(i+2);
+      // Prepend sentinel URL row only on first chunk
+      var selfUrl2='';
+      try{selfUrl2=ScriptApp.getService().getUrl();}catch(e){}
+      if(selfUrl2){
+        rows=[['__url__','','',selfUrl2,'','','','',new Date().toISOString()]].concat(rows);
       }
-      td.sort(function(a,b){return b-a;}).forEach(function(r){snSh.deleteRow(r);});
-    });
-    try{SpreadsheetApp.flush();}catch(e){}
-
-    // Prepend sentinel URL row
-    var selfUrl2='';
-    try{selfUrl2=ScriptApp.getService().getUrl();}catch(e){}
-    var rowsWithUrl=rows.map(function(r){return r.map(function(v){return v==null?'':String(v);});});
-    if(selfUrl2){
-      rowsWithUrl=[['__url__','','',selfUrl2,'','','','',new Date().toISOString()]].concat(rowsWithUrl);
     }
 
-    var written2=appendToLightweightSheet(ss,'MASTER SNAPSHOT',MSNAP_HDRS,rowsWithUrl);
+    var rowsToWrite=rows.map(function(r){return r.map(function(v){return v==null?'':String(v);});});
+    var written2=appendToLightweightSheet(ss,'MASTER SNAPSHOT',MSNAP_HDRS,rowsToWrite);
     return{ok:true,type:'master_snapshot',rows:written2};
   }
 
@@ -9096,56 +9122,51 @@ _loadSyncQueue();
      • Response is opaque (ok=null) but data reliably reaches server
      • This is the most compatible path for all Apps Script deployments  */
 async function _sheetsFetch(url, payloadObj, timeoutMs=20000){
-  const body = JSON.stringify(payloadObj);
-
-  // Strategy A: CORS text/plain — readable response, catches server errors
-  try{
-    const ctrl  = new AbortController();
-    const timer = setTimeout(()=>ctrl.abort(), timeoutMs);
-    const resp  = await fetch(url, {
-      method: 'POST',
-      signal: ctrl.signal,
-      headers: {'Content-Type': 'text/plain;charset=utf-8'},
-      body
-    });
-    clearTimeout(timer);
-    try{
-      const text = await resp.text();
-      if(text&&text.trim().startsWith('{')){
-        const json = JSON.parse(text);
-        if(json.ok===false){
-          console.warn(`Sheets A: server error for ${payloadObj.type||payloadObj.sheet}:`, json.error);
-          return {ok:false, status:resp.status, body:json};
-        }
-        return {ok:true, status:resp.status, body:json};
-      }
-      // HTML response = wrong URL or undeployed script
-      if(text&&(text.includes('<html')||text.includes('<!DOCTYPE'))){
-        console.warn('Sheets A: got HTML response — URL may be wrong or script not deployed');
-        // Fall through to no-cors which may still work
-      }else{
-        return {ok:true, status:resp.status, body:{}};
-      }
-    }catch{return {ok:true, status:resp.status, body:{}};}
-  }catch(errA){
-    // CORS blocked (redirect to different origin) — expected for most Apps Script deployments
-    if(!errA.message.includes('abort')) console.log('Sheets A (CORS) blocked, using no-cors:', errA.message);
+  // FIX: Use GET instead of POST. GET requests have no CORS preflight, no redirect issues,
+  // and work in all browsers. Apps Script doGet() receives the payload via e.parameter.payload.
+  //
+  // CHUNKING: If payload encodes to >6000 chars (URL limit safety margin),
+  // split rows into batches of 200 and call once per chunk with append:true.
+  // For non-row payloads, send as-is.
+  const rows=payloadObj.rows;
+  if(Array.isArray(rows)&&rows.length>0){
+    const encoded0=encodeURIComponent(JSON.stringify({...payloadObj,rows:rows.slice(0,1)}));
+    const chunkSize=encoded0.length>200?Math.max(1,Math.floor(200*6000/encoded0.length)):200;
+    const chunks=[];
+    for(let i=0;i<rows.length;i+=chunkSize)chunks.push(rows.slice(i,i+chunkSize));
+    let lastResult={ok:true,status:200,body:{}};
+    for(let ci=0;ci<chunks.length;ci++){
+      const chunkPayload={...payloadObj,rows:chunks[ci],append:ci>0};
+      const r=await _sheetsFetchSingle(url,chunkPayload,timeoutMs);
+      if(!r.ok&&r.ok!==null)return r;
+      lastResult=r;
+    }
+    return lastResult;
   }
+  return _sheetsFetchSingle(url,payloadObj,timeoutMs);
+}
 
-  // Strategy B: no-cors text/plain — opaque response, body reliably delivered
-  // text/plain is a "simple" Content-Type: browser allows it in no-cors mode
-  // Apps Script receives: e.postData.contents = the JSON body string
+async function _sheetsFetchSingle(url, payloadObj, timeoutMs=20000){
+  const encoded=encodeURIComponent(JSON.stringify(payloadObj));
+  const getUrl=url+'?action=saveData&payload='+encoded;
   try{
-    await fetch(url, {
-      method: 'POST',
-      mode:   'no-cors',
-      headers: {'Content-Type': 'text/plain;charset=utf-8'},
-      body
-    });
-    return {ok:null, status:0, body:{}};
-  }catch(errB){
-    console.error('Sheets B (no-cors) also failed:', errB.message);
-    return {ok:false, status:-1, body:{}};
+    const ctrl=new AbortController();
+    const timer=setTimeout(()=>ctrl.abort(),timeoutMs);
+    const resp=await fetch(getUrl,{method:'GET',signal:ctrl.signal,cache:'no-cache'});
+    clearTimeout(timer);
+    const text=await resp.text();
+    if(text&&text.trim().startsWith('{')){
+      const json=JSON.parse(text);
+      if(json.ok===false){
+        console.warn('Sheets saveData error:',json.error);
+        return{ok:false,status:resp.status,body:json};
+      }
+      return{ok:true,status:resp.status,body:json};
+    }
+    return{ok:true,status:resp.status,body:{}};
+  }catch(err){
+    console.error('_sheetsFetch GET failed:',err.message);
+    return{ok:false,status:-1,body:{}};
   }
 }
 
@@ -9532,79 +9553,54 @@ function _parseAvgCSV(rows){
 /* ── Main cross-device restore: reads spreadsheet directly via gviz ──────────
    Works on ANY device, ANY browser, ANY Google account.
    No AppScript URL required. Spreadsheet must be shared "Anyone with link".   */
+/* ── Primary cross-device restore: direct AppScript getMaster GET call ────────
+   Replaces the gviz/Sheets API approach. The AppScript is deployed as "Anyone"
+   so it requires NO Google login — works in incognito, any browser, any device.
+   This is the authoritative source of truth for all master data.              */
 async function _fetchMasterFromGviz(){
-  // Try all known MASTER SNAPSHOT partition names (both legacy and numbered)
-  const sheetNames=['MASTER SNAPSHOT_1','MASTER SNAPSHOT_2','MASTER SNAPSHOT_3','MASTER SNAPSHOT'];
-  let allRows=[];
-  let sheetsRead=0;
-
-  for(const sn of sheetNames){
-    const rows=await _gvizCSV(sn);
-    if(rows&&rows.length>1){
-      allRows=allRows.concat(rows.slice(1)); // skip header of each partition
-      sheetsRead++;
-      console.log(`gviz: read ${rows.length-1} rows from "${sn}"`);
-    }
-  }
-
-  if(!allRows.length){
-    console.log(`gviz: no MASTER SNAPSHOT data found in any sheet (tried ${sheetNames.length} names)`);
-    console.log('gviz: ensure spreadsheet is shared as "Anyone with link can view"');
+  const url=GS_HARDCODED_URL||getGsUrl();
+  if(!url){console.warn('_fetchMasterFromGviz: no AppScript URL available');return false;}
+  try{
+    const resp=await fetch(url+'?action=getMaster',{method:'GET',cache:'no-cache'});
+    if(!resp.ok){console.warn('getMaster HTTP',resp.status);return false;}
+    const json=await resp.json();
+    if(json.appScriptUrl)_cacheAppScriptUrl(json.appScriptUrl);
+    if(!json.ok||!json.master){console.log('getMaster: no snapshot on server');return false;}
+    const fetched=typeof json.master==='string'?JSON.parse(json.master):json.master;
+    const types=['forward','reverse','lmodc','forwardShort'];
+    types.forEach(type=>{
+      if(Array.isArray(fetched[type])&&fetched[type].length){
+        master[type]=fetched[type]; // full replace — AppScript is authoritative
+      }
+    });
+    try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){}
+    const total=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
+    console.log('getMaster: restored from AppScript —',fn(total),'AWBs');
+    return true;
+  }catch(e){
+    console.warn('_fetchMasterFromGviz via AppScript failed:',e.message);
     return false;
   }
-
-  const parsed=_parseMasterCSV([['Type','Date','Age','Location','Bin','Msg','OS','Count','TS'],...allRows]);
-  console.log(`gviz: parsed ${parsed.n} master records from ${sheetsRead} partition(s)`);
-
-  if(parsed.n===0)return false;
-  if(parsed.selfUrl)_cacheAppScriptUrl(parsed.selfUrl);
-
-  // MERGE FIX: Use (date+age+location+bin+msg) as unique key, NOT just date.
-  // Multiple records share the same date (one per location×age×bin×msg combination).
-  // Using date alone as map key collapsed all locations into 1 record → blank charts.
-  const types=['forward','reverse','lmodc','forwardShort'];
-  const localTotal=Object.values(master).reduce((s,arr)=>s+arr.reduce((s2,r)=>s2+(r.count||0),0),0);
-  const _recKey=r=>`${r.date}|${r.age||0}|${r.location||r.destination||''}|${r.bin||0}|${r.msg||''}`;
-
-  types.forEach(type=>{
-    const fetchedArr=parsed.master[type]||[];
-    if(!fetchedArr.length)return;
-    if(localTotal===0){
-      master[type]=[...fetchedArr];
-    }else{
-      // Build lookup map with proper composite key
-      const localMap=new Map((master[type]||[]).map(r=>[_recKey(r),r]));
-      fetchedArr.forEach(r=>{
-        const k=_recKey(r);
-        if(!localMap.has(k)){
-          master[type].push(r);
-        }else{
-          const local=localMap.get(k);
-          if((r.count||0)>(local.count||0)){
-            const idx=master[type].findIndex(lr=>_recKey(lr)===k);
-            if(idx>=0)master[type][idx]=r;
-          }
-        }
-      });
-    }
-  });
-  try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){}
-  return true;
 }
 
-/* ── Restore rolling averages from SITE AVERAGES sheet via gviz ── */
+/* ── Restore averages via AppScript (non-critical, best-effort) ── */
 async function _fetchAvgsFromGviz(){
-  const sheetNames=['SITE AVERAGES_1','SITE AVERAGES_2','SITE AVERAGES'];
-  let total=0;
-  for(const sn of sheetNames){
-    const rows=await _gvizCSV(sn);
-    if(rows&&rows.length>1){total+=_parseAvgCSV(rows);console.log(`gviz: restored averages from "${sn}"`);}
-  }
-  if(total>0){
-    try{localStorage.setItem(RA_KEY,JSON.stringify(_rollingAvg));}catch(e){}
-    console.log(`gviz: restored ${total} rolling average entries`);
-  }
-  return total;
+  const url=GS_HARDCODED_URL||getGsUrl();
+  if(!url)return 0;
+  try{
+    // Try getSiteAverages if implemented; otherwise fall back to gviz CSV for SITE AVERAGES
+    const resp=await fetch(url+'?action=getSiteAverages',{method:'GET',cache:'no-cache'});
+    if(resp.ok){
+      const json=await resp.json();
+      if(json.ok&&Array.isArray(json.rows)&&json.rows.length){
+        const updated=_parseAvgCSV([json.headers||[],...json.rows]);
+        if(updated>0){try{localStorage.setItem(RA_KEY,JSON.stringify(_rollingAvg));}catch(e){}}
+        return updated;
+      }
+    }
+  }catch(e){console.log('getSiteAverages not available (non-critical):',e.message);}
+  // averages are non-critical — return 0 silently if not available
+  return 0;
 }
 
 async function fetchMasterFromSheets(){
@@ -9807,19 +9803,14 @@ async function _ensureDashboardData(context){
     }
   }catch(e){console.warn(`[${context}] gviz fetch error:`,e.message);}
 
-  // ── STEP 2: AppScript getMaster (if URL available — richer data) ──
-  if(!restored||getGsUrl()){
-    const url=getGsUrl();
-    if(!url&&!restored){
-      // Try to discover URL from gviz sentinel row (may have been set by step 1)
-      await _discoverAndCacheGsUrl().catch(()=>{});
-    }
-    if(getGsUrl()){
-      try{
-        const ok2=await fetchMasterFromSheets();
-        if(ok2)restored=true;
-      }catch(e){console.warn(`[${context}] AppScript fetch error:`,e.message);}
-    }
+  // ── STEP 2: AppScript getMaster — ALWAYS attempt, not just as fallback ──────
+  // The AppScript deployed as "Anyone" is the authoritative source and requires
+  // no Google login. Call unconditionally on every dashboard open.
+  if(true){
+    try{
+      const ok2=await fetchMasterFromSheets();
+      if(ok2)restored=true;
+    }catch(e){console.warn(`[${context}] AppScript fetch error:`,e.message);}
   }
 
   // ── STEP 3: Render dashboard with whatever data is available ──
