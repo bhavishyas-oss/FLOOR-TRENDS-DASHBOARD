@@ -7860,7 +7860,7 @@ const GS_SHEET_ID='17JbybSZkKtdoHZBua3QyC5tcxwKYozhnILQcoXb3rYQ';
    The dashboard auto-discovers this from the spreadsheet's __url__ sentinel row.
    You can also paste it here permanently after deploying a new version.
    Current deployment URL (update this when you redeploy):                    */
-const GS_HARDCODED_URL='';
+const GS_HARDCODED_URL='https://script.google.com/macros/s/AKfycbyHcgr4es_R6uqrcD_81zU0xkxKMEeTSnkgqWUTBwYQjXcVelJh_jW3aXlz5Lf5KnNf/exec';
 
 const GS_BOOTSTRAP_URLS=[
   `https://docs.google.com/spreadsheets/d/${GS_SHEET_ID}/gviz/tq?tqx=out:json&sheet=MASTER+SNAPSHOT_1`,
@@ -9584,6 +9584,41 @@ function _parseAvgCSV(rows){
    Both paths set master[] identically. whichever succeeds first is used.
 ════════════════════════════════════════════════════════════════════════════ */
 
+/* ── _callGetMaster: shared AppScript fetch — NO custom headers (avoids CORS preflight) ── */
+async function _callGetMaster(url){
+  // Calls the AppScript getMaster endpoint. No custom headers — avoids CORS preflight.
+  // Returns the parsed master object on success, or null on any failure.
+  try{
+    const resp=await fetch(url+'?action=getMaster',{
+      method:'GET',
+      cache:'no-cache'
+      // DO NOT add headers:{Accept:'application/json'} — that triggers CORS preflight
+      // which Apps Script cannot pass, causing the fetch to be blocked by the browser.
+    });
+    if(!resp.ok){
+      console.warn('[_callGetMaster] HTTP',resp.status,'— trying getMasterRaw');
+      const r2=await fetch(url+'?action=getMasterRaw',{method:'GET',cache:'no-cache'});
+      if(!r2.ok)return null;
+      const j2=await r2.json();
+      if(j2.appScriptUrl)_cacheAppScriptUrl(j2.appScriptUrl);
+      if(!j2.ok||!j2.rows||!j2.rows.length)return null;
+      const parsed=_parseMasterCSV([
+        ['Type','Date','Age','Location','Bin','Msg','OS','Count','TS'],
+        ...j2.rows.map(r=>r.map(String))
+      ]);
+      return parsed.n>0?parsed.master:null;
+    }
+    const json=await resp.json();
+    if(json.appScriptUrl)_cacheAppScriptUrl(json.appScriptUrl);
+    if(!json.ok||!json.master)return null;
+    const fetched=typeof json.master==='string'?JSON.parse(json.master):json.master;
+    return fetched;
+  }catch(e){
+    console.warn('[_callGetMaster] failed:',e.message);
+    return null;
+  }
+}
+
 /* ── PATH 1: AppScript getMaster ── */
 async function _fetchMasterFromGviz(){
   // PATH 1: Try stored/hardcoded URL first
@@ -9696,6 +9731,51 @@ async function _fetchMasterFromGvizCSV(){
   try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){}
   console.log(`[fetchMaster] ✅ PATH 2 gviz fallback: restored ${total} AWBs from ${sheetsFound} sheet(s)`);
   return true;
+}
+
+/* ── PATH 3: CONFIG sheet URL discovery ─────────────────────────────────────
+   Reads the CONFIG sheet via gviz to find the current AppScript URL,
+   then calls getMaster with it. Last-resort fallback when both PATH 1 and
+   PATH 2 fail (e.g. old hardcoded URL AND gviz blocked by auth).            */
+async function _fetchMasterFromConfig(){
+  try{
+    const configUrl=`${GS_GVIZ_BASE}?tqx=out:csv&sheet=${encodeURIComponent('CONFIG')}`;
+    const r=await fetch(configUrl,{cache:'no-cache'});
+    if(!r.ok)return false;
+    const text=await r.text();
+    if(!text||text.trimStart().startsWith('<'))return false;
+    const rows=_parseCSVText(text);
+    if(!rows)return false;
+    // Look for a row where col A is "APP_SCRIPT_URL" and col B has the URL
+    const urlRow=rows.find(row=>
+      String(row[0]||'').trim().toUpperCase()==='APP_SCRIPT_URL'&&
+      String(row[1]||'').trim().startsWith('https://script.google.com')
+    );
+    if(!urlRow){
+      console.warn('[fetchMaster] PATH 3: APP_SCRIPT_URL row not found in CONFIG sheet');
+      return false;
+    }
+    const discoveredUrl=String(urlRow[1]).trim();
+    _cacheAppScriptUrl(discoveredUrl);
+    console.log('[fetchMaster] PATH 3: found URL in CONFIG →',discoveredUrl.slice(0,60)+'…');
+    const fetched=await _callGetMaster(discoveredUrl);
+    if(!fetched)return false;
+    const types=['forward','reverse','lmodc','forwardShort'];
+    let total=0;
+    types.forEach(type=>{
+      if(Array.isArray(fetched[type])&&fetched[type].length){
+        master[type]=fetched[type];
+        total+=fetched[type].reduce((s,r)=>s+(r.count||0),0);
+      }
+    });
+    if(total===0)return false;
+    try{localStorage.setItem(SKEY,JSON.stringify(master));}catch(e){}
+    console.log('[fetchMaster] ✅ PATH 3 CONFIG discovery: restored',total,'AWBs');
+    return true;
+  }catch(e){
+    console.warn('[fetchMaster] PATH 3 failed:',e.message);
+    return false;
+  }
 }
 
 /* ── PATH 2 Averages: restore rolling averages from SITE AVERAGES via gviz ── */
