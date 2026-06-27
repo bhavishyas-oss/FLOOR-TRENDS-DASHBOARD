@@ -951,7 +951,7 @@ const SECS=[
     title:'REVERSE R@DC',
     badge:'R@DC · CLIENT FILTER',
     src:'reverse',
-    ageOpts:[3,10],
+    ageOpts:[3,6,10],   // D6 added — strict age=6 match, same logic as D3 and D10
     binOpts:null,
     msgOpts:null,
   },
@@ -2692,28 +2692,35 @@ async function runFiles(files){
   try{
     await pushMasterSnapshot();
     const sectionCounts=[];
-    const dailyAgeCounts=[];  // ← NEW: full location×date grid for Google Sheet
+    const dailyAgeSheets=[];  // ← per (section × age) location×date pivot for separate Google Sheets
     for(let i=0;i<SECS.length;i++){
       const sec=SECS[i];
       const f=SEC_FILTERS[i]||{age:sec.ageOpts?.[0]||3};
       const piv=buildPivot(sec,i);
-      if(!piv.locs||!piv.locs.length)continue;
-      const totAWBs=piv.locs.reduce((s,l)=>s+(piv.rowTotals[l]||0),0);
-      sectionCounts.push({section:sec.title,src:sec.src,ageFilter:`D${f.age}`,awbs:totAWBs,records:piv.locs.length,fileDates:piv.dates.join(', ')});
-      // Build one row per location×date for Daily Age Count sheet
-      const sortedLocs=[...piv.locs].sort((a,b)=>(piv.rowTotals[b]||0)-(piv.rowTotals[a]||0));
-      sortedLocs.forEach(loc=>{
-        piv.dates.forEach(date=>{
-          const count=piv.grid[loc]&&piv.grid[loc][date]||0;
-          const histAvg=_getAvg(sec.title,loc).histAvg||0;
-          const latestAvg=piv.dates.length>0?Math.round((piv.rowTotals[loc]||0)/piv.dates.length):0;
-          dailyAgeCounts.push({section:sec.title,location:loc,date,ageFilter:`D${f.age}`,count,rowTotal:piv.rowTotals[loc]||0,histAvg,latestAvg});
+      if(piv.locs&&piv.locs.length){
+        const totAWBs=piv.locs.reduce((s,l)=>s+(piv.rowTotals[l]||0),0);
+        sectionCounts.push({section:sec.title,src:sec.src,ageFilter:`D${f.age}`,awbs:totAWBs,records:piv.locs.length,fileDates:piv.dates.join(', ')});
+      }
+      // Build a separate location×date pivot for EACH required age in this section
+      const ages=Array.isArray(sec.ageOpts)?sec.ageOpts:[sec.ageOpts||3];
+      for(const reqAge of ages){
+        const pivA=_buildPivotForAge(sec,i,reqAge);
+        if(!pivA.locs||!pivA.locs.length)continue;
+        // Sheet name e.g. "FWD D3 COUNT", "REVERSE D6 COUNT", "DCH D10 COUNT", "LMODC D3 COUNT"
+        const prefix=_sectionSheetPrefix(sec.src);
+        const sheetName=`${prefix} D${reqAge} COUNT`;
+        const sortedLocs=[...pivA.locs].sort((a,b)=>(pivA.rowTotals[b]||0)-(pivA.rowTotals[a]||0));
+        const rows=sortedLocs.map(loc=>{
+          const dateCounts={};
+          pivA.dates.forEach(date=>{dateCounts[date]=pivA.grid[loc]&&pivA.grid[loc][date]||0;});
+          return{location:loc,dateCounts};
         });
-      });
+        dailyAgeSheets.push({sheetName,dates:pivA.dates,rows});
+      }
     }
     if(sectionCounts.length)await pushSectionCounts(sectionCounts);
-    if(dailyAgeCounts.length)await pushDailyAgeCounts(dailyAgeCounts);
-    console.log('Sheets: master snapshot + section counts + daily age counts saved');
+    if(dailyAgeSheets.length)await pushDailyAgeSheets(dailyAgeSheets);
+    console.log('Sheets: master snapshot + section counts + daily age count sheets saved');
   }catch(e){
     console.warn('Master snapshot push failed:',e.message);
     toast('⚠ Sheets sync failed — data saved locally. Will retry on next upload.','tw');
@@ -2728,6 +2735,36 @@ async function runFiles(files){
    Age filter = strict equality (r.age === sec.age)
    fromPivot records skip bin/msg checks.
 ═══════════════════════════════════════════════ */
+
+/* Build a location×date pivot for a SPECIFIC age (used for Daily Age Count sheets).
+   Does NOT touch SEC_FILTERS / the UI — pure read-only aggregation.            */
+function _buildPivotForAge(sec,idx,reqAge){
+  const all=master[sec.src]||[];
+  const ck=sec.src==='lmodc'?'destination':'location';
+  const filt=all.filter(r=>r.age===reqAge);
+  if(!filt.length)return{locs:[],dates:[],grid:{},rowTotals:{},colTotals:{}};
+  const dates=[...new Set(filt.map(r=>r.date))].sort();
+  const locs=[...new Set(filt.map(r=>r[ck]).filter(Boolean))];
+  const grid={},rowTotals={},colTotals={};
+  locs.forEach(l=>{grid[l]={};dates.forEach(d=>grid[l][d]=0);rowTotals[l]=0;});
+  dates.forEach(d=>colTotals[d]=0);
+  filt.forEach(r=>{
+    const loc=r[ck];if(!loc||!grid[loc])return;
+    const c=r.count||0;
+    grid[loc][r.date]=(grid[loc][r.date]||0)+c;
+    rowTotals[loc]+=c;colTotals[r.date]=(colTotals[r.date]||0)+c;
+  });
+  return{locs,dates,grid,rowTotals,colTotals};
+}
+
+/* Map section src → Google Sheet name prefix */
+function _sectionSheetPrefix(src){
+  return src==='forward'?'FWD':
+         src==='reverse'?'REVERSE':
+         src==='lmodc'?'LMODC':
+         src==='forwardShort'?'DCH':'OTHER';
+}
+
 function buildPivot(sec,idx){
   const all=master[sec.src]||[];
   const ck=sec.src==='lmodc'?'destination':'location';
@@ -7897,7 +7934,7 @@ const GS_SHEET_ID='17JbybSZkKtdoHZBua3QyC5tcxwKYozhnILQcoXb3rYQ';
    The dashboard auto-discovers this from the spreadsheet's __url__ sentinel row.
    You can also paste it here permanently after deploying a new version.
    Current deployment URL (update this when you redeploy):                    */
-const GS_HARDCODED_URL='https://script.google.com/macros/s/AKfycbzrFuasUXrAdZ39pyYvPnYYuVo2rpPt2dYe877G9sPd5TgVuWlR2qcgtdoirV5Cj8ZV/exec';
+const GS_HARDCODED_URL='https://script.google.com/macros/s/AKfycby81P9I4yUhFTy_q2DXAzgNBB4ej7Wk4PtYsWpQDRgWMVIkUt0DDWIW4JCLsUxtIRCQ/exec';
 
 const GS_BOOTSTRAP_URLS=[
   `https://docs.google.com/spreadsheets/d/${GS_SHEET_ID}/gviz/tq?tqx=out:json&sheet=MASTER+SNAPSHOT_1`,
@@ -8789,36 +8826,78 @@ function processPayload(payload) {
     return{ok:true,type:'section_counts',appended:written3};
   }
 
-  /* ── DAILY AGE COUNT — full location × date grid stored per section ── */
-  if(payload.type==='daily_age_counts'){
-    var DAC_HDRS=['Sync Date','Section','Location','Date','Age Filter','Count','Row Total','Hist Avg','Latest Avg'];
-    var dacSyncDate=String(payload.syncDate||new Date().toISOString().slice(0,10)).slice(0,10);
-    var dacRows=payload.rows||[];
-    if(!dacRows.length)return{ok:true,type:'daily_age_counts',appended:0};
+  /* ── DAILY AGE PIVOT — separate sheet per section×age (e.g. "FWD D3 COUNT")
+     Layout: Rows = Current Location, Columns = File Dates, Values = AWB counts.
+     MERGE behaviour: new date columns are added; existing date columns are updated;
+     historical date columns are NEVER overwritten or deleted.                    */
+  if(payload.type==='daily_age_pivot'){
+    var dapSheetName=String(payload.sheetName||'').trim();
+    if(!dapSheetName)return{ok:false,error:'no_sheet_name'};
+    var dapDates=payload.dates||[];          // array of date strings (new file dates)
+    var dapRows=payload.rows||[];            // [{location, dateCounts:{date:count}}]
+    if(!dapRows.length)return{ok:true,type:'daily_age_pivot',rows:0};
 
-    // Dedup: delete all existing rows for this syncDate across all DAILY AGE COUNT partitions
-    var dacAllSheets=[];
-    var dacIdx=loadIndex(ss)['DAILY AGE COUNT']||[];
-    dacIdx.forEach(function(p){var s=ss.getSheetByName(p.tab);if(s)dacAllSheets.push(s);});
-    var dacLeg=ss.getSheetByName('DAILY AGE COUNT');
-    if(dacLeg&&dacAllSheets.indexOf(dacLeg)===-1)dacAllSheets.push(dacLeg);
-    dacAllSheets.forEach(function(dacSh){
-      if(!dacSh||dacSh.getLastRow()<=1)return;
-      var ex=dacSh.getRange(2,1,dacSh.getLastRow()-1,1).getValues(),td=[];
-      for(var i=ex.length-1;i>=0;i--){
-        if(String(ex[i][0]).slice(0,10)===dacSyncDate)td.push(i+2);
+    // Get or create the section sheet
+    var dapSh=ss.getSheetByName(dapSheetName);
+    if(!dapSh){
+      dapSh=ss.insertSheet(dapSheetName);
+      dapSh.getRange(1,1).setValue('Current Location');
+      dapSh.getRange(1,1).setFontWeight('bold').setBackground('#0f2b25').setFontColor('#ffffff');
+    }
+
+    // Read existing header row to find current date columns
+    var lastCol=Math.max(1,dapSh.getLastColumn());
+    var headerRow=dapSh.getRange(1,1,1,lastCol).getValues()[0];
+    // Map: date string → column index (1-based)
+    var dateColMap={};
+    for(var hc=1;hc<headerRow.length;hc++){  // skip col 0 (Current Location)
+      var hv=String(headerRow[hc]||'').trim();
+      if(hv)dateColMap[hv]=hc+1;
+    }
+
+    // Add any NEW date columns (preserve existing ones)
+    var nextCol=lastCol+1;
+    dapDates.forEach(function(d){
+      var ds=String(d).trim();
+      if(ds&&!dateColMap[ds]){
+        dapSh.getRange(1,nextCol).setValue(ds);
+        dapSh.getRange(1,nextCol).setFontWeight('bold').setBackground('#0f2b25').setFontColor('#ffffff');
+        dateColMap[ds]=nextCol;
+        nextCol++;
       }
-      td.sort(function(a,b){return b-a;}).forEach(function(r){dacSh.deleteRow(r);});
+    });
+
+    // Read existing location rows → map location → row index
+    var lastRow2=Math.max(1,dapSh.getLastRow());
+    var locColVals=lastRow2>1?dapSh.getRange(2,1,lastRow2-1,1).getValues():[];
+    var locRowMap={};
+    for(var lr=0;lr<locColVals.length;lr++){
+      var lv=String(locColVals[lr][0]||'').trim();
+      if(lv)locRowMap[lv]=lr+2; // 1-based, +1 for header
+    }
+
+    // Write each location's date counts
+    var nextRow=lastRow2+1;
+    dapRows.forEach(function(rowObj){
+      var loc=String(rowObj.location||'').trim();
+      if(!loc)return;
+      var rIdx=locRowMap[loc];
+      if(!rIdx){
+        // New location — append a new row
+        rIdx=nextRow;
+        dapSh.getRange(rIdx,1).setValue(loc);
+        locRowMap[loc]=rIdx;
+        nextRow++;
+      }
+      var dc=rowObj.dateCounts||{};
+      Object.keys(dc).forEach(function(d){
+        var ds=String(d).trim();
+        var cIdx=dateColMap[ds];
+        if(cIdx){dapSh.getRange(rIdx,cIdx).setValue(Number(dc[d])||0);}
+      });
     });
     try{SpreadsheetApp.flush();}catch(e){}
-
-    var dacFormatted=dacRows.map(function(r){
-      return[dacSyncDate,String(r.section||''),String(r.location||''),String(r.date||''),
-             String(r.ageFilter||''),Number(r.count||0),Number(r.rowTotal||0),
-             Number(r.histAvg||0),Number(r.latestAvg||0)];
-    });
-    var writtenDac=appendToLightweightSheet(ss,'DAILY AGE COUNT',DAC_HDRS,dacFormatted);
-    return{ok:true,type:'daily_age_counts',appended:writtenDac};
+    return{ok:true,type:'daily_age_pivot',sheet:dapSheetName,rows:dapRows.length,dates:dapDates.length};
   }
 
   /* ── FILE LOG — auto-partitioned ── */
@@ -9338,16 +9417,20 @@ async function pushSectionCounts(counts){
   }
 }
 
-/* Push full daily location×date count grid to DAILY AGE COUNT sheet */
-async function pushDailyAgeCounts(rows){
+/* Push per-section daily age count sheets — each is a location×date pivot.
+   Sends one payload per sheet (FWD D3 COUNT, REVERSE D6 COUNT, etc.).
+   AppScript merges new date columns without overwriting historical dates.    */
+async function pushDailyAgeSheets(sheets){
   const url=getGsUrl();
-  if(!url||!rows.length)return;
-  const syncDate=new Date().toISOString().slice(0,10);
-  const payload={type:'daily_age_counts',rows,syncDate};
-  const r=await _sheetsFetch(url,payload);
-  if(!r.ok&&r.ok!==null){
-    console.warn('Daily age counts push failed — queuing for retry');
-    _enqueueSyncItem(payload);
+  if(!url||!sheets.length)return;
+  for(const sh of sheets){
+    if(!sh.rows||!sh.rows.length)continue;
+    const payload={type:'daily_age_pivot',sheetName:sh.sheetName,dates:sh.dates,rows:sh.rows};
+    const r=await _sheetsFetch(url,payload);
+    if(!r.ok&&r.ok!==null){
+      console.warn(`Daily age sheet "${sh.sheetName}" push failed — queuing for retry`);
+      _enqueueSyncItem(payload);
+    }
   }
 }
 
