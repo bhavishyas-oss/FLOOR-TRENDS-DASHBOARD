@@ -2692,6 +2692,7 @@ async function runFiles(files){
   try{
     await pushMasterSnapshot();
     const sectionCounts=[];
+    const dailyAgeCounts=[];  // ← NEW: full location×date grid for Google Sheet
     for(let i=0;i<SECS.length;i++){
       const sec=SECS[i];
       const f=SEC_FILTERS[i]||{age:sec.ageOpts?.[0]||3};
@@ -2699,9 +2700,20 @@ async function runFiles(files){
       if(!piv.locs||!piv.locs.length)continue;
       const totAWBs=piv.locs.reduce((s,l)=>s+(piv.rowTotals[l]||0),0);
       sectionCounts.push({section:sec.title,src:sec.src,ageFilter:`D${f.age}`,awbs:totAWBs,records:piv.locs.length,fileDates:piv.dates.join(', ')});
+      // Build one row per location×date for Daily Age Count sheet
+      const sortedLocs=[...piv.locs].sort((a,b)=>(piv.rowTotals[b]||0)-(piv.rowTotals[a]||0));
+      sortedLocs.forEach(loc=>{
+        piv.dates.forEach(date=>{
+          const count=piv.grid[loc]&&piv.grid[loc][date]||0;
+          const histAvg=_getAvg(sec.title,loc).histAvg||0;
+          const latestAvg=piv.dates.length>0?Math.round((piv.rowTotals[loc]||0)/piv.dates.length):0;
+          dailyAgeCounts.push({section:sec.title,location:loc,date,ageFilter:`D${f.age}`,count,rowTotal:piv.rowTotals[loc]||0,histAvg,latestAvg});
+        });
+      });
     }
     if(sectionCounts.length)await pushSectionCounts(sectionCounts);
-    console.log('Sheets: master snapshot + section counts saved');
+    if(dailyAgeCounts.length)await pushDailyAgeCounts(dailyAgeCounts);
+    console.log('Sheets: master snapshot + section counts + daily age counts saved');
   }catch(e){
     console.warn('Master snapshot push failed:',e.message);
     toast('⚠ Sheets sync failed — data saved locally. Will retry on next upload.','tw');
@@ -2996,11 +3008,11 @@ function renderTable(el,piv,sec,idx){
     siteStats.push({loc,rt,histAvg,latestAvg,latestCount,trend,redCells,latestDate,nDates});
 
     html+=`<tr style="background:${rowBg}">
-      <td class="ptcl ptc-loc" style="position:sticky;left:0;background:${rowBg}" title="${xe(loc)}">${xe(loc)}</td>
+      <td class="ptcl ptc-loc" style="position:sticky;left:0;background:${rowBg};text-align:left" title="${xe(loc)}">${xe(loc)}</td>
       ${cells.join('')}
-      <td class="ptc-tot">${fn(rt)}</td>
-      <td class="ptc-ha">${fn(histAvg)}</td>
-      <td class="ptc-la">${fn(latestAvg)}${avgArrow}</td>
+      <td class="ptc-tot" style="text-align:center;padding:4px 8px">${fn(rt)}</td>
+      <td class="ptc-ha" style="text-align:center;padding:4px 8px">${fn(histAvg)}</td>
+      <td class="ptc-la" style="text-align:center;padding:4px 8px">${fn(latestAvg)}${avgArrow}</td>
     </tr>`;
   });
 
@@ -3021,9 +3033,9 @@ function renderTable(el,piv,sec,idx){
       if(isLat)cls+=' ptc-lat';
       return`<td class="${cls}">${fn(tot)}</td>`;
     }).join('')}
-    <td class="ptc-ft" style="color:#E9DF43">${fn(grand)}</td>
-    <td class="ptc-ft" style="color:#bfdbfe">${fn(grandHistAvg)}</td>
-    <td class="ptc-ft" style="color:#a5f3fc">${fn(grandLatAvg)}</td>
+    <td class="ptc-ft" style="color:#E9DF43;text-align:center;padding:4px 8px">${fn(grand)}</td>
+    <td class="ptc-ft" style="color:#bfdbfe;text-align:center;padding:4px 8px">${fn(grandHistAvg)}</td>
+    <td class="ptc-ft" style="color:#a5f3fc;text-align:center;padding:4px 8px">${fn(grandLatAvg)}</td>
   </tr></tfoot></table></div>
   <div class="leg" style="margin-top:4px;padding:2px 0">
     <span class="lc"><span class="lb lu"></span>▲ Red cell = count rose vs prior date</span>
@@ -4249,9 +4261,34 @@ async function procHovFile(file,type,date){
     if(type==='forward'||type==='reverse'){
       if(!isXlsx)return;
       const buf=await file.arrayBuffer();
-      const result=readNamedSheet(buf,'HOV PD PC');
+      let result=readNamedSheet(buf,'HOV PD PC');
       if(!result||result.rows.length<2){
-        console.warn('HOV PD PC sheet not found in',file.name);return;
+        // Fallback: try other common HOV sheet names, then first sheet
+        const altNames=['HOV','HOV Data','HOV_PD_PC','PD PC','Sheet1','Data'];
+        for(const alt of altNames){
+          result=readNamedSheet(buf,alt);
+          if(result&&result.rows.length>=2)break;
+        }
+        // Last resort: read first available sheet
+        if(!result||result.rows.length<2){
+          try{
+            const wb=XLSX.read(buf,{type:'array',cellFormula:false,cellText:false,cellHTML:false});
+            if(wb&&wb.SheetNames&&wb.SheetNames.length>0){
+              const ws=wb.Sheets[wb.SheetNames[0]];
+              if(ws){
+                const rows2=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
+                if(rows2&&rows2.length>=2){
+                  const hi2=findHdrRow(rows2);
+                  const hdrs2=cleanH((rows2[hi2]||[]).map(h=>String(h==null?'':h)));
+                  result={rows:rows2,sheetName:wb.SheetNames[0],headerRow:hi2,hdrs:hdrs2};
+                }
+              }
+            }
+          }catch(e2){console.warn('HOV fallback sheet read failed:',e2.message);}
+        }
+      }
+      if(!result||result.rows.length<2){
+        console.warn('HOV: no readable sheet found in',file.name);return;
       }
       const rows=buildRows(result.rows,result.headerRow,result.hdrs);
       applyHovRows(rows,type==='forward'?pHovFwd:pHovRev,type,date);
@@ -7860,7 +7897,7 @@ const GS_SHEET_ID='17JbybSZkKtdoHZBua3QyC5tcxwKYozhnILQcoXb3rYQ';
    The dashboard auto-discovers this from the spreadsheet's __url__ sentinel row.
    You can also paste it here permanently after deploying a new version.
    Current deployment URL (update this when you redeploy):                    */
-const GS_HARDCODED_URL='https://script.google.com/macros/s/AKfycbyHcgr4es_R6uqrcD_81zU0xkxKMEeTSnkgqWUTBwYQjXcVelJh_jW3aXlz5Lf5KnNf/exec';
+const GS_HARDCODED_URL='https://script.google.com/macros/s/AKfycbzrFuasUXrAdZ39pyYvPnYYuVo2rpPt2dYe877G9sPd5TgVuWlR2qcgtdoirV5Cj8ZV/exec';
 
 const GS_BOOTSTRAP_URLS=[
   `https://docs.google.com/spreadsheets/d/${GS_SHEET_ID}/gviz/tq?tqx=out:json&sheet=MASTER+SNAPSHOT_1`,
@@ -8462,8 +8499,6 @@ function getOrCreateSheet(ss,name,headers){
 /* ==============================================================
    PAYLOAD ROUTER
 ============================================================== */
-function processPayload(payload) {
-  var ss=getSS();
 
 /* ==============================================================
    LIGHTWEIGHT SHEET HELPERS — auto-partitioned for all summary sheets
@@ -8648,7 +8683,9 @@ function getMasterFromAllPartitions(ss) {
   return {master:master, n:n, selfUrl:selfUrl};
 }
 
-  /* ── SITE AVERAGES — auto-partitioned ── */
+function processPayload(payload) {
+  var ss=getSS();
+/* ── SITE AVERAGES — auto-partitioned ── */
   if(payload.type==='site_averages'){
     var SAVG_HDRS=['Sync Date','Section','Site / Location','Latest File Date',
        'Latest Count','Historical Average','Latest Average',
@@ -8750,6 +8787,38 @@ function getMasterFromAllPartitions(ss) {
     });
     var written3=appendToLightweightSheet(ss,'SECTION COUNTS',SC_HDRS,cr);
     return{ok:true,type:'section_counts',appended:written3};
+  }
+
+  /* ── DAILY AGE COUNT — full location × date grid stored per section ── */
+  if(payload.type==='daily_age_counts'){
+    var DAC_HDRS=['Sync Date','Section','Location','Date','Age Filter','Count','Row Total','Hist Avg','Latest Avg'];
+    var dacSyncDate=String(payload.syncDate||new Date().toISOString().slice(0,10)).slice(0,10);
+    var dacRows=payload.rows||[];
+    if(!dacRows.length)return{ok:true,type:'daily_age_counts',appended:0};
+
+    // Dedup: delete all existing rows for this syncDate across all DAILY AGE COUNT partitions
+    var dacAllSheets=[];
+    var dacIdx=loadIndex(ss)['DAILY AGE COUNT']||[];
+    dacIdx.forEach(function(p){var s=ss.getSheetByName(p.tab);if(s)dacAllSheets.push(s);});
+    var dacLeg=ss.getSheetByName('DAILY AGE COUNT');
+    if(dacLeg&&dacAllSheets.indexOf(dacLeg)===-1)dacAllSheets.push(dacLeg);
+    dacAllSheets.forEach(function(dacSh){
+      if(!dacSh||dacSh.getLastRow()<=1)return;
+      var ex=dacSh.getRange(2,1,dacSh.getLastRow()-1,1).getValues(),td=[];
+      for(var i=ex.length-1;i>=0;i--){
+        if(String(ex[i][0]).slice(0,10)===dacSyncDate)td.push(i+2);
+      }
+      td.sort(function(a,b){return b-a;}).forEach(function(r){dacSh.deleteRow(r);});
+    });
+    try{SpreadsheetApp.flush();}catch(e){}
+
+    var dacFormatted=dacRows.map(function(r){
+      return[dacSyncDate,String(r.section||''),String(r.location||''),String(r.date||''),
+             String(r.ageFilter||''),Number(r.count||0),Number(r.rowTotal||0),
+             Number(r.histAvg||0),Number(r.latestAvg||0)];
+    });
+    var writtenDac=appendToLightweightSheet(ss,'DAILY AGE COUNT',DAC_HDRS,dacFormatted);
+    return{ok:true,type:'daily_age_counts',appended:writtenDac};
   }
 
   /* ── FILE LOG — auto-partitioned ── */
@@ -9080,6 +9149,7 @@ function _pruneOldestPartition(ss, baseName) {
   };
 }
 
+
 function buildResponse(body){
   return ContentService.createTextOutput(body).setMimeType(ContentService.MimeType.JSON);
 }
@@ -9264,6 +9334,19 @@ async function pushSectionCounts(counts){
   const r=await _sheetsFetch(url,payload);
   if(!r.ok&&r.ok!==null){
     console.warn('Section counts push failed — queuing for retry');
+    _enqueueSyncItem(payload);
+  }
+}
+
+/* Push full daily location×date count grid to DAILY AGE COUNT sheet */
+async function pushDailyAgeCounts(rows){
+  const url=getGsUrl();
+  if(!url||!rows.length)return;
+  const syncDate=new Date().toISOString().slice(0,10);
+  const payload={type:'daily_age_counts',rows,syncDate};
+  const r=await _sheetsFetch(url,payload);
+  if(!r.ok&&r.ok!==null){
+    console.warn('Daily age counts push failed — queuing for retry');
     _enqueueSyncItem(payload);
   }
 }
